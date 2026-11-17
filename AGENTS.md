@@ -75,14 +75,36 @@ src/
 ## 四、3D 场景约定
 
 - 桌面高度常量 `TABLE_TOP`，所有桌上物件 y 从它起算。
+- `gaming_table.glb` 的台呢面在模型自身 y=0，加载后整体抬到 `TABLE_TOP`；**改桌高只改 `TABLE_TOP` 一处**。
+- `room_environment.glb` 以世界原点为地面（y=0），顶棚 `CEILING_Y = 6.0`；吊灯构件单独拆给 `lampRig` 保留摆动。
+- **聚光灯必须挂在灯罩下沿（`LAMP_SHADE_BOT_Y`）**，放罩体内会被罩壁完全遮挡，桌面出现一大片黑斑。
+- **Boss 半身像必须含完整躯干**：`boss_*.glb` 的包围盒是 W≈1.6–1.8m、H≈2.0–2.6m、D≈0.8–1.3m，底座在自身 y=0。只有头/兜帽的模型按高度归一化后会变成 3m 宽的巨脸，必须重做而不是缩放。
+- **`BOSS_Z = -3.0`**：桌体后沿 z=-2.23，斗篷前沿约 0.55m，中心必须在 -2.78 之后；`BOSS_BUST_BASE_Y = 0.26` 让下摆被桌沿挡住，形成“坐在桌后”。
+- Boss 的呼吸/盯视作用在 `bossGroup`（整体）与 `bossHeadNode`（`BossHead` 节点）上，模型面朝 +Z，`rotation.y` 即左右转。
+- **冷色轮廓光强度上限约 10**：高于此值整个躯干会被照成一块蓝板，失去剪影感。
 - 卡牌材质数组顺序：`[side, side, 朝上面, 朝下面, side, side]`；`rotation.x = Math.PI` 表示翻面。
 - 道具拾取：`raycaster` → 沿 `parent` 找 `userData.item` → `callbacks.onItemClick`。
 - CRT 显示器在 `x≈-0.96, z≈1.24`，左前方，需要面向相机；挪动后**必须截图确认内容可读**。
+- CRT 数据屏由代码动态挂到 GLB 外壳正面，屏幕位置按外壳包围盒计算，**不要改成世界坐标迁移**。
 - 运镜用 `setShot(shot, duration)`，不要直接改 `camera.position`。
+- **Blender 程序化节点图无法导出到 glTF**：噪声/渐变接 Base Color 会被压成纯白。必须把颜色烘焙进顶点色（`COLOR_0`），导出加 `export_vertex_color='MATERIAL', export_all_vertex_colors=True`。
 
 ## 五、美术资源热替换
 
-放进 `public/assets/` 的同名 PNG 会覆盖程序化贴图（仅开发模式）：
+### 3D 模型（`public/models/*.glb`，14 个）
+
+| 文件 | 用途 | 约束 |
+| --- | --- | --- |
+| `gaming_table.glb` | 重型钢板赌桌 | 台呢面在模型 y=0；场景里抬到 `TABLE_TOP` |
+| `room_environment.glb` | 地下铁皮密室 + 工业吊灯 | 地面在 y=0；吊灯节点名以 `Lamp` 开头 |
+| `revolver.glb` | 左轮 | 枪口朝 glTF -Z |
+| `crt_monitor.glb` | CRT 外壳 | 屏幕朝向 +Z |
+| `boss_1/2/3.glb` | 三层半身像（完整躯干） | 面朝 +Z，底部中心为原点，头部节点名 `BossHead` |
+| `item_*.glb` | 7 件桌面道具 | 尺寸 0.15–0.30m，底部 z=0 |
+
+缺文件时自动回退程序化几何（控制台 warn，不报错）。
+
+### 贴图覆盖（`public/assets/`，仅开发模式）
 
 | 文件 | 用途 |
 | --- | --- |

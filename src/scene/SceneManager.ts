@@ -1,4 +1,6 @@
 import * as THREE from 'three'
+import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js'
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
@@ -102,6 +104,81 @@ const LEVEL_LOOK: ReadonlyArray<{
   { rim: 0xff2f22, fill: 0x3a2c4f, lamp: 0xff8a52 },
 ]
 
+/** Blender 导出的模型，键名与 public/models/*.glb 对应 */
+type ModelKey =
+  | 'revolver'
+  | 'crt_monitor'
+  | 'boss_1'
+  | 'boss_2'
+  | 'boss_3'
+  | 'item_magnifier'
+  | 'item_syringe'
+  | 'item_saw'
+  | 'item_magnet'
+  | 'item_handcuffs'
+  | 'item_hourglass'
+  | 'item_dagger'
+  | 'gaming_table'
+  | 'room_environment'
+
+/** 道具 id → 模型键（与 GameEngine 的 ITEM_IDS 一一对应） */
+const ITEM_MODEL: Readonly<Record<ItemId, ModelKey>> = {
+  magnifier: 'item_magnifier',
+  sedative: 'item_syringe',
+  saw: 'item_saw',
+  magnet: 'item_magnet',
+  handcuffs: 'item_handcuffs',
+  hourglass: 'item_hourglass',
+  dagger: 'item_dagger',
+}
+
+const MODEL_BASE = './models'
+
+/** Boss 半身像统一高度（米）。含完整躯干与垂落斗篷，头部落在桌面上方约 1.2m */
+const BOSS_BUST_HEIGHT = 2.15
+/** 半身像底座（斗篷下摆）压到桌面以下，被桌沿挡住，形成「坐在桌后」的错觉 */
+const BOSS_BUST_BASE_Y = 0.26
+/** Boss 站在桌后：桌体后沿 z=-2.23，斗篷前半 z≈-0.51 缩放后约 0.55m，
+ * 所以中心必须在 -2.23-0.55=-2.78 之后，否则会穿进桌体 */
+const BOSS_Z = -3.0
+
+/** 密室顶棚高度（米）；吊灯摆动以这里为枢轴 */
+const CEILING_Y = 6.0
+/** 灯罩下沿在世界坐标中的高度，聚光灯挂在这里才不会被罩体遮挡 */
+const LAMP_SHADE_BOT_Y = 4.02
+
+/** 环境反射强度：只给金属补一点高光方向，压低以免把暗调场景洗白 */
+const ENV_INTENSITY = 0.05
+
+/**
+ * Blender 预览灯与网页聚光灯差异很大：GLB 里偏亮的 baseColor 进了 Three.js 会过曝。
+ * 统一压暗这一档，让材质回到「暗黑地下室」的基调。
+ */
+const GLB_ALBEDO_DIM = 0.3
+
+/** 顶点色材质（Blender 烘焙）同样压一档，与 GLB_ALBEDO_DIM 叠加后接近线下观感 */
+const VERTEX_COLOR_DIM = 0.55
+
+/** 统一处理 GLB 材质：阴影、环境反射、整体压暗 */
+function tuneGltfMaterial(material: THREE.Material, vertexDim = VERTEX_COLOR_DIM): void {
+  if (!(material instanceof THREE.MeshStandardMaterial)) return
+  material.envMapIntensity = ENV_INTENSITY
+  // 顶点色材质（Blender 烘焙）本身颜色已正确，只做轻度压暗
+  if (material.vertexColors) {
+    material.color.multiplyScalar(vertexDim)
+  } else {
+    material.color.multiplyScalar(GLB_ALBEDO_DIM)
+  }
+  // Blender 的高金属度在网页 IBL 下会整片反射成白，压到 0.55 保留金属感又不失细节
+  if (material.metalness > 0.55) material.metalness = 0.55
+  // 极度光滑的表面会把环境光镜面反射成白块
+  if (material.roughness < 0.28) material.roughness = 0.28
+  // 自发光在网页里更容易过曝，整体收敛
+  if (material.emissiveIntensity > 1) {
+    material.emissiveIntensity *= 0.5
+  }
+}
+
 const PHASE_LABEL: Readonly<Record<string, string>> = {
   idle: '待机',
   dealing: '发牌中',
@@ -158,6 +235,19 @@ export class SceneManager {
   private readonly resizeObserver: ResizeObserver
   private readonly scratchVector = new THREE.Vector3()
 
+  private readonly gltfLoader = new GLTFLoader()
+  /** 已加载的模型模板；缺失表示加载失败或尚未完成，此时回退程序化几何 */
+  private readonly models = new Map<ModelKey, THREE.Object3D>()
+  private envTexture: THREE.Texture | null = null
+  private readonly pendingModels: Array<Promise<void>> = []
+  private readonly bossModelByLevel: Array<THREE.Object3D | null> = [null, null, null]
+  /** 当前挂在 Boss 头上的 GLB 面具关卡，-1 表示仍用贴图面具 */
+  private activeBossMaskLevel = -1
+  /** GLB 半身像里的头部节点，用于「盯视」动画 */
+  private bossHeadNode: THREE.Object3D | null = null
+  /** 道具模型模板（按 item id），供 UI 图鉴与桌面摆件复用 */
+  private readonly itemModelTemplates = new Map<ItemId, THREE.Object3D>()
+
   private readonly roomGroup = new THREE.Group()
   private readonly tableGroup = new THREE.Group()
   private readonly bossGroup = new THREE.Group()
@@ -175,7 +265,7 @@ export class SceneManager {
   private readonly bossParts: TorsoParts
   private readonly crtScreen: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>
   private readonly crtLight: THREE.PointLight
-  private readonly drum: THREE.Group
+  private drum: THREE.Object3D
 
   private cameraBase = new THREE.Vector3(0, 3.62, 4.92)
   private cameraLookAt = new THREE.Vector3(0, 1.02, -0.62)
@@ -203,6 +293,7 @@ export class SceneManager {
   private rafId = 0
   private elapsed = 0
   private levelLookIndex = 0
+  private currentLevelIndex = 0
   private lastCrtKey = ''
   private lastSnapshot: GameSnapshot | null = null
   private disposed = false
@@ -225,12 +316,19 @@ export class SceneManager {
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFShadowMap
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.16
+    this.renderer.toneMappingExposure = 0.92
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
 
     this.scene = new THREE.Scene()
     this.scene.background = new THREE.Color(0x050505)
     this.scene.fog = new THREE.FogExp2(0x060606, 0.062)
+
+    // RoomEnvironment 给金属 / 黄铜 / 玻璃提供真实反射；强度克制到不破坏暗调
+    const pmrem = new THREE.PMREMGenerator(this.renderer)
+    this.envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
+    this.scene.environment = this.envTexture
+    this.scene.environmentIntensity = ENV_INTENSITY
+    pmrem.dispose()
 
     this.camera = new THREE.PerspectiveCamera(48, 1, 0.1, 80)
     this.camera.position.copy(this.cameraBase)
@@ -277,6 +375,8 @@ export class SceneManager {
     this.dust = this.buildDust()
     this.deckGroup.position.copy(DECK_POS)
     this.buildDeckPile()
+
+    this.preloadModels()
 
     this.textures.startWatching()
     const unwatch = this.textures.onOverride((key, texture) => this.applyOverride(key, texture))
@@ -576,14 +676,316 @@ export class SceneManager {
       }
     })
     this.textures.dispose()
+    this.envTexture?.dispose()
+    this.models.clear()
+    this.itemModelTemplates.clear()
     this.composer.dispose()
     this.renderer.dispose()
+  }
+
+  /** 用 GLB 模型替换某个已存在道具的程序化几何（保留外层的缩放/悬停动画） */
+  private replaceItemMesh(entry: ItemEntry, source: THREE.Object3D): void {
+    const stale: THREE.Object3D[] = []
+    for (const child of entry.group.children) {
+      if (child.userData.isModelClone) continue
+      stale.push(child)
+    }
+    for (const child of stale) {
+      entry.group.remove(child)
+      this.disposeObject(child)
+    }
+    entry.materials.length = 0
+
+    const clone = source.clone(true)
+    clone.userData.isModelClone = true
+    // 道具目标尺寸 0.28m；归一到底座 y=0、水平居中
+    const box = new THREE.Box3().setFromObject(clone)
+    const size = box.getSize(new THREE.Vector3())
+    const longest = Math.max(size.x, size.y, size.z)
+    if (longest > 1e-6) clone.scale.setScalar(0.28 / longest)
+    const scaled = new THREE.Box3().setFromObject(clone)
+    const center = scaled.getCenter(new THREE.Vector3())
+    clone.position.set(-center.x, -scaled.min.y, -center.z)
+
+    clone.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.castShadow = true
+        child.receiveShadow = true
+        const materials = Array.isArray(child.material) ? child.material : [child.material]
+        for (const material of materials) {
+          if (material instanceof THREE.MeshStandardMaterial) {
+            entry.materials.push(material)
+          }
+        }
+      }
+    })
+    entry.group.add(clone)
   }
 
   getCamera(): THREE.PerspectiveCamera {
     return this.camera
   }
 
+  /** 异步载入全部 GLB；失败的模型保持缺失，渲染时自动回退到程序化几何 */
+  private preloadModels(): void {
+    const keys: ModelKey[] = [
+      'revolver',
+      'crt_monitor',
+      'boss_1',
+      'boss_2',
+      'boss_3',
+      'item_magnifier',
+      'item_syringe',
+      'item_saw',
+      'item_magnet',
+      'item_handcuffs',
+      'item_hourglass',
+      'item_dagger',
+      'gaming_table',
+      'room_environment',
+    ]
+    // 大件场景模型不必和道具一样压那么暗，否则整个桌面沉进黑里
+    const dimFor = (key: ModelKey): number => {
+      if (key === 'gaming_table') return 0.82
+      if (key === 'room_environment') return 0.9
+      return VERTEX_COLOR_DIM
+    }
+    for (const key of keys) {
+      const task = this.gltfLoader
+        .loadAsync(`${MODEL_BASE}/${key}.glb`)
+        .then((gltf: GLTF) => {
+          if (this.disposed) return
+          const root = gltf.scene
+          const tuned = new Set<THREE.Material>()
+          const dim = dimFor(key)
+          root.traverse((child) => {
+            if (child instanceof THREE.Mesh) {
+              child.castShadow = true
+              child.receiveShadow = true
+              child.frustumCulled = false
+              const materials = Array.isArray(child.material) ? child.material : [child.material]
+              for (const material of materials) {
+                // 模板材质只处理一次；后续 clone(true) 共享同一批材质，不会重复压暗
+                if (tuned.has(material)) continue
+                tuned.add(material)
+                tuneGltfMaterial(material, dim)
+              }
+            }
+          })
+          this.models.set(key, root)
+          this.onModelReady(key, root)
+        })
+        .catch((error: unknown) => {
+          // 缺模型不是致命错误：程序化几何继续兜底
+          console.warn(`[SceneManager] 模型 ${key}.glb 加载失败，回退程序化几何`, error)
+        })
+      this.pendingModels.push(task)
+    }
+  }
+
+  /** 把 Blender 模型按目标尺寸贴到桌面：底座对齐 y，水平居中 */
+  private placeModel(
+    source: THREE.Object3D,
+    targetSize: number,
+    position: THREE.Vector3,
+    rotationY = 0,
+    fit: 'longest' | 'height' = 'longest',
+  ): THREE.Group {
+    const wrapper = new THREE.Group()
+    const clone = source.clone(true)
+    wrapper.add(clone)
+
+    const box = new THREE.Box3().setFromObject(clone)
+    const size = box.getSize(new THREE.Vector3())
+    const basis = fit === 'height' ? size.y : Math.max(size.x, size.y, size.z)
+    const scale = basis > 1e-6 ? targetSize / basis : 1
+    clone.scale.setScalar(scale)
+
+    // 缩放后重新测量，把底部压到 wrapper 的 y=0、水平居中
+    const scaled = new THREE.Box3().setFromObject(clone)
+    const center = scaled.getCenter(new THREE.Vector3())
+    clone.position.set(-center.x, -scaled.min.y, -center.z)
+
+    wrapper.position.copy(position)
+    wrapper.rotation.y = rotationY
+    return wrapper
+  }
+
+  /** 模型到达后替换对应部位 */
+  private onModelReady(key: ModelKey, root: THREE.Object3D): void {
+    switch (key) {
+      case 'revolver': {
+        this.swapRevolver(root)
+        break
+      }
+      case 'crt_monitor': {
+        this.swapCrt(root)
+        break
+      }
+      case 'boss_1':
+      case 'boss_2':
+      case 'boss_3': {
+        const level = Number(key.slice(-1)) - 1
+        this.bossModelByLevel[level] = root
+        // 已是当前层就立刻换；否则等 setMaskTexture 在切层时处理
+        if (level === this.currentLevelIndex) this.applyBossMaskModel(level)
+        break
+      }
+      case 'gaming_table': {
+        this.swapTable(root)
+        break
+      }
+      case 'room_environment': {
+        this.swapRoom(root)
+        break
+      }
+      default: {
+        break
+      }
+    }
+
+    // 道具模型：登记模板，并把桌上已存在的同类道具换成模型
+    const itemId = (Object.keys(ITEM_MODEL) as ItemId[]).find((id) => ITEM_MODEL[id] === key)
+    if (itemId) {
+      this.itemModelTemplates.set(itemId, root)
+      for (const entry of this.items.values()) {
+        if (entry.item !== itemId) continue
+        this.replaceItemMesh(entry, root)
+      }
+    }
+  }
+
+  /** 用 GLB 左轮替换程序化几何，保留开火动画所需的 group 层级 */
+  private swapRevolver(root: THREE.Object3D): void {
+    const placeholder = this.gunGroup.getObjectByName('RevolverPlaceholder')
+    const holder = new THREE.Group()
+    holder.name = 'RevolverGLB'
+
+    const clone = root.clone(true)
+    // Blender 中枪口朝 +Y，导出后即 -Z，与场景左轮的朝向一致，无需额外旋转
+    const box = new THREE.Box3().setFromObject(clone)
+    const size = box.getSize(new THREE.Vector3())
+    const scale = 1.05 / Math.max(size.x, size.y, size.z)
+    clone.scale.setScalar(scale)
+    const scaled = new THREE.Box3().setFromObject(clone)
+    const center = scaled.getCenter(new THREE.Vector3())
+    // 底座贴桌面，水平居中
+    clone.position.set(-center.x, -scaled.min.y, -center.z)
+    holder.add(clone)
+
+    if (placeholder) {
+      holder.position.copy(placeholder.position)
+      this.gunGroup.remove(placeholder)
+      this.disposeObject(placeholder)
+    } else {
+      holder.position.set(0, TABLE_TOP + 0.075, 0.08)
+    }
+    this.gunGroup.add(holder)
+
+    // 开火动画会旋转 drum：优先绑到模型的转轮节点
+    const drumNode = clone.getObjectByName('CylinderDrum')
+    if (drumNode) this.drum = drumNode
+  }
+
+  /** 用 GLB CRT 外壳替换程序化机身，实时数据屏仍由 TextureFactory 驱动 */
+  private swapCrt(root: THREE.Object3D): void {
+    const existing = this.tableGroup.getObjectByName('CrtPlaceholder')
+    if (!existing) return
+
+    const wrapper = this.placeModel(root, 0.62, existing.position.clone(), existing.rotation.y)
+    wrapper.name = 'CrtGLB'
+    this.tableGroup.add(wrapper)
+
+    // 屏幕板贴到外壳正面：新机身比旧盒子深，按世界坐标迁移会落进内部被遮黑
+    const screen = this.crtScreen
+    existing.remove(screen)
+    wrapper.add(screen)
+    const shell = wrapper.children[0]
+    const box = shell ? new THREE.Box3().setFromObject(shell) : null
+    const frontZ = box ? box.max.z + 0.004 : 0.19
+    const height = box ? box.max.y - box.min.y : 0.6
+    screen.position.set(0, height * 0.60, frontZ)
+    screen.scale.setScalar(0.9)
+
+    this.tableGroup.remove(existing)
+    this.disposeObject(existing)
+  }
+
+  /**
+   * 用 Blender 重型钢板赌桌替换程序化桌体。
+   * 模型台呢面在 glTF 的 y=0，这里整体抬到 TABLE_TOP，卡牌/道具/左轮无需改坐标即可贴合。
+   */
+  private swapTable(root: THREE.Object3D): void {
+    const stale: THREE.Object3D[] = []
+    for (const child of this.tableGroup.children) {
+      if (child.userData.proceduralTable) stale.push(child)
+    }
+    if (stale.length === 0) return
+    for (const child of stale) {
+      this.tableGroup.remove(child)
+      this.disposeObject(child)
+    }
+
+    const clone = root.clone(true)
+    // 模型原地不动：台呢面本来就是 y=0，只需整体上移到桌面高度
+    clone.position.set(0, TABLE_TOP, 0)
+    clone.name = 'GamingTableGLB'
+    this.tableGroup.add(clone)
+
+    // CRT 需要重新落到新桌面上
+    const crt = this.tableGroup.getObjectByName('CrtGLB') ?? this.tableGroup.getObjectByName('CrtPlaceholder')
+    if (crt) crt.position.y = TABLE_TOP + 0.005
+  }
+
+  /** 用 Blender 密室替换程序化立方体房间；吊灯并入 lampRig 以保留摆动动画 */
+  private swapRoom(root: THREE.Object3D): void {
+    const procedural: THREE.Object3D[] = []
+    for (const child of this.roomGroup.children) {
+      procedural.push(child)
+    }
+    for (const child of procedural) {
+      this.roomGroup.remove(child)
+      this.disposeObject(child)
+    }
+
+    const shell = root.clone(true)
+    shell.name = 'RoomGLB'
+    // 墙体 glTF 的 y 范围 -6.96..0.10，地面在 y≈-0.05；整体不动即可对齐世界原点地面
+    this.roomGroup.add(shell)
+
+    // 吊灯构件从密室拆出，挂到 lampRig（保留原有的微摆动画）
+    const lampNames = ['LampBulb', 'LampCage', 'LampShade', 'LampTop', 'LampCanopy',
+      'LampCable0', 'LampCable1', 'LampCable2',
+      'LampFilaments0', 'LampFilaments1', 'LampFilaments2']
+    const lampPivot = new THREE.Group()
+    lampPivot.name = 'LampPivot'
+    let moved = 0
+    for (const name of lampNames) {
+      // Blender 导出时重名节点会带 .001 后缀，按前缀回退匹配
+      const node = shell.getObjectByName(name)
+        ?? shell.children.find((child) => child.name.startsWith(name))
+      if (!node) continue
+      shell.remove(node)
+      lampPivot.add(node)
+      moved += 1
+    }
+
+    if (moved > 0) {
+      // 清掉程序化吊灯，枢轴抬到天花高度，让摆动像真正从顶上垂下来
+      for (const child of [...this.lampRig.children]) {
+        this.lampRig.remove(child)
+        this.disposeObject(child)
+      }
+      lampPivot.position.y = -CEILING_Y
+      this.lampRig.position.set(0, CEILING_Y, 0)
+      this.lampRig.add(lampPivot)
+
+      // 聚光灯必须挂在灯罩下沿：置于罩体内会被罩壁完全遮挡，桌面出现一大片黑斑
+      this.spot.position.set(0, LAMP_SHADE_BOT_Y - 0.05, -0.05)
+    }
+  }
+
+  /** 第一关面具到货即换掉程序化面具贴图 */
   private tick(): void {
     if (this.disposed) return
     this.rafId = requestAnimationFrame(this.tick)
@@ -710,27 +1112,44 @@ export class SceneManager {
   }
 
   private updateLighting(): void {
-    const fade = 0.93 + Math.sin(this.elapsed * 7.1) * 0.03 + Math.sin(this.elapsed * 17.3) * 0.02
-    this.spot.intensity = 165 * fade
-    this.spot.position.x = -0.45 + Math.sin(this.elapsed * 0.9) * 0.09
-    this.spot.position.z = 0.15 + Math.cos(this.elapsed * 0.72) * 0.07
-    this.lampRig.rotation.z = Math.sin(this.elapsed * 0.9) * 0.05
-    this.lampRig.rotation.x = Math.cos(this.elapsed * 0.72) * 0.035
+    // 老式钨丝灯的轻微抖动：两个不同频率的正弦叠加，模拟灯丝/电压不稳
+    const fade = 0.94 + Math.sin(this.elapsed * 7.1) * 0.028 + Math.sin(this.elapsed * 17.3) * 0.018
+    this.spot.intensity = 68 * fade
+    // 只做极小幅摆动，避免光斑在桌面上乱甩
+    this.spot.position.x = Math.sin(this.elapsed * 0.42) * 0.035
+    this.spot.position.z = -0.05 + Math.cos(this.elapsed * 0.33) * 0.025
+    this.lampRig.rotation.z = Math.sin(this.elapsed * 0.9) * 0.035
+    this.lampRig.rotation.x = Math.cos(this.elapsed * 0.72) * 0.025
     const crtPulse = 0.85 + Math.sin(this.elapsed * 11) * 0.06 + Math.random() * 0.05
-    this.crtLight.intensity = 1.5 * crtPulse
-    this.crtScreen.material.opacity = 0.92 + Math.sin(this.elapsed * 23) * 0.03
+    this.crtLight.intensity = 0.55 * crtPulse
+    this.crtScreen.material.opacity = 0.72 + Math.sin(this.elapsed * 23) * 0.03
   }
 
   private updateBoss(dt: number): void {
-    const breath = Math.sin(this.elapsed * 1.15) * 0.012
+    const t = this.elapsed
+    // 呼吸：三个不成整数比的正弦叠加，周期压在 4~6 秒，避免机械重复感
+    const breath = Math.sin(t * 1.32) * 0.018 + Math.sin(t * 0.61 + 1.7) * 0.010
     this.bossGroup.position.y = breath
-    this.bossParts.head.rotation.y = Math.sin(this.elapsed * 0.42) * 0.09
-    this.bossParts.head.rotation.x = Math.sin(this.elapsed * 0.31) * 0.04
-    this.bossParts.mask.position.y = this.bossParts.mask.userData.baseY as number
-    this.bossParts.maskBack.position.y = this.bossParts.maskBack.userData.baseY as number
-    const maskBob = Math.sin(this.elapsed * 1.6) * 0.004
-    this.bossParts.mask.position.y += maskBob
-    this.bossParts.maskBack.position.y += maskBob
+    // 吸气时胸口微微前压，呼气抬回
+    this.bossGroup.rotation.x = -breath * 0.55
+
+    // 盯视：大部分时间缓慢扫视，偶尔停顿后猛转向玩家
+    const sweep = Math.sin(t * 0.37) * 0.55 + Math.sin(t * 0.19 + 2.3) * 0.45
+    const glance = Math.max(0, Math.sin(t * 0.165 - 0.6)) ** 6
+    const yaw = sweep * (1 - glance) * 0.20 + Math.sin(t * 0.83) * 0.012
+    const pitch = Math.cos(t * 0.29) * 0.045 - glance * 0.05
+
+    if (this.bossHeadNode) {
+      this.bossHeadNode.rotation.y = yaw
+      this.bossHeadNode.rotation.x = pitch
+    } else {
+      // 程序化 Boss 兜底：沿用旧的可动头部
+      this.bossParts.head.rotation.y = yaw
+      this.bossParts.head.rotation.x = pitch
+      const maskBob = Math.sin(t * 1.6) * 0.004
+      this.bossParts.mask.position.y = (this.bossParts.mask.userData.baseY as number) + maskBob
+      this.bossParts.maskBack.position.y = (this.bossParts.maskBack.userData.baseY as number) + maskBob
+    }
     void dt
   }
 
@@ -900,64 +1319,99 @@ export class SceneManager {
   }
 
   private buildLighting(): { spot: THREE.SpotLight; rim: THREE.PointLight; fill: THREE.PointLight } {
-    const ambient = new THREE.HemisphereLight(0x2b3a4a, 0x120c08, 0.55)
+    // 基准环境光压得极低：暗部靠轮廓光勾边，不靠环境光抬亮
+    const ambient = new THREE.HemisphereLight(0x1d2733, 0x0c0806, 0.16)
     this.scene.add(ambient)
 
-    const spot = new THREE.SpotLight(0xffc38a, 165, 18, 0.78, 0.82, 1.3)
-    spot.position.set(-0.45, 5.1, 0.15)
+    // ===== ① 主聚光灯：吊灯垂直向下，只照桌面与左轮 =====
+    // 落点在桌面偏前，Boss 的脸正好处在光锥外缘的半明半暗交界
+    const spot = new THREE.SpotLight(0xffc98c, 68, 16, 0.62, 0.55, 1.25)
+    spot.position.set(0, LAMP_SHADE_BOT_Y - 0.05, -0.05)
     spot.castShadow = true
     spot.shadow.mapSize.set(2048, 2048)
-    spot.shadow.camera.near = 0.6
-    spot.shadow.camera.far = 14
-    spot.shadow.bias = -0.0006
-    spot.shadow.normalBias = 0.022
-    spot.shadow.radius = 3
-    spot.target.position.set(0, 0.9, -0.15)
+    spot.shadow.camera.near = 0.5
+    spot.shadow.camera.far = 12
+    spot.shadow.bias = -0.0005
+    spot.shadow.normalBias = 0.018
+    spot.shadow.radius = 2.5
+    spot.target.position.set(0, TABLE_TOP, 0.15)
     this.scene.add(spot, spot.target)
 
     const coneMat = new THREE.MeshBasicMaterial({
       color: 0xffc184,
       transparent: true,
-      opacity: 0.014,
+      opacity: 0.016,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
     })
     this.disposableMaterials.add(coneMat)
-    const coneGeo = new THREE.ConeGeometry(2.2, 4.1, 32, 1, true)
+    const coneGeo = new THREE.ConeGeometry(1.55, 4.0, 32, 1, true)
     this.disposableGeometries.add(coneGeo)
     const cone = new THREE.Mesh(coneGeo, coneMat)
-    cone.position.set(-0.4, 3.0, 0.1)
+    cone.position.set(0, 2.9, -0.05)
     this.roomGroup.add(cone)
 
-    const rim = new THREE.PointLight(0xff7a3a, 13, 9, 1.7)
-    rim.position.set(0.15, 2.85, -3.55)
+    // ===== ② 冷色轮廓背光：Boss 身后上方，勾出双肩/头角/铁链剪影 =====
+    // 强度必须低：高于 ~10 就会把整个躯干照成一块蓝板，失去剪影感
+    const rim = new THREE.PointLight(0x6a9be0, 9, 7.0, 1.9)
+    rim.position.set(0.3, 3.15, BOSS_Z - 0.95)
     this.scene.add(rim)
 
-    const fill = new THREE.PointLight(0x3d5a7a, 7, 9, 2)
-    fill.position.set(-3.4, 1.9, 1.4)
+    // 轮廓光的第二盏，偏另一侧，避免单点光只勾出一边
+    const rimBack = new THREE.PointLight(0x4a7cb8, 5, 6.5, 1.9)
+    rimBack.position.set(-1.7, 2.5, BOSS_Z - 1.15)
+    this.scene.add(rimBack)
+
+    // ===== ③ 极弱补光：只让暗部保留轮廓，不参与塑造 =====
+    const fill = new THREE.PointLight(0x33506e, 3.2, 10, 2)
+    fill.position.set(-3.6, 2.2, 1.2)
     this.scene.add(fill)
 
-    const rear = new THREE.PointLight(0x6a1a12, 6, 7, 2)
-    rear.position.set(3.6, 1.2, -3.2)
+    // 暖色远景分离：让 Boss 和铁皮墙之间有一层空气感
+    const rear = new THREE.PointLight(0x7a2416, 5.5, 7.5, 2)
+    rear.position.set(3.4, 1.3, BOSS_Z - 1.5)
     this.scene.add(rear)
 
-    const face = new THREE.PointLight(0xffcba8, 2.6, 4.2, 2)
-    face.position.set(0, 2.5, -1.15)
-    this.scene.add(face)
+    // 极弱的暖色正面补光，只抬亮 Boss 面具与上胸，让脸「半明半暗」而不是全黑
+    const faceFill = new THREE.SpotLight(0xffb98a, 3.0, 4.6, 0.34, 0.92, 1.7)
+    faceFill.position.set(0.15, 2.9, BOSS_Z + 1.3)
+    faceFill.target.position.set(0, 1.62, BOSS_Z)
+    this.scene.add(faceFill, faceFill.target)
 
-    const torso = new THREE.PointLight(0x8fb0d0, 2.2, 3.4, 2)
-    torso.position.set(0, 1.2, -1.0)
+    // CRT 屏幕自身的微弱绿光（数据屏是氛围光源）
+    const torso = new THREE.PointLight(0x8fb0d0, 1.6, 3.2, 2)
+    torso.position.set(-0.9, 1.25, 1.0)
     this.scene.add(torso)
 
-    const nearFill = new THREE.PointLight(0xffcf9f, 9, 8, 2)
-    nearFill.position.set(0, 2.6, 3.4)
+    const nearFill = new THREE.PointLight(0xffcf9f, 4.5, 7, 2)
+    nearFill.position.set(0, 2.5, 3.6)
     this.scene.add(nearFill)
 
-    const tableWash = new THREE.SpotLight(0xffd9b0, 26, 9, 0.95, 0.9, 1.2)
-    tableWash.position.set(0, 6.2, 2.2)
-    tableWash.target.position.set(0, 0.98, 0.6)
-    this.scene.add(tableWash, tableWash.target)
+    // ===== 密室层次光：只做剪影，不抬亮主区 =====
+    const wallWash = new THREE.SpotLight(0xc98f65, 12, 15, 1.25, 1, 1.1)
+    wallWash.position.set(0, 4.8, -0.9)
+    wallWash.target.position.set(0, 2.2, -5.6)
+    this.scene.add(wallWash, wallWash.target)
+
+    const sideWashL = new THREE.SpotLight(0xd98754, 16, 12, 1.1, 1, 1.3)
+    sideWashL.position.set(-3.6, 3.6, -3.2)
+    sideWashL.target.position.set(-6.6, 1.6, -3.6)
+    this.scene.add(sideWashL, sideWashL.target)
+
+    const sideWashR = new THREE.SpotLight(0xc97d4b, 14, 12, 1.1, 1, 1.3)
+    sideWashR.position.set(3.6, 3.2, -3.6)
+    sideWashR.target.position.set(6.6, 1.2, -3.8)
+    this.scene.add(sideWashR, sideWashR.target)
+
+    const sideCold = new THREE.PointLight(0x345f8c, 6, 9, 2)
+    sideCold.position.set(-5.4, 2.4, 3.0)
+    this.scene.add(sideCold)
+
+    // ===== 深渊雾效：远端管道与铁皮墙自然沉入黑暗 =====
+    // 密度按房间尺度取：Boss（5.6m）仍清晰，远端墙（11m）压掉约 65%
+    this.scene.fog = new THREE.FogExp2(0x040506, 0.052)
+    this.scene.background = new THREE.Color(0x040506)
 
     return { spot, rim, fill }
   }
@@ -973,6 +1427,8 @@ export class SceneManager {
     })
     this.disposableMaterials.add(topMat)
     const top = new THREE.Mesh(topGeo, topMat)
+    top.name = 'TableTop'
+    top.userData.proceduralTable = true
     top.position.y = TABLE_TOP - 0.11
     top.castShadow = true
     top.receiveShadow = true
@@ -983,6 +1439,7 @@ export class SceneManager {
     const trimGeo = new THREE.BoxGeometry(6.75, 0.06, 4.05)
     this.disposableGeometries.add(trimGeo)
     const trim = new THREE.Mesh(trimGeo, trimMat)
+    trim.userData.proceduralTable = true
     trim.position.y = TABLE_TOP - 0.235
     trim.castShadow = true
     this.tableGroup.add(trim)
@@ -992,6 +1449,7 @@ export class SceneManager {
     for (const x of [-2.9, 2.9]) {
       for (const z of [-1.6, 1.6]) {
         const leg = new THREE.Mesh(legGeo, trimMat)
+        leg.userData.proceduralTable = true
         leg.position.set(x, (TABLE_TOP - 0.24) / 2, z)
         leg.castShadow = true
         this.tableGroup.add(leg)
@@ -1008,14 +1466,15 @@ export class SceneManager {
     })
     this.disposableMaterials.add(ringMat)
     const ring = new THREE.Mesh(ringGeo, ringMat)
+    ring.userData.proceduralTable = true
     ring.rotation.x = -Math.PI / 2
     ring.position.set(0, TABLE_TOP + 0.002, -0.05)
     this.tableGroup.add(ring)
   }
 
   private buildBoss(): TorsoParts {
-    this.bossGroup.position.set(0, -0.1, -2.2)
-    this.bossGroup.scale.setScalar(0.82)
+    // GLB 半身像走自身坐标：bossGroup 只承担呼吸与整体摆动，不再做额外缩放
+    this.bossGroup.position.set(0, 0, BOSS_Z)
 
     const coatMat = new THREE.MeshStandardMaterial({
       color: 0x241d19,
@@ -1143,6 +1602,7 @@ export class SceneManager {
     flash: THREE.Sprite
   } {
     const root = new THREE.Group()
+    root.name = 'RevolverPlaceholder'
     root.position.set(0.0, TABLE_TOP + 0.075, 0.08)
 
     const steel = new THREE.MeshStandardMaterial({
@@ -1301,6 +1761,7 @@ export class SceneManager {
 
   private buildCrt(): { screen: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>; light: THREE.PointLight } {
     const group = new THREE.Group()
+    group.name = 'CrtPlaceholder'
     group.position.set(-0.96, TABLE_TOP + 0.005, 1.24)
     // 屏幕朝向玩家相机，保证 CRT 内容可读
     group.rotation.y = 0.52
@@ -1336,10 +1797,10 @@ export class SceneManager {
 
     const screenMat = new THREE.MeshBasicMaterial({
       map: this.textures.crt,
-      toneMapped: false,
       transparent: true,
-      opacity: 0.98,
-      color: 0xd6ffe2,
+      opacity: 0.92,
+      // 压暗到 0.55：CRT 是桌上的氛围光源，过亮会盖掉血条与卡面
+      color: 0x7d9c88,
     })
     this.disposableMaterials.add(screenMat)
     const screenGeo = new THREE.PlaneGeometry(0.5, 0.375)
@@ -1442,6 +1903,7 @@ export class SceneManager {
 
   private applyLevel(levelIndex: number): void {
     const index = Math.min(LEVEL_LOOK.length - 1, Math.max(0, levelIndex))
+    this.currentLevelIndex = index
     if (index === this.levelLookIndex) return
     this.levelLookIndex = index
     const look = LEVEL_LOOK[index]
@@ -1457,6 +1919,46 @@ export class SceneManager {
     this.bossParts.mask.material.needsUpdate = true
     this.bossParts.maskBack.material.map = texture
     this.bossParts.maskBack.material.needsUpdate = true
+    this.applyBossMaskModel(levelIndex)
+  }
+
+  /** 关卡对应的 GLB 已就绪就换成半身像，否则保留程序化 Boss */
+  private applyBossMaskModel(levelIndex: number): void {
+    const model = this.bossModelByLevel[levelIndex] ?? null
+    if (!model) return
+    if (this.activeBossMaskLevel === levelIndex) return
+    this.activeBossMaskLevel = levelIndex
+
+    const stale = this.bossGroup.getObjectByName('BossBustGLB')
+    if (stale) {
+      this.bossGroup.remove(stale)
+      this.disposeObject(stale)
+    }
+
+    // 模型自带完整躯干，底座在自身 y=0：直接按世界高度缩放，底座落到桌沿下方
+    const wrapper = this.placeModel(model, BOSS_BUST_HEIGHT, new THREE.Vector3(0, 0, 0), 0, 'height')
+    wrapper.name = 'BossBustGLB'
+    wrapper.position.set(0, BOSS_BUST_BASE_Y, 0)
+    this.bossGroup.add(wrapper)
+
+    // 头部单独取出来做「盯视」动画；模型面朝 +Z，rotation.y 即为左右转
+    const head = wrapper.getObjectByName('BossHead')
+    this.bossHeadNode = head instanceof THREE.Object3D ? head : null
+
+    // 半身像含完整头部与双肩，隐藏程序化面具与躯干
+    this.bossParts.mask.visible = false
+    this.bossParts.maskBack.visible = false
+    this.bossParts.head.visible = false
+    this.setProgrammaticBodyVisible(false)
+  }
+
+  /** 半身像模式下隐藏手搓的躯干、帽子、衣领、手臂与剪影板 */
+  private setProgrammaticBodyVisible(visible: boolean): void {
+    for (const child of this.bossGroup.children) {
+      if (child === this.bossParts.head) continue
+      if (child.name === 'BossBustGLB') continue
+      child.visible = visible
+    }
   }
 
   private syncCards(snapshot: GameSnapshot): void {
@@ -1733,7 +2235,34 @@ export class SceneManager {
   private spawnItem(actor: ActorId, item: ItemId, index: number, key: string, count: number): ItemEntry {
     const group = new THREE.Group()
     const materials: THREE.MeshStandardMaterial[] = []
-    this.buildItemMesh(item, group, materials)
+    const template = this.itemModelTemplates.get(item)
+    if (template) {
+      // 模型已就绪：直接用 GLB，尺寸与贴地在这里归一
+      const clone = template.clone(true)
+      clone.userData.isModelClone = true
+      const box = new THREE.Box3().setFromObject(clone)
+      const size = box.getSize(new THREE.Vector3())
+      const longest = Math.max(size.x, size.y, size.z)
+      if (longest > 1e-6) clone.scale.setScalar(0.28 / longest)
+      const scaled = new THREE.Box3().setFromObject(clone)
+      const center = scaled.getCenter(new THREE.Vector3())
+      clone.position.set(-center.x, -scaled.min.y, -center.z)
+      clone.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.castShadow = true
+          child.receiveShadow = true
+          const list = Array.isArray(child.material) ? child.material : [child.material]
+          for (const material of list) {
+            if (material instanceof THREE.MeshStandardMaterial) {
+              materials.push(material)
+            }
+          }
+        }
+      })
+      group.add(clone)
+    } else {
+      this.buildItemMesh(item, group, materials)
+    }
     const slot = this.itemSlot(actor, index, count)
     group.position.copy(slot)
     group.position.y += 0.5
@@ -2067,7 +2596,7 @@ export class SceneManager {
 
   private applyOverride(key: string, texture: THREE.Texture): void {
     if (key === 'table') {
-      const top = this.tableGroup.children[0]
+      const top = this.tableGroup.getObjectByName('TableTop')
       if (top instanceof THREE.Mesh && top.material instanceof THREE.MeshStandardMaterial) {
         top.material.map = texture
         top.material.needsUpdate = true

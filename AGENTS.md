@@ -119,6 +119,8 @@ git push -u origin <分支名>
 ```
 
 - 从 `main` 开 PR，标题 `feat(<范围>): <说明>` / `fix(<范围>): <说明>`
+- **`main` 已开启分支保护**：必须走 PR、必须通过 `build` 检查、至少 1 个 review、禁止强推与删除
+- 队长（仓库管理员）保留绕过权限，用于紧急修复
 - 合并前 `npm run build` 必须通过
 - 冲突高发区：`game/GameEngine.ts` 与 `App.tsx`，改契约前先在群里对齐
 
@@ -126,7 +128,63 @@ git push -u origin <分支名>
 
 凭据由 `gh` 作为 git credential helper 提供，**无需令牌，不要向任何人索要 PAT**。
 
-## 八、代码风格
+## 八、新人上手（第一台新电脑必读）
+
+```bash
+git clone https://github.com/Nishikata99/qoder-game.git
+cd qoder-game
+npm install
+npm run dev        # 打开 http://localhost:5173 确认能跑
+```
+
+### 三个会让人以为"仓库坏了"的坑
+
+**1. `git push origin main` 被拒绝**
+
+这是分支保护生效，**不是权限问题**。`main` 只能通过 PR 合入：
+
+```bash
+git checkout -b feat/<你的功能>
+git commit -m "feat(scope): 说明"
+git push -u origin feat/<你的功能>
+# 然后在 GitHub 页面点 Compare & pull request
+```
+
+**2. 第一次 `git status` 显示几十个文件被改动**
+
+Windows 的 `core.autocrlf=true` 与仓库的 LF 存储冲突。**不要提交这些改动**，执行一次即可消除：
+
+```bash
+git add --renormalize .
+git status
+```
+
+若仍有残留，检查 `git config core.autocrlf` 应为 `true`（检出时转 CRLF 是正常的，仓库内始终存 LF）。
+
+**3. `npm install` 报 `csstype` 404**
+
+上游 `csstype@3.2.4` 的 tarball 曾发布损坏。`package.json` 已用 `overrides` 钉到可用的 `3.2.3`，不要删掉这段配置。
+
+### `package-lock.json` 冲突不要手工合并
+
+两人同时装包导致的 lock 冲突，手工解必然出错。正确做法：
+
+```bash
+git checkout --theirs package-lock.json   # 或 --ours，选一个
+rm -rf node_modules
+npm install
+git add package-lock.json
+```
+
+### 提交前自检
+
+```bash
+npm run build      # 必须通过，否则 PR 的 build 检查会红
+```
+
+CI 在 PR 上会自动跑 `npm ci && npm run build`，红色 PR 无法合并。
+
+## 九、代码风格
 
 - TypeScript `strict` 已开启；不要用 `any`、`@ts-ignore`
 - 不留 `console.log`；`console.warn/error` 用于异常分支

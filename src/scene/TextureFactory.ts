@@ -679,11 +679,11 @@ export class TextureFactory {
     ctx.fillStyle = glow
     ctx.fillRect(0, 0, w, h)
 
-    const green = '#8dffae'
-    const dim = 'rgba(141,255,174,0.45)'
+    const green = '#5fbf7e'
+    const dim = 'rgba(95,191,126,0.42)'
     ctx.textBaseline = 'top'
-    ctx.shadowColor = 'rgba(90,255,150,0.85)'
-    ctx.shadowBlur = 10
+    ctx.shadowColor = 'rgba(60,180,105,0.45)'
+    ctx.shadowBlur = 4
 
     ctx.font = 'bold 26px "Cascadia Mono", Consolas, monospace'
     ctx.fillStyle = green

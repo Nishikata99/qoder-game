@@ -119,6 +119,8 @@ git push -u origin <分支名>
 ```
 
 - 从 `main` 开 PR，标题 `feat(<范围>): <说明>` / `fix(<范围>): <说明>`
+- **`main` 已开启分支保护**：必须走 PR、必须通过 `build` 检查、至少 1 个 review、禁止强推与删除
+- 队长（仓库管理员）保留绕过权限，用于紧急修复
 - 合并前 `npm run build` 必须通过
 - 冲突高发区：`game/GameEngine.ts` 与 `App.tsx`，改契约前先在群里对齐
 

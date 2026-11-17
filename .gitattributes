@@ -1,0 +1,17 @@
+# 统一换行符，避免 Windows / macOS 之间出现整文件 diff
+* text=auto eol=lf
+
+# 二进制资源不要做任何转换
+*.glb binary
+*.gltf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.mp3 binary
+*.ogg binary
+*.wav binary
+*.ktx2 binary
+
+# 锁文件按文本处理（冲突应删除重装，而非手工合并）
+package-lock.json text eol=lf

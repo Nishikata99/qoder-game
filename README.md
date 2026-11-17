@@ -1,54 +1,65 @@
 # Blood Ante · 血色底注
 
-第一人称 3D 暗黑桌面博弈游戏。恶魔轮盘 × 21 点 × 可扩展桌面小游戏，运行在同一个赌桌上。
+第一人称 3D 暗黑桌面博弈游戏。21 点博弈与左轮处决交替循环，穿过三层地牢的 Boss。
 
-**技术栈**：Vite 8 · TypeScript 7 · Three.js r187 · GSAP 3 · Tailwind CSS 4
+**技术栈**：React 19 · TypeScript 7 · Three.js r187 · Tailwind CSS 4 · Web Audio 实时合成（零外部素材）
 
 ## 快速开始
 
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm run build      # tsc -b + vite build，产物在 dist/
+npm run build      # tsc -b + vite build → dist/
 npm run preview    # 预览生产构建
 ```
 
-## 玩法（当前骨架）
+## 玩法循环
 
-| 模块 | 交互 | 效果 |
+1. **装弹与补给**：CRT 显示器公示本轮弹仓（3~6 发，实弹/空弹混合并打乱），双方从补给箱领取道具。
+2. **21 点博弈**：双方各发两张牌（你全明牌，对手 1 明 1 暗）。可无限使用道具，然后要牌或停牌。
+3. **处决**：胜者拿起左轮对败者扣一次扳机。实弹扣血，空弹只有金属撞针声。
+
+- **爆牌** → 立刻判负，直接进入处决
+- **黑杰克**（起手 21 点） → 实弹伤害 +1
+- **平局** → 无人开枪，各摸 1 件道具，基础伤害永久 +1（可叠加，中弹后清零）
+- **弹仓** → 打空后才重装，不中途重洗
+
+## 七大道具
+
+| 道具 | 效果 | 解锁 |
 | --- | --- | --- |
-| 恶魔轮盘 | 点击桌面上的霰弹枪 | 实弹对手扣 2 血 + 震屏闪光；空包弹只有咔哒声 |
-| 21 点 | 点击右上角牌堆 | 3D 发牌动画，玩家/对手各一排 |
-| 模板 · 骰盅 | 点击骰盅 | 摇晃 → 点数判定 → 扣血，接入参考实现 |
+| 放大镜 | 窥视下一发是实弹还是空弹 | 第 1 层 |
+| 镇定剂 | 恢复 1 点生命 | 第 1 层 |
+| 锯子 | 本局实弹伤害翻倍（1 → 2） | 第 1 层 |
+| 磁铁 | 交换你的最后一张明牌与对手的明牌 | 第 2 层 |
+| 手铐 | 对手本局强制停牌 | 第 2 层 |
+| 逆转沙漏 | 本局点数更小者获胜（爆牌仍判负） | 第 3 层 |
+| 献祭匕首 | 自损 1 血，手牌重发 + 弹仓重装 | 第 3 层 |
 
-`Esc` / `Tab` 呼出菜单，右上角「菜单」按钮同样可用。
+## 三关 Boss
+
+| 关 | Boss | 生命 | 补给 | AI 性格 |
+| --- | --- | --- | --- | --- |
+| 1 | 锈蚀看门人 | 3 | 2 件 | 保守：≥15 点必停牌，优先回血，实弹率 >70% 才用锯子 |
+| 2 | 赌命收账人 | 4 | 3 件 | 激进：点数低于你明牌时 17 点也继续要，爱用手铐与磁铁 |
+| 3 | 深渊执刑者 | 5 | 4 件 | 算牌：按剩余牌堆算爆牌概率，落后时开沙漏，下一发必实弹时献祭重洗 |
 
 ## 架构
 
 ```text
-核心场景底座（core）+ 独立 3D 游戏道具组（games/*/index.ts 返回 THREE.Group）
+src/game/GameEngine.ts   纯逻辑状态机（不依赖 React / Three / DOM）
+src/scene/               3D 场景 + 程序化贴图
+src/audio/               Web Audio 合成音效
+src/components/          画布桥接 + 规则图鉴
+src/App.tsx              沉浸式 UI 覆盖层
 ```
 
-- `src/core/` — 共享 Scene / Camera / Renderer / 赌桌 / 状态 / 事件总线 / 模块注册中心
-- `src/ui/` — Tailwind 悬浮 HUD 与菜单层，只读 store、订阅 bus
-- `src/games/` — 每人一个文件夹，互不改动；模块通过 `Minigame` 接口接入
+跨层契约与协作规范见 **[AGENTS.md](./AGENTS.md)**。
 
-新增小游戏的完整步骤见 **[AGENTS.md](./AGENTS.md)**。
+## 美术资源替换
+
+`public/assets/` 下放同名 PNG 即可覆盖程序化贴图（开发模式热替换）：`card-back.png`、`mask-1~3.png`、`table.png`、`crt.png`。
 
 ## 部署
 
-`vite.config.ts` 固定 `base: './'`，`dist/` 可直接部署到任意静态托管（Qoder Sites、GitHub Pages 子路径均可）而不会出现资源 404。
-
-## 目录
-
-```text
-public/
-├── models/{shared,blackjack,buckshot-roulette}/   # .glb 按模块存放
-└── audio/{shared,blackjack,buckshot-roulette}/    # 音效按模块存放
-src/
-├── core/     SceneManager · CameraController · GameStore · EventBus · GameRegistry
-├── ui/       HudOverlay · LobbyOverlay
-├── games/    blackjack · buckshot-roulette · template-minigame
-├── main.ts
-└── style.css
-```
+`base: './'`，构建产物可直接部署到任意静态托管（含子路径），不会资源 404。

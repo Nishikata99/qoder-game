@@ -1,160 +1,134 @@
 # AGENTS.md
 
-> 给全队 Qoder AI 与人类成员的 3D 协作开发规范。**先读完再动代码。**
+> 给全队 Qoder AI 与人类成员的协作规范。**先读完再动代码。**
 
 ## 项目
 
-《Blood Ante · 血色底注》— 第一人称 3D 暗黑桌面博弈游戏（恶魔轮盘 × 21 点 × 可扩展桌面小游戏）。
-技术栈：Vite 8 + TypeScript 7 + Three.js r187 + GSAP 3 + Tailwind CSS 4。
+《Blood Ante · 血色底注》— 第一人称 3D 暗黑桌面博弈：21 点 × 恶魔轮盘 × 三关处决。
+React 19 + TypeScript 7 + Three.js r187 + Tailwind CSS 4。所有贴图由 Canvas 2D 程序化生成，零外部美术资源。
 
 ```bash
-npm run dev        # 开发服务器（默认 5173）
+npm install
+npm run dev        # 开发服务器
 npm run build      # 类型检查 + 生产构建
 npm run typecheck  # 仅类型检查
 npm run preview    # 预览 dist
 ```
 
-## 一、目录归属：每人只改自己的文件夹
+## 一、分层架构：三层，单向依赖
 
 ```text
 src/
-├── core/                    【3D 核心底座】⚠️ 全员共用，禁止随意修改
-│   ├── SceneManager.ts      Scene / Renderer / 灯光 / 赌桌几何
-│   ├── CameraController.ts  第一人称鼠标微晃 + GSAP 视角预设
-│   ├── GameStore.ts         血量 / 筹码 / 回合 / 道具栏（唯一状态源）
-│   ├── EventBus.ts          全局事件总线（带类型契约）
-│   └── GameRegistry.ts      小游戏挂载/卸载中心
-├── ui/                      【2D 悬浮层】改动需通知 UI 负责人
-│   ├── HudOverlay.ts        血量条 / 道具栏 / 字幕 / 准星
-│   └── LobbyOverlay.ts      模式菜单 / 结算弹窗 / 视角预设按钮
-├── games/                   【业务隔离区】⭐ 只改自己那一份
-│   ├── blackjack/           成员 A
-│   ├── buckshot-roulette/   成员 B
-│   └── template-minigame/   成员 C/D 接入模板
-└── main.ts                  总入口（注册表装配、事件接线）
+├── game/GameEngine.ts        【纯逻辑】规则状态机，不 import React / Three / DOM
+├── scene/                    【表现层】只读 snapshot，输出画面
+│   ├── SceneManager.ts       3D 场景、运镜、动画、3D 道具拾取
+│   └── TextureFactory.ts     程序化贴图 + public/assets 热替换
+├── audio/SoundEngine.ts      【音效】Web Audio 实时合成
+├── components/               【桥接】
+│   ├── GameCanvas.tsx        画布挂载 + 事件转发 + 道具浮窗
+│   └── RulesModal.tsx        规则与道具图鉴
+├── App.tsx                   【UI 覆盖层】HUD、演出、结算、事件接线
+└── index.css                 Tailwind 入口 + 做旧金属按钮等样式
 ```
 
-**提交 PR 时，`src/games/<你的模块>/` 之外的文件应尽量不出现 diff。**
-确实需要改 `core/`、`ui/`、`main.ts`（例如新增全局事件、注册表接口变化）时，必须在 PR 描述里注明「跨层契约变更」，并同步更新本文件。
+依赖方向严格单向：`game` ← `scene` / `audio` ← `components` ← `App`。
+**`game/GameEngine.ts` 不得 import 任何层级的东西**，它是可以被独立测试的纯状态机。
 
-## 二、小游戏怎么接入（唯一标准姿势）
+## 二、跨层契约（改动必须同步三处）
 
-1. 复制 `src/games/template-minigame/` → `src/games/<your-game>/`
-2. 实现 `Minigame` 接口（见 `src/core/GameRegistry.ts`）：
+### `GameSnapshot` —— 引擎 → UI / 场景
 
 ```ts
-export interface Minigame {
-  readonly id: string            // 与文件夹名保持一致，如 'poker-dice'
-  readonly title: string         // 菜单展示名
-  build(ctx: MinigameContext): THREE.Group | Promise<THREE.Group>
-  update?(dt: number, elapsed: number): void
-  dispose?(): void               // 只需释放自己额外持有的资源
+{
+  phase, levelIndex, level, round,
+  player: ActorView, boss: ActorView,      // 含 hp / items / hand / visibleHand
+  cylinder: CylinderView,                  // 剩余实弹/空弹、是否被放大镜窥视
+  turn, damageBonus, crisisStacks,         // damageBonus = 走火遗恨（永久叠加直到中弹）
+  hourglassActive,                         // 本局沙漏反转为低分胜
+  unlockedItems, inputLocked, log,
 }
 ```
 
-3. 在 `src/main.ts` 里 `registry.register(new YourGame())`
-4. 在 `src/main.ts` 的 `games` 数组加一条菜单项（`status: 'ready' | 'wip'`）
+> 改字段时：`GameEngine.ts` 定义 → `SceneManager.applySnapshot` 消费 → `App.tsx` 展示，三处一起改。
 
-### 坐标系约定（重要）
+### `GameEvent` —— 引擎 → 音效 / 演出
 
-- 你返回的 `THREE.Group` 原点 = **赌桌绒布表面中心**，`y = 0` 就是桌面。
-- 桌面可玩半径约 **2.2**（单位=米），UI 遮挡区在屏幕底部约 1/4。道具尽量放在半径 1.2 内。
-- Run `registry` 会自动做入场缩放动画，**不要再自己写挂载动画**。
+新增事件类型后，必须在 `App.tsx` 的 `handleEventSound` 里接音效、在 `GameCanvas.tsx` 的 `applyVisualEvent` 里接运镜，否则事件静默失效。
 
-## 三、硬性禁止
+### 动作入口
 
-| 禁止 | 原因 |
+所有玩家意图只能走引擎方法：`hit()` / `stand()` / `useItem(id)` / `restart()` / `advanceLevel()`。
+**禁止在 UI 或场景里改血量、手牌、弹仓。**
+
+## 三、规则要点（易踩坑）
+
+| 规则 | 实现位置 | 注意 |
+| --- | --- | --- |
+| 对手 1 明 1 暗 | `withHoleCard()` / `ActorView.visibleHand` | 点数额始终按真实手牌算，只隐藏**显示**；亮牌在 `settleRound` 开头 |
+| 锯子翻倍 | 伤害公式 `base = sawed ? 2 : 1` | 不是 +1，是**翻倍**；消耗在本局处决时 |
+| 磁铁换明牌 | `applyItem` 的 `magnet` 分支 | 换牌后必须立刻亮底牌，否则桌面信息自相矛盾 |
+| 沙漏低分胜 | `settleRound` 的 winner 判定 | 爆牌**永远**直接判负，沙漏不改变 |
+| 匕首重洗 | `applyItem` 的 `dagger` 分支 | 手牌必须立即重发，否则 0 对 0 卡死回合 |
+| 走火遗恨 | `damageBonus` | 永久叠加；只有**真的中弹**才清零 |
+| 弹仓 | `Cylinder.reload()` | 每轮 3~6 发随机；打空才重装 |
+
+## 四、3D 场景约定
+
+- 桌面高度常量 `TABLE_TOP`，所有桌上物件 y 从它起算。
+- 卡牌材质数组顺序：`[side, side, 朝上面, 朝下面, side, side]`；`rotation.x = Math.PI` 表示翻面。
+- 道具拾取：`raycaster` → 沿 `parent` 找 `userData.item` → `callbacks.onItemClick`。
+- CRT 显示器在 `x≈-0.96, z≈1.24`，左前方，需要面向相机；挪动后**必须截图确认内容可读**。
+- 运镜用 `setShot(shot, duration)`，不要直接改 `camera.position`。
+
+## 五、美术资源热替换
+
+放进 `public/assets/` 的同名 PNG 会覆盖程序化贴图（仅开发模式）：
+
+| 文件 | 用途 |
 | --- | --- |
-| `new THREE.WebGLRenderer()` | 全队共用一个 renderer |
-| `new THREE.PerspectiveCamera()` / `new THREE.Scene()` | 共用同一台相机与场景 |
-| 修改 `sceneManager.tableRoot` 下的赌桌 mesh | 属于核心底座资产 |
-| 直接改别人 `src/games/<other>/` 的代码 | 业务隔离，冲突高发 |
-| 在代码里写 `/models/...` 绝对路径 | 部署到子路径会 404，必须 `./models/...` |
-| `window.addEventListener('click' ...)` 处理场景点击 | 会误吃 UI 点击；请判断 `event.target instanceof HTMLCanvasElement` |
+| `card-back.png` | 卡牌背面 |
+| `mask-1.png` / `mask-2.png` / `mask-3.png` | 三层 Boss 面具（建议透明通道） |
+| `table.png` | 桌面锈迹 |
+| `crt.png` | CRT 屏幕底图 |
 
-## 四、必须通过契约通信
+删除文件即回退程序化贴图。
 
-### 状态读写 —— `ctx.store`（GameStore）
+## 六、部署
 
-```ts
-ctx.store.snapshot                       // 只读快照
-ctx.store.damage('opponent', 2)          // 返回 { applied, hp }
-ctx.store.heal('player', 1)
-ctx.store.nextTurn()                     // 内部会 round += 1
-ctx.store.addChips(3)
-```
+`vite.config.ts` 固定 `base: './'`，**不要改**。`dist/` 可直接部署到任意静态托管（Qoder Sites / GitHub Pages 子路径），不会资源 404。
 
-**不要在小游戏里自己维护一份血量/回合副本。** 所有界面显示都来自 `GameStore`。
+## 七、Git 分工流程
 
-### 事件上报 —— `ctx.bus`（EventBus）
+远端：`https://github.com/Nishikata99/qoder-game`（公开发布分支 `main`）。
 
-```ts
-ctx.bus.emit('battle:damage', { side: 'player', amount: 2, reason: '实弹' })
-ctx.bus.emit('fx:shake', { intensity: 0.5, duration: 0.5 })
-ctx.bus.emit('fx:flash', { color: '#ff5a3c' })
-ctx.bus.emit('ui:subtitle', { text: '爆牌', duration: 2 })
-ctx.bus.emit('battle:result', { gameId: 'blackjack', winner: 'player', summary: '庄家爆牌' })
-```
-
-> ⚠️ `store.damage()` **不会**自动广播事件：需要 HUD 弹出伤害数字、触发震屏时，必须显式 `emit('battle:damage')` 与 `emit('fx:...')`（参考 `buckshot-roulette`）。
-
-新增事件类型 → 在 `src/core/EventBus.ts` 的 `BattleEvents` 里加字段，这是**跨层契约变更**，需在 PR 里说明。
-
-### 运镜 —— `ctx.cameraController`
-
-```ts
-ctx.cameraController.goto('aim', 0.4)     // 'table' | 'opponent' | 'aim'
-```
-
-不要在游戏里直接设置 `camera.position`。
-
-## 五、资源与部署
-
-- `vite.config.ts` 已固定 `base: './'`，**不要改**。
-- 模型放 `public/models/<你的模块>/xxx.glb`，音效放 `public/audio/<你的模块>/`。
-- 加载示例：
-
-```ts
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
-const loader = new GLTFLoader()
-const gltf = await loader.loadAsync('./models/blackjack/chip-tower.glb')  // 相对路径
-```
-
-- `.gitignore` 已忽略 `node_modules/`、`dist/`、`.DS_Store`，**不要提交构建产物**。
-
-## 六、Git 分工流程
-
-远端：`https://github.com/Nishikata99/qoder-game`（公开发布分支为 `main`）。
-
-每位成员一个长期分支，禁止直接推 `main`：
+每位成员一个长期分支，禁止直推 `main`：
 
 ```bash
-git checkout -b feat/blackjack        # 成员A
-git checkout -b feat/buckshot         # 成员B
-git checkout -b feat/new-minigame     # 成员C/D
+git checkout -b feat/blackjack-ui     # 例：21 点 HUD 改造
+git checkout -b feat/sound-pass       # 例：音效统一调音
 ```
 
 日常：
 
 ```bash
 git fetch origin
-git rebase origin/main          # 保持线性历史，减少冲突
-git add src/games/<你的模块>/
-git commit -m "feat(blackjack): 发牌动画落地"
-git push -u origin feat/blackjack
+git rebase origin/main
+git add src/<改动范围>
+git commit -m "feat(<范围>): <说明>"
+git push -u origin <分支名>
 ```
 
-- 从 `main` 开 PR，标题格式：`feat(<模块>): <说明>` / `fix(<模块>): <说明>`
-- 合并前必须 `npm run build` 通过（含 `tsc -b` 类型检查）
-- 冲突高发区：`src/main.ts`（注册表）—— 新增模块只在 `register(...)` 与 `games` 数组各加一行，避免整块重排
+- 从 `main` 开 PR，标题 `feat(<范围>): <说明>` / `fix(<范围>): <说明>`
+- 合并前 `npm run build` 必须通过
+- 冲突高发区：`game/GameEngine.ts` 与 `App.tsx`，改契约前先在群里对齐
 
 ### 认证
 
-凭据由 `gh` 作为 git credential helper 提供，**无需令牌，不要向任何人索要 PAT**。推送前可先 `gh auth status` 确认。
+凭据由 `gh` 作为 git credential helper 提供，**无需令牌，不要向任何人索要 PAT**。
 
-## 七、代码风格
+## 八、代码风格
 
 - TypeScript `strict` 已开启；不要用 `any`、`@ts-ignore`
-- 不要留 `console.log` 调试代码（`console.warn/error` 用于异常分支可以）
-- GSAP 动画统一用 `power2/3`、`back.out` 系缓动，时长 0.2–0.9s
-- 新增注释只写「为什么」，不写「做了什么」
+- 不留 `console.log`；`console.warn/error` 用于异常分支
+- 注释只写「为什么」，不写「做了什么」
+- 演出节奏：发牌 340ms、AI 思考 620–900ms、处决停顿 2.9s；不要随手改这些时长

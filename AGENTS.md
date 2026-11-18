@@ -95,6 +95,8 @@ src/
 - CRT 显示器在 `x≈-0.96, z≈1.24`，左前方，需要面向相机；挪动后**必须截图确认内容可读**。
 - CRT 数据屏由代码动态挂到 GLB 外壳正面，屏幕位置按外壳包围盒计算，**不要改成世界坐标迁移**。
 - 运镜用 `setShot(shot, duration)`，不要直接改 `camera.position`。
+- **枪口朝向**：`gunAim` 是枪的瞄准枢轴，执行阶段由 `updateGunAim` 算 yaw/pitch 指向 `BOSS_HIT_POINT` 或镜头；枪口火光、膛内提示也挂在它下面。不要再动 `gunGroup.rotation.y` 摆枪。换 GLB 时占位枪要用 `removeFromParent()` 摘下（它挂在 `gunAim` 下，`gunGroup.remove` 摘不到，会叠成两把枪）。
+- 实弹命中 Boss 时 `spawnBlood(BOSS_HIT_POINT)` 生成血珠 + 血雾 + 瞬时光；玩家中弹的血斑是 `App.tsx` 的 DOM 覆盖层（`.blood-splatter`），两者互不替代。
 - **Blender 程序化节点图无法导出到 glTF**：噪声/渐变接 Base Color 会被压成纯白。必须把颜色烘焙进顶点色（`COLOR_0`），导出加 `export_vertex_color='MATERIAL', export_all_vertex_colors=True`。
 
 ## 五、美术资源热替换

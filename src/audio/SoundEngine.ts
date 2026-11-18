@@ -56,6 +56,18 @@ export class SoundEngine {
     }
   }
 
+  /** 后台标签页冻结整条音频图：suspend 期间 currentTime 停滞，回来时不会补播积压的节拍 */
+  suspend(): void {
+    if (this.ctx?.state === 'running') void this.ctx.suspend()
+  }
+
+  resume(): void {
+    if (this.ctx?.state !== 'suspended') return
+    this.ctx.resume().catch((error: unknown) => {
+      console.warn('Audio context resume was rejected', error)
+    })
+  }
+
   /** Low basement mains hum, sub rumble and a slowly breathing noise bed. */
   startAmbient(): void {
     if (this.ambient) return

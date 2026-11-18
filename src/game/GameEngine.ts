@@ -1140,7 +1140,7 @@ export class GameEngine {
     return null
   }
 
-  /** 剩余弹仓中实弹的比例，供 AI 精确权衡 */
+  /** 剩余弹仓中实弹的比例，供 AI 判断锯枪收益 */
   private liveRate(): number {
     const remaining = this.cylinder.remaining
     if (remaining <= 0) return 0
@@ -1169,7 +1169,7 @@ export class GameEngine {
         target = Math.max(target, Math.min(21, playerVisible + 1))
       }
     }
-    // 机械典狱长：精确算牌，按剩余牌堆的爆牌概率调整
+    // 机械典狱长：按剩余牌堆的爆牌概率粗调停牌线（±1~3），不是逐张精算
     if (personality === 'executioner') {
       target += this.executionerAdjustment()
     }

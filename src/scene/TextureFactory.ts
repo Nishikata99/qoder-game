@@ -1,21 +1,6 @@
 import * as THREE from 'three'
 import type { CardRank, CardSuit } from '../game/GameEngine'
 
-export interface CrtData {
-  readonly level: number
-  readonly levelName: string
-  readonly playerHp: number
-  readonly playerMax: number
-  readonly bossHp: number
-  readonly bossMax: number
-  readonly live: number
-  readonly blank: number
-  readonly multiplier: number
-  readonly phase: string
-  readonly turn: string
-  readonly hourglass: boolean
-}
-
 const CARD_W = 256
 const CARD_H = 358
 const SUIT_GLYPH: Readonly<Record<CardSuit, string>> = {
@@ -30,7 +15,6 @@ const BASE_KEYS: readonly string[] = [
   'table',
   'card-back',
   'dust',
-  'crt',
   ...MASK_KEYS,
 ]
 
@@ -616,19 +600,8 @@ export class TextureFactory {
   private readonly cache = new Map<string, THREE.Texture>()
   private readonly listeners = new Set<(key: string, texture: THREE.Texture) => void>()
   private readonly etags = new Map<string, string>()
-  private readonly crtCanvas: HTMLCanvasElement
-  private readonly crtTexture: THREE.CanvasTexture
-  private crtImage: HTMLImageElement | null = null
   private watchTimer: number | null = null
   private disposed = false
-
-  constructor() {
-    this.crtCanvas = createCanvas(512, 384)
-    this.crtTexture = this.registerCanvasTexture(this.crtCanvas)
-    const ctx = getContext(this.crtCanvas)
-    ctx.fillStyle = '#04120a'
-    ctx.fillRect(0, 0, this.crtCanvas.width, this.crtCanvas.height)
-  }
 
   get(key: string): THREE.Texture {
     const existing = this.cache.get(key)
@@ -648,111 +621,6 @@ export class TextureFactory {
 
   maskKey(levelIndex: number): string {
     return `mask-${Math.min(3, Math.max(1, levelIndex + 1))}`
-  }
-
-  get crt(): THREE.CanvasTexture {
-    return this.crtTexture
-  }
-
-  paintCrt(data: CrtData): void {
-    if (this.disposed) return
-    const canvas = this.crtCanvas
-    const ctx = getContext(canvas)
-    const w = canvas.width
-    const h = canvas.height
-
-    ctx.save()
-    ctx.globalAlpha = 1
-    ctx.fillStyle = '#03110a'
-    ctx.fillRect(0, 0, w, h)
-    if (this.crtImage && this.crtImage.naturalWidth > 0) {
-      ctx.globalAlpha = 0.9
-      ctx.drawImage(this.crtImage, 0, 0, w, h)
-      ctx.globalAlpha = 1
-      ctx.fillStyle = 'rgba(2,18,10,0.55)'
-      ctx.fillRect(0, 0, w, h)
-    }
-
-    const glow = ctx.createRadialGradient(w / 2, h / 2, h * 0.1, w / 2, h / 2, h * 0.9)
-    glow.addColorStop(0, 'rgba(26,80,44,0.22)')
-    glow.addColorStop(1, 'rgba(0,0,0,0.6)')
-    ctx.fillStyle = glow
-    ctx.fillRect(0, 0, w, h)
-
-    const green = '#5fbf7e'
-    const dim = 'rgba(95,191,126,0.42)'
-    ctx.textBaseline = 'top'
-    ctx.shadowColor = 'rgba(60,180,105,0.45)'
-    ctx.shadowBlur = 4
-
-    ctx.font = 'bold 26px "Cascadia Mono", Consolas, monospace'
-    ctx.fillStyle = green
-    ctx.fillText(`ABYSS-21  //  SEC.${String(data.level).padStart(2, '0')}`, 24, 20)
-
-    ctx.font = '18px "Cascadia Mono", Consolas, monospace'
-    ctx.fillStyle = dim
-    ctx.fillText(`层名 ${data.levelName}`, 24, 54)
-
-    ctx.strokeStyle = 'rgba(141,255,174,0.35)'
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.moveTo(24, 82)
-    ctx.lineTo(w - 24, 82)
-    ctx.stroke()
-
-    const bar = (label: string, hp: number, max: number, y: number): void => {
-      ctx.font = 'bold 18px "Cascadia Mono", Consolas, monospace'
-      ctx.fillStyle = green
-      ctx.fillText(label, 24, y)
-      const cellW = 20
-      for (let i = 0; i < max; i += 1) {
-        ctx.fillStyle = i < hp ? green : 'rgba(141,255,174,0.15)'
-        ctx.fillRect(120 + i * (cellW + 5), y + 1, cellW, 14)
-      }
-      ctx.fillStyle = dim
-      ctx.fillText(`${hp}/${max}`, 120 + max * (cellW + 5) + 10, y)
-    }
-    bar('\u4F60', data.playerHp, data.playerMax, 100)
-    bar('\u5B83', data.bossHp, data.bossMax, 128)
-
-    ctx.font = 'bold 18px "Cascadia Mono", Consolas, monospace'
-    ctx.fillStyle = green
-    ctx.fillText(`\u5B9E\u5F39 ${String(data.live).padStart(2, '0')}`, 24, 168)
-    ctx.fillStyle = 'rgba(141,255,174,0.7)'
-    ctx.fillText(`\u7A7A\u819C ${String(data.blank).padStart(2, '0')}`, 150, 168)
-
-    ctx.fillStyle = '#ffd479'
-    ctx.shadowColor = 'rgba(255,200,90,0.8)'
-    ctx.fillText(`\u57FA\u7840\u4F24\u5BB3 ${data.multiplier}`, 24, 200)
-    if (data.hourglass) {
-      ctx.fillStyle = '#ff8a7a'
-      ctx.shadowColor = 'rgba(255,90,70,0.9)'
-      ctx.fillText('\u6C99\u6F0F\u9006\u8F6C \u00B7 \u4F4E\u5206\u8005\u80DC', 24, 222)
-    }
-
-    ctx.shadowBlur = 6
-    ctx.fillStyle = dim
-    ctx.font = '15px "Cascadia Mono", Consolas, monospace'
-    ctx.fillText(`\u72B6\u6001 ${data.phase}`, 24, 244)
-    ctx.fillText(`\u56DE\u5408 ${data.turn}`, 24, 266)
-    ctx.fillText('SYS: RUSTED ROULETTE ONLINE', 24, h - 34)
-
-    ctx.shadowBlur = 0
-    ctx.fillStyle = 'rgba(0,0,0,0.28)'
-    for (let y = 0; y < h; y += 3) {
-      ctx.fillRect(0, y, w, 1)
-    }
-    const flicker = 0.92 + Math.random() * 0.08
-    ctx.fillStyle = `rgba(0,0,0,${1 - flicker})`
-    ctx.fillRect(0, 0, w, h)
-
-    const curve = ctx.createRadialGradient(w / 2, h / 2, h * 0.3, w / 2, h / 2, h * 0.85)
-    curve.addColorStop(0, 'rgba(0,0,0,0)')
-    curve.addColorStop(1, 'rgba(0,0,0,0.75)')
-    ctx.fillStyle = curve
-    ctx.fillRect(0, 0, w, h)
-    ctx.restore()
-    this.crtTexture.needsUpdate = true
   }
 
   onOverride(listener: (key: string, texture: THREE.Texture) => void): () => void {
@@ -781,7 +649,6 @@ export class TextureFactory {
     this.listeners.clear()
     for (const texture of this.cache.values()) texture.dispose()
     this.cache.clear()
-    this.crtTexture.dispose()
   }
 
   private build(key: string): THREE.Texture {
@@ -852,11 +719,6 @@ export class TextureFactory {
       const img = new Image()
       img.onload = () => {
         if (this.disposed) {
-          resolve()
-          return
-        }
-        if (key === 'crt') {
-          this.crtImage = img
           resolve()
           return
         }

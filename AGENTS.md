@@ -27,7 +27,7 @@ src/
 ├── components/               【桥接】
 │   ├── GameCanvas.tsx        画布挂载 + 事件转发 + 道具浮窗
 │   └── RulesModal.tsx        规则与道具图鉴
-├── App.tsx                   【UI 覆盖层】HUD、演出、结算、事件接线
+├── App.tsx                   【UI 覆盖层】HUD（状态/弹仓）、演出、结算、事件接线
 └── index.css                 Tailwind 入口 + 做旧金属按钮等样式
 ```
 
@@ -62,13 +62,21 @@ src/
 所有玩家意图只能走引擎方法：`hit()` / `stand()` / `useItem(id)` / `chooseTarget(target)` / `restart()` / `advanceLevel()`。
 **禁止在 UI 或场景里改血量、手牌、弹仓。**
 
+### 手牌点数（台面贴片，不进 HUD）
+
+点数由 `SceneManager.buildScorePlates` 的两块贴地 Canvas 贴片直接画在台呢上：`syncScores()` 按 `visibleHand.visible` 过滤暗牌后调 `evaluateHand`，只在「点数/软牌/黑杰克/爆牌/停牌/暗牌」组合变化时重绘并做一次缩放脉冲。HUD 的 `ActorPanel` 只剩状态与道具数，**血量由 3D 血袋显示，不要再往面板里加点数或血条**。贴片避开卡牌/道具/血袋架/牌堆：玩家在 `(0, 1.52)` 平贴台呢；Boss 在对面右侧 `(1.5, -1.15)`，按 `SCORE_PLATE_TILT` 立起 ~0.5rad 并 yaw 朝主镜头（`SCORE_PLATE_VIEW`），抬高半高让近边贴着台呢——远侧平贴会被透视压扁，读数极差；枪身占满中央横带，别把 Boss 贴片放回中间。两块都画一圈椭圆印刷线当台呢标记，暗牌显示 `+ ?`，爆牌以划叉标记。改位置/缩放/倾角都要按真实游戏镜头截图确认，不能只看俯视。
+
+### 血量（3D 血袋，不进 HUD）
+
+每格生命对应架上一只血袋：`syncBlood()` 以 `ActorView.maxHp` 决定袋数、`hp` 决定注满的袋数，掉血从右往左排空、回血重新注满；`maxHp` 变化时整架重建。位置/尺寸集中在 `BLOOD_RACK_LAYOUT`（玩家小架在桌面左前角，Boss 落地架在左后侧），单袋液体盒高度取满袋液高，`liquid.scale.y` 就是填充比例——**不要把液体几何高度写成 1 再用 scale 当比例**，会变成一米高的红板。细管（汇流管→各自身体）挂在独立 `extra` 组里用世界坐标，换架时随 `rack.extra` 一并销毁。改布局后必须按真实游戏镜头截图确认双方都能读出剩余袋数。
+
 ## 三、规则要点（易踩坑）
 
 | 规则 | 实现位置 | 注意 |
 | --- | --- | --- |
 | 对手 1 明 1 暗 | `withHoleCard()` / `ActorView.visibleHand` | 点数额始终按真实手牌算，只隐藏**显示**；亮牌在 `settleRound` 开头。`withHoleCard` 必须每次从 `cards` 重建 `visible`——若 hidden=false 时直接返回原对象，暗牌就永远翻不回来 |
 | 战斗日志 | `dealTo()` / `App.tsx` 的 `LogPanel` | HUD 只显示最后 3 条。对手暗牌发下时日志写「它扣下一张暗牌」，**不能**写牌面与点数；亮牌时在 `settleRound` 补「亮出底牌」 |
-| 枪口选择 | `phase='targeting'` + `chooseTarget()` | 只有玩家持枪才等输入；Boss 持枪由 `chooseBossTarget()` 自动决定。HUD 里的点数必须按 `visible` 手牌重新计算，不能用 `visibleHand.total`（那是真实点数） |
+| 枪口选择 | `phase='targeting'` + `chooseTarget()` | 只有玩家持枪才等输入；Boss 持枪由 `chooseBossTarget()` 自动决定。台面点数贴片必须按 `visible` 手牌重新计算，不能用 `visibleHand.total`（那是真实点数） |
 | 伤害公式 | `resolveShot()` | 实弹基础 2 + 黑杰克 1 + 碾压（点差≥5）1 + 遗恨 N，锯子整体 ×2；空膛 0 |
 | 锯子翻倍 | `sawBoost` | 不是 +1，是**整体翻倍**；只在**真的打出实弹**时消耗，空膛不浪费 |
 | 空膛对己 | `resolveShot()` 的 `selfShot` 分支 | 空膛摸一件道具（`chamberRecovered` 事件）；实弹则伤害打在自己身上 |
@@ -92,23 +100,22 @@ src/
 - **冷色轮廓光强度上限约 10**：高于此值整个躯干会被照成一块蓝板，失去剪影感。
 - 卡牌材质数组顺序：`[side, side, 朝上面, 朝下面, side, side]`；`rotation.x = Math.PI` 表示翻面。
 - 道具拾取：`raycaster` → 沿 `parent` 找 `userData.item` → `callbacks.onItemClick`。
-- CRT 显示器在 `x≈-0.96, z≈1.24`，左前方，需要面向相机；挪动后**必须截图确认内容可读**。
-- CRT 数据屏由代码动态挂到 GLB 外壳正面，屏幕位置按外壳包围盒计算，**不要改成世界坐标迁移**。
+- 血袋架布局集中在 `BLOOD_RACK_LAYOUT`；玩家架占桌面左前角，Boss 架落地在左后侧，袋口高度要露出桌沿之上。
 - 运镜用 `setShot(shot, duration)`，不要直接改 `camera.position`。
-- **枪口朝向**：`gunAim` 是枪的瞄准枢轴，执行阶段由 `updateGunAim` 算 yaw/pitch 指向 `BOSS_HIT_POINT` 或镜头；枪口火光、膛内提示也挂在它下面。不要再动 `gunGroup.rotation.y` 摆枪。换 GLB 时占位枪要用 `removeFromParent()` 摘下（它挂在 `gunAim` 下，`gunGroup.remove` 摘不到，会叠成两把枪）。
-- 实弹命中 Boss 时 `spawnBlood(BOSS_HIT_POINT)` 生成血珠 + 血雾 + 瞬时光；玩家中弹的血斑是 `App.tsx` 的 DOM 覆盖层（`.blood-splatter`），两者互不替代。
-- **Blender 程序化节点图无法导出到 glTF**：噪声/渐变接 Base Color 会被压成纯白。必须把颜色烘焙进顶点色（`COLOR_0`），导出加 `export_vertex_color='MATERIAL', export_all_vertex_colors=True`。
+- **枪口朝向**：`gunAim` 是枪的瞄准枢轴，执行阶段由 `updateGunAim` 算 yaw/pitch 指向 `BOSS_HIT_POINT` 或镜头；枪口火光、膛内提示也挂在它下面。不要再动 `gunGroup.rotation.y` 摆枪。换 GLB 时占位枪要用 `removeFromParent()` 摘下（它挂在 `gunAim` 下，`gunGroup.remove` 摘不到，会叠成两把枪）。枪口火光位置从模型 `MuzzlePoint` 计算，装填时推拉 `PumpSlide`，不要再假设火光固定在 -1.06。
+- 实弹命中 Boss 时 `spawnBlood(BOSS_HIT_POINT)` 生成血珠 + 血雾 + 瞬时光，并触发 `knockBossDown()`：`bossKnock`（0..1）叠加在呼吸动画上把整个 `bossGroup` 压下去，停一拍再缓慢起身，用 generation 计数取消上一轮起身 tween。
+- 玩家中弹是纯 DOM 覆盖层：`.blood-splatter` 血斑 + `.vision-blur`（`backdrop-filter`，只糊画布，HUD 保持清晰），在 `App.tsx` 的 `handleEventSound` 里由实弹事件驱动；不要用后期处理去做模糊。
+- **Blender 程序化节点图无法导出到 glTF**：噪声/渐变接 Base Color 会被压成纯白。要么把颜色烘焙进顶点色（`COLOR_0`），要么只给 Principled 一个平涂 Base Color；后者导出为 `baseColorFactor`，**是线性色值**，游戏里还会再乘 0.42，按 `目标线性色 ÷ 0.42` 反推，否则会像白模。
 
 ## 五、美术资源热替换
 
-### 3D 模型（`public/models/*.glb`，14 个）
+### 3D 模型（`public/models/*.glb`，13 个在用）
 
 | 文件 | 用途 | 约束 |
 | --- | --- | --- |
 | `gaming_table.glb` | 重型钢板赌桌 | 台呢面在模型 y=0；场景里抬到 `TABLE_TOP` |
 | `room_environment.glb` | 地下铁皮密室 + 工业吊灯 | 地面在 y=0；吊灯节点名以 `Lamp` 开头 |
-| `revolver.glb` | 左轮 | 枪口朝 glTF -Z |
-| `crt_monitor.glb` | CRT 外壳 | 屏幕朝向 +Z |
+| `shotgun.glb` | 泵动霰弹枪 | 枪口朝 glTF -Z；`MuzzlePoint` 空物体标定枪口（火光位置），`PumpSlide` 是装填动画推拉节点 |
 | `boss_1/2/3.glb` | 三层半身像（完整躯干） | 面朝 +Z，底部中心为原点，头部节点名 `BossHead` |
 | `item_*.glb` | 7 件桌面道具 | 尺寸 0.15–0.30m，底部 z=0 |
 
@@ -121,7 +128,6 @@ src/
 | `card-back.png` | 卡牌背面 |
 | `mask-1.png` / `mask-2.png` / `mask-3.png` | 三层 Boss 面具（建议透明通道） |
 | `table.png` | 桌面锈迹 |
-| `crt.png` | CRT 屏幕底图 |
 
 删除文件即回退程序化贴图。
 

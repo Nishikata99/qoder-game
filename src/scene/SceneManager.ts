@@ -9,6 +9,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { VignetteShader } from 'three/addons/shaders/VignetteShader.js'
 import {
   ITEM_CATALOG,
+  evaluateHand,
   type ActorId,
   type Card,
   type CardRank,
@@ -17,7 +18,7 @@ import {
   type GameSnapshot,
   type ItemId,
 } from '../game/GameEngine'
-import { TextureFactory, type CrtData } from './TextureFactory'
+import { TextureFactory } from './TextureFactory'
 
 export interface ItemHoverPayload {
   readonly actor: ActorId
@@ -33,7 +34,13 @@ export interface SceneCallbacks {
   readonly onItemClick?: (actor: ActorId, item: ItemId) => void
 }
 
-export type CameraShot = 'table' | 'cylinder' | 'magnify' | 'execute' | 'death' | 'victory'
+export type CameraShot =
+  | 'table'
+  | 'cylinder'
+  | 'magnify'
+  | 'execute'
+  | 'death'
+  | 'victory'
 
 export interface ExecutionPayload {
   readonly by: ActorId
@@ -87,6 +94,31 @@ interface TorsoParts {
   readonly maskBack: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial>
 }
 
+/** 台面点数贴片：一块透明画布平面，只在点数/状态变化时重绘 */
+interface ScorePlate {
+  readonly ctx: CanvasRenderingContext2D
+  readonly texture: THREE.CanvasTexture
+  readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>
+  key: string
+}
+
+/** 一只血袋：液体网格按 fill（0..1）从底部向上装填，空袋收瘪 */
+interface BloodBag {
+  readonly liquid: THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>
+  readonly shell: THREE.Mesh<THREE.CapsuleGeometry, THREE.MeshPhysicalMaterial>
+  readonly liquidH: number
+  readonly bottomY: number
+  fill: number
+}
+
+interface BloodRack {
+  readonly group: THREE.Group
+  /** 汇流管到双方身体的细管，挂在世界坐标里，换架时一并销毁 */
+  readonly extra: THREE.Group
+  readonly bags: BloodBag[]
+  maxHp: number
+}
+
 const TABLE_TOP = 0.98
 const CARD_W = 0.3
 const CARD_H = 0.42
@@ -94,6 +126,65 @@ const CARD_T = 0.012
 const DECK_POS = new THREE.Vector3(2.42, TABLE_TOP + 0.06, 0.16)
 const MAX_VISIBLE_CARDS = 8
 const ITEM_SCALE = 1.0
+/** 手牌点数直接印在台呢上：贴片中心（世界坐标）与尺寸，避开卡牌/道具/血袋架/牌堆/后侧围栏 */
+const SCORE_PLATE_Y = TABLE_TOP + 0.004
+const SCORE_PLATE_W = 1.34
+const SCORE_PLATE_H = 0.46
+const SCORE_PLATE_POS: Readonly<Record<ActorId, THREE.Vector2>> = {
+  player: new THREE.Vector2(0, 1.52),
+  // 放在自己点数的对面右侧、贴着后沿的空台呢上，离 Boss 卡牌与枪身都够远
+  boss: new THREE.Vector2(1.5, -1.15),
+}
+/** Boss 侧离镜头远、视角更斜，贴片按比例放大才能与玩家侧同样好读 */
+const SCORE_PLATE_SCALE: Readonly<Record<ActorId, number>> = { player: 1, boss: 1.5 }
+/** 对面贴片立起一点正对镜头，否则远侧透视会把字压扁；0 = 平贴台呢 */
+const SCORE_PLATE_TILT: Readonly<Record<ActorId, number>> = { player: 0, boss: 0.5 }
+/** 游戏主镜头机位，用于让 Boss 贴片转向观众 */
+const SCORE_PLATE_VIEW = new THREE.Vector3(0, 3.62, 4.92)
+
+/**
+ * 血袋架布局：每格生命挂一只血袋（袋数 = maxHp）。
+ * 玩家小架摆在桌面左前角；Boss 落地架在它左后侧，袋口高度露出桌沿之上。
+ */
+const BLOOD_RACK_LAYOUT: Readonly<
+  Record<
+    ActorId,
+    {
+      readonly x: number
+      readonly y: number
+      readonly z: number
+      readonly yaw: number
+      readonly poleH: number
+      readonly baseR: number
+      readonly spacing: number
+      readonly bagW: number
+      readonly bagH: number
+    }
+  >
+> = {
+  player: {
+    x: -0.98,
+    y: TABLE_TOP,
+    z: 1.3,
+    yaw: 0.26,
+    poleH: 0.46,
+    baseR: 0.075,
+    spacing: 0.068,
+    bagW: 0.058,
+    bagH: 0.105,
+  },
+  boss: {
+    x: -1.62,
+    y: 0,
+    z: -2.72,
+    yaw: 0.42,
+    poleH: 1.62,
+    baseR: 0.16,
+    spacing: 0.092,
+    bagW: 0.075,
+    bagH: 0.14,
+  },
+}
 const LEVEL_LOOK: ReadonlyArray<{
   readonly rim: number
   readonly fill: number
@@ -106,8 +197,7 @@ const LEVEL_LOOK: ReadonlyArray<{
 
 /** Blender 导出的模型，键名与 public/models/*.glb 对应 */
 type ModelKey =
-  | 'revolver'
-  | 'crt_monitor'
+  | 'shotgun'
   | 'boss_1'
   | 'boss_2'
   | 'boss_3'
@@ -147,7 +237,7 @@ const CEILING_Y = 6.0
 /** 灯罩下沿在世界坐标中的高度，聚光灯挂在这里才不会被罩体遮挡 */
 const LAMP_SHADE_BOT_Y = 4.02
 
-/** 枪口瞄准的旋转中心：左轮底座落在桌面上的位置 */
+/** 枪口瞄准的旋转中心：枪座落在桌面上的位置 */
 const GUN_PIVOT = new THREE.Vector3(0, TABLE_TOP + 0.075, 0.08)
 /** Boss 中弹点：胸口高度、半身像正面 */
 const BOSS_HIT_POINT = new THREE.Vector3(0, 1.64, BOSS_Z + 0.62)
@@ -184,18 +274,6 @@ function tuneGltfMaterial(material: THREE.Material, vertexDim = VERTEX_COLOR_DIM
   if (material.emissiveIntensity > 1) {
     material.emissiveIntensity *= 0.5
   }
-}
-
-const PHASE_LABEL: Readonly<Record<string, string>> = {
-  idle: '待机',
-  dealing: '发牌中',
-  playerTurn: '你的回合',
-  bossTurn: '对手回合',
-  resolving: '结算中',
-  roundEnd: '回合结束',
-  levelClear: '层间休整',
-  gameOver: '你已阵亡',
-  victory: '深渊沉寂',
 }
 
 function easeOutCubic(t: number): number {
@@ -254,6 +332,11 @@ export class SceneManager {
   private bossHeadNode: THREE.Object3D | null = null
   /** 道具模型模板（按 item id），供 UI 图鉴与桌面摆件复用 */
   private readonly itemModelTemplates = new Map<ItemId, THREE.Object3D>()
+  private readonly scorePlates = new Map<ActorId, ScorePlate>()
+  private readonly bloodRacks = new Map<ActorId, BloodRack>()
+  /** 0..1 的倒地量，叠加在呼吸动画上：命中时冲到 1 再缓慢回到 0 */
+  private bossKnock = 0
+  private knockGeneration = 0
 
   private readonly roomGroup = new THREE.Group()
   private readonly tableGroup = new THREE.Group()
@@ -272,9 +355,10 @@ export class SceneManager {
   private readonly muzzleLight: THREE.PointLight
   private readonly flash: THREE.Sprite
   private readonly bossParts: TorsoParts
-  private readonly crtScreen: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>
-  private readonly crtLight: THREE.PointLight
-  private drum: THREE.Object3D
+  private drum: THREE.Object3D | null
+  /** GLB 霰弹枪的泵动前护木：装填时前后推拉 */
+  private pumpSlide: THREE.Object3D | null = null
+  private pumpBaseZ = 0
 
   private cameraBase = new THREE.Vector3(0, 3.62, 4.92)
   private cameraLookAt = new THREE.Vector3(0, 1.02, -0.62)
@@ -308,7 +392,6 @@ export class SceneManager {
   private elapsed = 0
   private levelLookIndex = 0
   private currentLevelIndex = 0
-  private lastCrtKey = ''
   private lastSnapshot: GameSnapshot | null = null
   private disposed = false
   private readonly onPointerMove: (event: PointerEvent) => void
@@ -353,7 +436,7 @@ export class SceneManager {
     this.renderPass = new RenderPass(this.scene, this.camera)
     this.composer.addPass(this.renderPass)
 
-    // Very restrained bloom: only the lamp, muzzle flash and CRT phosphor bloom.
+    // Very restrained bloom: only the lamp, muzzle flash and blood-bag highlights.
     this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.16, 0.42, 0.9)
     this.composer.addPass(this.bloomPass)
 
@@ -370,7 +453,7 @@ export class SceneManager {
     this.buildRoom()
     this.buildTable()
     this.bossParts = this.buildBoss()
-    const gun = this.buildRevolver()
+    const gun = this.buildGunPlaceholder()
     this.gunAim.position.copy(GUN_PIVOT)
     this.gunAim.rotation.order = 'YXZ'
     this.gunAim.rotation.y = this.gunRestYaw
@@ -381,10 +464,6 @@ export class SceneManager {
     this.flash = gun.flash
     this.bloodBurst = this.buildBloodBurst()
 
-    const crt = this.buildCrt()
-    this.crtScreen = crt.screen
-    this.crtLight = crt.light
-
     const lighting = this.buildLighting()
     this.spot = lighting.spot
     this.rimLight = lighting.rim
@@ -393,6 +472,7 @@ export class SceneManager {
     this.dust = this.buildDust()
     this.deckGroup.position.copy(DECK_POS)
     this.buildDeckPile()
+    this.buildScorePlates()
 
     this.preloadModels()
 
@@ -426,7 +506,8 @@ export class SceneManager {
     this.applyLevel(snapshot.levelIndex)
     this.syncCards(snapshot)
     this.syncItems(snapshot)
-    this.paintCrt(snapshot)
+    this.syncScores(snapshot)
+    this.syncBlood(snapshot)
   }
 
   /** Blends the camera to a named shot; `hold` keeps it there until another shot is set. */
@@ -613,7 +694,10 @@ export class SceneManager {
       },
     })
 
-    if (live && payload.target === 'boss') this.spawnBlood(BOSS_HIT_POINT)
+    if (live && payload.target === 'boss') {
+      this.spawnBlood(BOSS_HIT_POINT)
+      this.knockBossDown()
+    }
 
     const recoil = live ? 0.16 : 0.05
     this.tween({
@@ -632,13 +716,57 @@ export class SceneManager {
     this.shake(live ? 0.085 : 0.018, live ? 0.6 : 0.3)
   }
 
+  /** 命中：先被压下去，停顿一拍，再慢慢撑起来 */
+  private knockBossDown(): void {
+    this.knockGeneration += 1
+    const generation = this.knockGeneration
+    this.tween({
+      duration: 0.24,
+      onUpdate: (t) => {
+        if (generation !== this.knockGeneration) return
+        this.bossKnock = easeOutCubic(t)
+      },
+    })
+    this.tween({
+      duration: 2.6,
+      delay: 0.9,
+      onUpdate: (t) => {
+        if (generation !== this.knockGeneration) return
+        // 前 30% 还趴着，之后才缓缓起身
+        this.bossKnock = 1 - easeInOutCubic(clamp01((t - 0.3) / 0.7))
+      },
+      onComplete: () => {
+        if (generation !== this.knockGeneration) return
+        this.bossKnock = 0
+      },
+    })
+  }
+
   playReload(): void {
     if (this.disposed) return
-    const start = this.drum.rotation.z
+    if (this.pumpSlide) {
+      const slide = this.pumpSlide
+      const base = this.pumpBaseZ
+      this.tween({
+        duration: 0.72,
+        onUpdate: (t) => {
+          // 先向后拉开到底，再推回：0.45 处行程最大
+          const pull = t < 0.45 ? t / 0.45 : 1 - (t - 0.45) / 0.55
+          slide.position.z = base + 0.09 * easeInOutCubic(pull)
+        },
+        onComplete: () => {
+          slide.position.z = base
+        },
+      })
+      return
+    }
+    if (!this.drum) return
+    const drum = this.drum
+    const start = drum.rotation.z
     this.tween({
       duration: 0.7,
       onUpdate: (t) => {
-        this.drum.rotation.z = start + t * Math.PI * 2
+        drum.rotation.z = start + t * Math.PI * 2
       },
     })
   }
@@ -692,6 +820,7 @@ export class SceneManager {
       }
     })
     this.textures.dispose()
+    for (const plate of this.scorePlates.values()) plate.texture.dispose()
     this.envTexture?.dispose()
     this.models.clear()
     this.itemModelTemplates.clear()
@@ -745,8 +874,7 @@ export class SceneManager {
   /** 异步载入全部 GLB；失败的模型保持缺失，渲染时自动回退到程序化几何 */
   private preloadModels(): void {
     const keys: ModelKey[] = [
-      'revolver',
-      'crt_monitor',
+      'shotgun',
       'boss_1',
       'boss_2',
       'boss_3',
@@ -832,12 +960,8 @@ export class SceneManager {
   /** 模型到达后替换对应部位 */
   private onModelReady(key: ModelKey, root: THREE.Object3D): void {
     switch (key) {
-      case 'revolver': {
-        this.swapRevolver(root)
-        break
-      }
-      case 'crt_monitor': {
-        this.swapCrt(root)
+      case 'shotgun': {
+        this.swapShotgun(root)
         break
       }
       case 'boss_1':
@@ -873,17 +997,17 @@ export class SceneManager {
     }
   }
 
-  /** 用 GLB 左轮替换程序化几何，保留开火动画所需的 group 层级 */
-  private swapRevolver(root: THREE.Object3D): void {
-    const placeholder = this.gunGroup.getObjectByName('RevolverPlaceholder')
+  /** 用 GLB 霰弹枪替换程序化占位枪，保留开火动画所需的 group 层级 */
+  private swapShotgun(root: THREE.Object3D): void {
+    const placeholder = this.gunGroup.getObjectByName('GunPlaceholder')
     const holder = new THREE.Group()
-    holder.name = 'RevolverGLB'
+    holder.name = 'ShotgunGLB'
 
     const clone = root.clone(true)
-    // Blender 中枪口朝 +Y，导出后即 -Z，与场景左轮的朝向一致，无需额外旋转
+    // Blender 中枪口朝 +Y，导出后即 -Z，与场景枪口朝向一致，无需额外旋转
     const box = new THREE.Box3().setFromObject(clone)
     const size = box.getSize(new THREE.Vector3())
-    const scale = 1.05 / Math.max(size.x, size.y, size.z)
+    const scale = 3 / Math.max(size.x, size.y, size.z)
     clone.scale.setScalar(scale)
     const scaled = new THREE.Box3().setFromObject(clone)
     const center = scaled.getCenter(new THREE.Vector3())
@@ -893,46 +1017,36 @@ export class SceneManager {
 
     // 枪口火光与点光原本挂在程序化模型里，换模型前先挪到瞄准枢轴，否则一起被销毁
     this.gunAim.add(this.flash, this.muzzleLight)
+    this.gunAim.add(holder)
+    // 枪口锚点随模型缩放/居中移动，火光必须贴着真实枪口；先刷矩阵再换算成枢轴局部坐标
+    this.gunAim.updateWorldMatrix(true, true)
+    const muzzle = clone.getObjectByName('MuzzlePoint')
+    if (muzzle) {
+      const muzzleLocal = muzzle.getWorldPosition(new THREE.Vector3())
+      this.gunAim.worldToLocal(muzzleLocal)
+      this.flash.position.copy(muzzleLocal)
+      this.muzzleLight.position.copy(muzzleLocal)
+    }
 
     if (placeholder) {
       // 占位枪挂在 gunAim 下，必须从真实父节点摘下，否则两把枪叠在一起
       placeholder.removeFromParent()
       this.disposeObject(placeholder)
+      // 转轮随占位枪一起销毁，不能再让装填动画去转它
+      this.drum = null
     }
-    this.gunAim.add(holder)
 
-    // 开火动画会旋转 drum：优先绑到模型的转轮节点
-    const drumNode = clone.getObjectByName('CylinderDrum')
-    if (drumNode) this.drum = drumNode
-  }
-
-  /** 用 GLB CRT 外壳替换程序化机身，实时数据屏仍由 TextureFactory 驱动 */
-  private swapCrt(root: THREE.Object3D): void {
-    const existing = this.tableGroup.getObjectByName('CrtPlaceholder')
-    if (!existing) return
-
-    const wrapper = this.placeModel(root, 0.62, existing.position.clone(), existing.rotation.y)
-    wrapper.name = 'CrtGLB'
-    this.tableGroup.add(wrapper)
-
-    // 屏幕板贴到外壳正面：新机身比旧盒子深，按世界坐标迁移会落进内部被遮黑
-    const screen = this.crtScreen
-    existing.remove(screen)
-    wrapper.add(screen)
-    const shell = wrapper.children[0]
-    const box = shell ? new THREE.Box3().setFromObject(shell) : null
-    const frontZ = box ? box.max.z + 0.004 : 0.19
-    const height = box ? box.max.y - box.min.y : 0.6
-    screen.position.set(0, height * 0.60, frontZ)
-    screen.scale.setScalar(0.9)
-
-    this.tableGroup.remove(existing)
-    this.disposeObject(existing)
+    // 装填动画：有泵动护木就推拉护木，否则回退到占位枪的转轮
+    const pump = clone.getObjectByName('PumpSlide')
+    if (pump) {
+      this.pumpSlide = pump
+      this.pumpBaseZ = pump.position.z
+    }
   }
 
   /**
    * 用 Blender 重型钢板赌桌替换程序化桌体。
-   * 模型台呢面在 glTF 的 y=0，这里整体抬到 TABLE_TOP，卡牌/道具/左轮无需改坐标即可贴合。
+   * 模型台呢面在 glTF 的 y=0，这里整体抬到 TABLE_TOP，卡牌/道具/枪无需改坐标即可贴合。
    */
   private swapTable(root: THREE.Object3D): void {
     const stale: THREE.Object3D[] = []
@@ -950,10 +1064,6 @@ export class SceneManager {
     clone.position.set(0, TABLE_TOP, 0)
     clone.name = 'GamingTableGLB'
     this.tableGroup.add(clone)
-
-    // CRT 需要重新落到新桌面上
-    const crt = this.tableGroup.getObjectByName('CrtGLB') ?? this.tableGroup.getObjectByName('CrtPlaceholder')
-    if (crt) crt.position.y = TABLE_TOP + 0.005
   }
 
   /** 用 Blender 密室替换程序化立方体房间；吊灯并入 lampRig 以保留摆动动画 */
@@ -1020,7 +1130,6 @@ export class SceneManager {
     this.updateItems(dt)
     this.updateCards(dt)
     this.updateCamera(dt)
-    this.textures.crt.needsUpdate = false
     this.composer.render(dt)
   }
 
@@ -1154,18 +1263,17 @@ export class SceneManager {
     this.spot.position.z = -0.05 + Math.cos(this.elapsed * 0.33) * 0.025
     this.lampRig.rotation.z = Math.sin(this.elapsed * 0.9) * 0.035
     this.lampRig.rotation.x = Math.cos(this.elapsed * 0.72) * 0.025
-    const crtPulse = 0.85 + Math.sin(this.elapsed * 11) * 0.06 + Math.random() * 0.05
-    this.crtLight.intensity = 0.55 * crtPulse
-    this.crtScreen.material.opacity = 0.72 + Math.sin(this.elapsed * 23) * 0.03
   }
 
   private updateBoss(dt: number): void {
     const t = this.elapsed
     // 呼吸：三个不成整数比的正弦叠加，周期压在 4~6 秒，避免机械重复感
     const breath = Math.sin(t * 1.32) * 0.018 + Math.sin(t * 0.61 + 1.7) * 0.010
-    this.bossGroup.position.y = breath
-    // 吸气时胸口微微前压，呼气抬回
-    this.bossGroup.rotation.x = -breath * 0.55
+    const knock = this.bossKnock
+    this.bossGroup.position.y = breath - knock * 0.62
+    // 吸气时胸口微微前压，呼气抬回；中弹时整个上半身后仰并侧倾
+    this.bossGroup.rotation.x = -breath * 0.55 - knock * 0.62
+    this.bossGroup.rotation.z = knock * 0.12
 
     // 盯视：大部分时间缓慢扫视，偶尔停顿后猛转向玩家
     const sweep = Math.sin(t * 0.37) * 0.55 + Math.sin(t * 0.19 + 2.3) * 0.45
@@ -1414,7 +1522,7 @@ export class SceneManager {
     faceFill.target.position.set(0, 2.0, BOSS_Z)
     this.scene.add(faceFill, faceFill.target)
 
-    // CRT 屏幕自身的微弱绿光（数据屏是氛围光源）
+    // 冷色补光落在玩家血袋架一侧，让半透明袋体有层次
     const torso = new THREE.PointLight(0x8fb0d0, 2.5, 3.6, 2)
     torso.position.set(-0.9, 1.25, 1.0)
     this.scene.add(torso)
@@ -1630,14 +1738,14 @@ export class SceneManager {
     return { head, mask, maskBack }
   }
 
-  private buildRevolver(): {
+  private buildGunPlaceholder(): {
     root: THREE.Group
     drum: THREE.Group
     muzzleLight: THREE.PointLight
     flash: THREE.Sprite
   } {
     const root = new THREE.Group()
-    root.name = 'RevolverPlaceholder'
+    root.name = 'GunPlaceholder'
     // 世界位置由外层 gunAim 提供，模型本身落在枢轴原点
     root.position.set(0, 0, 0)
 
@@ -1793,93 +1901,6 @@ export class SceneManager {
     root.add(flash)
 
     return { root, drum, muzzleLight, flash }
-  }
-
-  private buildCrt(): { screen: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>; light: THREE.PointLight } {
-    const group = new THREE.Group()
-    group.name = 'CrtPlaceholder'
-    group.position.set(-0.96, TABLE_TOP + 0.005, 1.24)
-    // 屏幕朝向玩家相机，保证 CRT 内容可读
-    group.rotation.y = 0.52
-    group.scale.setScalar(0.9)
-    this.tableGroup.add(group)
-
-    const caseMat = new THREE.MeshStandardMaterial({
-      color: 0x35302a,
-      metalness: 0.35,
-      roughness: 0.68,
-    })
-    this.disposableMaterials.add(caseMat)
-    const caseGeo = new THREE.BoxGeometry(0.72, 0.56, 0.5)
-    this.disposableGeometries.add(caseGeo)
-    const body = new THREE.Mesh(caseGeo, caseMat)
-    body.position.y = 0.28
-    body.castShadow = true
-    body.receiveShadow = true
-    group.add(body)
-    group.rotation.x = -0.06
-
-    const frontMat = new THREE.MeshStandardMaterial({
-      color: 0x2a251f,
-      metalness: 0.2,
-      roughness: 0.8,
-    })
-    this.disposableMaterials.add(frontMat)
-    const bezelGeo = new THREE.BoxGeometry(0.66, 0.5, 0.03)
-    this.disposableGeometries.add(bezelGeo)
-    const bezel = new THREE.Mesh(bezelGeo, frontMat)
-    bezel.position.set(0, 0.3, 0.255)
-    group.add(bezel)
-
-    const screenMat = new THREE.MeshBasicMaterial({
-      map: this.textures.crt,
-      transparent: true,
-      opacity: 0.92,
-      // 压暗到 0.55：CRT 是桌上的氛围光源，过亮会盖掉血条与卡面
-      color: 0x7d9c88,
-    })
-    this.disposableMaterials.add(screenMat)
-    const screenGeo = new THREE.PlaneGeometry(0.5, 0.375)
-    this.disposableGeometries.add(screenGeo)
-    const screen = new THREE.Mesh(screenGeo, screenMat)
-    screen.position.set(0, 0.315, 0.272)
-    group.add(screen)
-
-    const glassMat = new THREE.MeshPhysicalMaterial({
-      color: 0x90ffb8,
-      transparent: true,
-      opacity: 0.05,
-      roughness: 0.08,
-      metalness: 0.1,
-      emissiveIntensity: 0.15,
-    })
-    this.disposableMaterials.add(glassMat)
-    const glass = new THREE.Mesh(screenGeo, glassMat)
-    glass.position.set(0, 0.315, 0.279)
-    group.add(glass)
-
-    const knobGeo = new THREE.CylinderGeometry(0.028, 0.028, 0.03, 12)
-    this.disposableGeometries.add(knobGeo)
-    for (const x of [-0.24, -0.17]) {
-      const knob = new THREE.Mesh(knobGeo, brassMaterial(this.disposableMaterials))
-      knob.rotation.x = Math.PI / 2
-      knob.position.set(x, 0.095, 0.27)
-      group.add(knob)
-    }
-
-    const ledGeo = new THREE.SphereGeometry(0.011, 8, 6)
-    this.disposableGeometries.add(ledGeo)
-    const ledMat = new THREE.MeshBasicMaterial({ color: 0x6cff9a })
-    this.disposableMaterials.add(ledMat)
-    const led = new THREE.Mesh(ledGeo, ledMat)
-    led.position.set(0.265, 0.095, 0.27)
-    group.add(led)
-
-    const light = new THREE.PointLight(0x4dff8f, 3.4, 3.2, 2)
-    light.position.set(0, 0.33, 0.55)
-    group.add(light)
-
-    return { screen, light }
   }
 
   private buildDust(): THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial> {
@@ -2366,7 +2387,7 @@ export class SceneManager {
   private itemSlot(actor: ActorId, index: number, count: number): THREE.Vector3 {
     const total = Math.max(1, count)
     if (actor === 'player') {
-      // Keep the row inside the near-right quadrant: the CRT owns the left corner.
+      // 血袋架占住近处左角，道具沿右侧排开
       const spacing = 0.4
       const width = (total - 1) * spacing
       const lastX = 1.1
@@ -2719,25 +2740,387 @@ export class SceneManager {
     })
   }
 
-  private paintCrt(snapshot: GameSnapshot): void {
-    const data: CrtData = {
-      level: snapshot.levelIndex + 1,
-      levelName: snapshot.level.name,
-      playerHp: snapshot.player.hp,
-      playerMax: snapshot.player.maxHp,
-      bossHp: snapshot.boss.hp,
-      bossMax: snapshot.boss.maxHp,
-      live: snapshot.cylinder.live,
-      blank: snapshot.cylinder.blank,
-      multiplier: 1 + snapshot.damageBonus,
-      phase: PHASE_LABEL[snapshot.phase] ?? snapshot.phase,
-      turn: snapshot.turn === 'player' ? '你' : snapshot.turn === 'boss' ? '它' : '—',
-      hourglass: snapshot.hourglassActive,
+  /** 台面点数贴片：贴在台呢上，替代 HUD 里的手牌点数 */
+  private buildScorePlates(): void {
+    for (const actor of ['player', 'boss'] as const) {
+      const canvas = document.createElement('canvas')
+      canvas.width = 640
+      canvas.height = 220
+      const ctx = canvas.getContext('2d')
+      if (!ctx) continue
+      const texture = new THREE.CanvasTexture(canvas)
+      texture.colorSpace = THREE.SRGBColorSpace
+      texture.anisotropy = 4
+      const geometry = new THREE.PlaneGeometry(SCORE_PLATE_W, SCORE_PLATE_H)
+      const material = new THREE.MeshBasicMaterial({
+        map: texture,
+        transparent: true,
+        depthWrite: false,
+        toneMapped: false,
+      })
+      const mesh = new THREE.Mesh(geometry, material)
+      const scale = SCORE_PLATE_SCALE[actor]
+      const tilt = SCORE_PLATE_TILT[actor]
+      const pos = SCORE_PLATE_POS[actor]
+      mesh.rotation.order = 'YXZ'
+      // 立起的贴片绕中心翻转：抬高半个贴片高度，让贴近镜头的一边仍贴着台呢
+      const yaw = tilt > 0 ? Math.atan2(-pos.x, SCORE_PLATE_VIEW.z - pos.y) : 0
+      mesh.rotation.set(-Math.PI / 2 + tilt, yaw, 0)
+      const lift = tilt > 0 ? Math.sin(tilt) * (SCORE_PLATE_H * scale) / 2 + 0.03 : 0
+      mesh.position.set(pos.x, SCORE_PLATE_Y + lift, pos.y)
+      mesh.scale.setScalar(scale)
+      mesh.renderOrder = 4
+      this.scene.add(mesh)
+      this.scorePlates.set(actor, { ctx, texture, mesh, key: 'empty' })
     }
-    const key = JSON.stringify(data)
-    if (key === this.lastCrtKey) return
-    this.lastCrtKey = key
-    this.textures.paintCrt(data)
+  }
+
+  private syncScores(snapshot: GameSnapshot): void {
+    for (const actor of ['player', 'boss'] as const) {
+      const plate = this.scorePlates.get(actor)
+      if (!plate) continue
+      const view = actor === 'player' ? snapshot.player : snapshot.boss
+      const shown = evaluateHand(view.visibleHand.visible.filter((card): card is Card => card !== null))
+      const hidden = view.visibleHand.visible.some((card) => card === null)
+      const dealt = shown.cards.length > 0
+      const key = dealt
+        ? `${shown.total}|${shown.soft}|${shown.blackjack}|${shown.busted}|${view.standing}|${hidden}`
+        : 'empty'
+      if (key === plate.key) continue
+      plate.key = key
+      this.paintScore(actor, plate, {
+        total: shown.total,
+        soft: shown.soft,
+        blackjack: shown.blackjack,
+        busted: shown.busted,
+        hidden,
+        standing: view.standing,
+        dealt,
+      })
+      if (!dealt) continue
+      const mesh = plate.mesh
+      const base = SCORE_PLATE_SCALE[actor]
+      this.tween({
+        duration: 0.45,
+        onUpdate: (t) => mesh.scale.setScalar(base * (1 + Math.sin(t * Math.PI) * 0.05)),
+        onComplete: () => mesh.scale.setScalar(base),
+      })
+    }
+  }
+
+  private paintScore(
+    actor: ActorId,
+    plate: ScorePlate,
+    info: {
+      total: number
+      soft: boolean
+      blackjack: boolean
+      busted: boolean
+      hidden: boolean
+      standing: boolean
+      dealt: boolean
+    },
+  ): void {
+    const { ctx, texture } = plate
+    const w = 640
+    const h = 220
+    ctx.clearRect(0, 0, w, h)
+    if (!info.dealt) {
+      texture.needsUpdate = true
+      return
+    }
+    const isPlayer = actor === 'player'
+    const ink = info.busted ? (isPlayer ? '#9a8767' : '#ab4a33') : isPlayer ? '#f4e6c0' : '#ff8a5a'
+    const dim = isPlayer ? 'rgba(244,230,192,0.68)' : 'rgba(255,150,100,0.85)'
+    const spaced = ctx as CanvasRenderingContext2D & { letterSpacing: string }
+
+    ctx.save()
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+
+    // 淡淡的暗色晕染底，让字在绿色台呢上立得住，又不像贴了一块面板
+    const halo = ctx.createRadialGradient(w / 2, 100, 12, w / 2, 100, 330)
+    halo.addColorStop(0, 'rgba(4,8,5,0.3)')
+    halo.addColorStop(1, 'rgba(4,8,5,0)')
+    ctx.fillStyle = halo
+    ctx.fillRect(0, 0, w, h)
+
+    // 一圈椭圆印刷线，像台呢自带的标记，也让点数更容易被眼睛抓到
+    ctx.beginPath()
+    ctx.ellipse(w / 2, 96, 238, 76, 0, 0, Math.PI * 2)
+    ctx.strokeStyle = info.busted
+      ? isPlayer
+        ? 'rgba(154,135,103,0.22)'
+        : 'rgba(171,74,51,0.3)'
+      : isPlayer
+        ? 'rgba(244,230,192,0.24)'
+        : 'rgba(255,140,80,0.34)'
+    ctx.lineWidth = 7
+    ctx.stroke()
+
+    // 主数字 + 暗牌「+ ?」；字要大，远角透视下小字会被压缩得读不出来
+    const numText = String(info.total)
+    const numFont = '700 152px Impact, "Arial Black", "Microsoft YaHei", sans-serif'
+    const qFont = '600 64px "Microsoft YaHei", sans-serif'
+    spaced.letterSpacing = '0px'
+    ctx.font = numFont
+    const numW = ctx.measureText(numText).width
+    let qW = 0
+    if (info.hidden) {
+      ctx.font = qFont
+      qW = ctx.measureText('+ ?').width
+    }
+    const gap = info.hidden ? 24 : 0
+    const left = (w - (numW + gap + qW)) / 2
+    const numX = left + numW / 2
+
+    ctx.font = numFont
+    ctx.lineJoin = 'round'
+    ctx.strokeStyle = 'rgba(6,10,7,0.55)'
+    ctx.lineWidth = 11
+    ctx.strokeText(numText, numX, 100)
+    ctx.shadowColor = 'rgba(0,0,0,0.65)'
+    ctx.shadowBlur = 14
+    ctx.shadowOffsetY = 6
+    ctx.fillStyle = ink
+    ctx.fillText(numText, numX, 100)
+    if (info.hidden) {
+      ctx.font = qFont
+      ctx.strokeStyle = 'rgba(6,10,7,0.45)'
+      ctx.lineWidth = 7
+      ctx.strokeText('+ ?', left + numW + gap + qW / 2, 110)
+      ctx.fillStyle = dim
+      ctx.fillText('+ ?', left + numW + gap + qW / 2, 110)
+    }
+    ctx.shadowColor = 'transparent'
+    ctx.shadowBlur = 0
+    ctx.shadowOffsetY = 0
+
+    // 爆牌：数字上一道划叉，不用读字也能认出
+    if (info.busted) {
+      ctx.strokeStyle = isPlayer ? 'rgba(244,230,192,0.7)' : 'rgba(255,96,64,0.85)'
+      ctx.lineWidth = 8
+      ctx.beginPath()
+      ctx.moveTo(left - 16, 138)
+      ctx.lineTo(left + numW + 16, 62)
+      ctx.stroke()
+    }
+
+    const status = info.busted
+      ? '爆 牌'
+      : info.blackjack
+        ? 'BLACKJACK'
+        : info.standing
+          ? '停 牌'
+          : info.soft
+            ? '软 牌'
+            : ''
+    if (status) {
+      ctx.font = info.blackjack
+        ? '700 32px "Arial Black", "Segoe UI", sans-serif'
+        : '600 32px "Microsoft YaHei", "Segoe UI", sans-serif'
+      spaced.letterSpacing = info.blackjack ? '5px' : '9px'
+      ctx.fillStyle = info.busted
+        ? isPlayer
+          ? 'rgba(244,230,192,0.6)'
+          : 'rgba(255,96,64,0.9)'
+        : info.blackjack
+          ? '#e8c774'
+          : dim
+      ctx.strokeStyle = 'rgba(6,10,7,0.45)'
+      ctx.lineWidth = 6
+      ctx.strokeText(status, w / 2, 194)
+      ctx.fillText(status, w / 2, 194)
+    }
+    ctx.restore()
+    texture.needsUpdate = true
+  }
+
+  /** 血袋 = 一格生命：掉血从右往左排空，回血重新注满；maxHp 变了整架重建 */
+  private syncBlood(snapshot: GameSnapshot): void {
+    for (const actor of ['player', 'boss'] as const) {
+      const view = actor === 'player' ? snapshot.player : snapshot.boss
+      const maxHp = Math.max(1, view.maxHp)
+      let rack = this.bloodRacks.get(actor)
+      if (!rack || rack.maxHp !== maxHp) {
+        if (rack) {
+          rack.group.removeFromParent()
+          this.disposeObject(rack.group)
+          rack.extra.removeFromParent()
+          this.disposeObject(rack.extra)
+        }
+        rack = this.buildBloodRack(actor, maxHp, view.hp)
+        this.bloodRacks.set(actor, rack)
+      }
+      for (let i = 0; i < rack.bags.length; i += 1) {
+        const bag = rack.bags[i]
+        const target = i < view.hp ? 1 : 0
+        const from = bag.liquid.scale.y
+        if (Math.abs(from - target) < 0.01) continue
+        bag.fill = target
+        this.tween({
+          duration: 0.5 + Math.abs(from - target) * 0.18,
+          delay: (rack.bags.length - 1 - i) * 0.04,
+          onUpdate: (t) => {
+            const f = from + (target - from) * easeInOutCubic(t)
+            bag.liquid.scale.y = Math.max(0.001, f)
+            bag.liquid.position.y = bag.bottomY + (bag.liquidH * f) / 2
+            bag.shell.scale.z = 0.5 * (0.72 + 0.28 * Math.min(1, f * 1.4))
+          },
+        })
+      }
+    }
+  }
+
+  private buildBloodRack(actor: ActorId, maxHp: number, hp: number): BloodRack {
+    const cfg = BLOOD_RACK_LAYOUT[actor]
+    const group = new THREE.Group()
+    group.name = `BloodRack-${actor}`
+    group.position.set(cfg.x, cfg.y, cfg.z)
+    group.rotation.y = cfg.yaw
+    this.scene.add(group)
+
+    const metal = new THREE.MeshStandardMaterial({
+      color: 0x8f959b,
+      metalness: 0.82,
+      roughness: 0.38,
+    })
+    this.disposableMaterials.add(metal)
+    const shellMat = new THREE.MeshPhysicalMaterial({
+      color: 0xe6dfd0,
+      transparent: true,
+      opacity: 0.16,
+      roughness: 0.12,
+      metalness: 0,
+      depthWrite: false,
+    })
+    this.disposableMaterials.add(shellMat)
+    const bloodMat = new THREE.MeshStandardMaterial({
+      color: 0x6e0b0c,
+      emissive: 0x230303,
+      roughness: 0.32,
+      metalness: 0.05,
+    })
+    this.disposableMaterials.add(bloodMat)
+    const tubeMat = new THREE.MeshStandardMaterial({
+      color: 0x3d1114,
+      roughness: 0.55,
+      metalness: 0.1,
+    })
+    this.disposableMaterials.add(tubeMat)
+
+    const baseGeo = new THREE.CylinderGeometry(cfg.baseR, cfg.baseR * 1.18, 0.022, 20)
+    this.disposableGeometries.add(baseGeo)
+    const base = new THREE.Mesh(baseGeo, metal)
+    base.position.y = 0.011
+    base.castShadow = true
+    base.receiveShadow = true
+    group.add(base)
+
+    const poleGeo = new THREE.CylinderGeometry(0.009, 0.009, cfg.poleH, 10)
+    this.disposableGeometries.add(poleGeo)
+    const pole = new THREE.Mesh(poleGeo, metal)
+    pole.position.y = cfg.poleH / 2
+    pole.castShadow = true
+    group.add(pole)
+
+    const span = cfg.spacing * (maxHp - 1)
+    const barGeo = new THREE.CylinderGeometry(0.007, 0.007, span + 0.06, 8)
+    this.disposableGeometries.add(barGeo)
+    const bar = new THREE.Mesh(barGeo, metal)
+    bar.rotation.z = Math.PI / 2
+    bar.position.y = cfg.poleH
+    group.add(bar)
+
+    // 袋底汇流管：每只袋的短管都插在这根横管上，再由一根细管通到各自一侧
+    const manifoldY = cfg.poleH - 0.02 - cfg.bagH - 0.032
+    const manifoldGeo = new THREE.CylinderGeometry(0.005, 0.005, span + 0.02, 8)
+    this.disposableGeometries.add(manifoldGeo)
+    const manifold = new THREE.Mesh(manifoldGeo, tubeMat)
+    manifold.rotation.z = Math.PI / 2
+    manifold.position.y = manifoldY
+    group.add(manifold)
+
+    const shellGeo = new THREE.CapsuleGeometry(cfg.bagW / 2, Math.max(0.01, cfg.bagH - cfg.bagW), 4, 10)
+    this.disposableGeometries.add(shellGeo)
+    const tabGeo = new THREE.BoxGeometry(0.008, 0.022, 0.008)
+    this.disposableGeometries.add(tabGeo)
+    const stubGeo = new THREE.CylinderGeometry(0.0042, 0.0042, 0.032, 6)
+    this.disposableGeometries.add(stubGeo)
+
+    const bagCenterY = cfg.poleH - 0.02 - cfg.bagH / 2
+    const liquidH = cfg.bagH * 0.72
+    const bottomY = bagCenterY - cfg.bagH * 0.36
+    // 液体盒的高度直接取满袋液高，syncBlood 里 scale.y 就是填充比例
+    const liquidGeo = new THREE.BoxGeometry(cfg.bagW * 0.66, liquidH, cfg.bagW * 0.3)
+    this.disposableGeometries.add(liquidGeo)
+    const labelGeo = new THREE.PlaneGeometry(cfg.bagW * 0.44, cfg.bagH * 0.2)
+    this.disposableGeometries.add(labelGeo)
+    const labelMat = new THREE.MeshStandardMaterial({
+      color: 0xc4b8a2,
+      roughness: 0.9,
+      metalness: 0,
+    })
+    this.disposableMaterials.add(labelMat)
+    const hookMat = brassMaterial(this.disposableMaterials)
+    const bags: BloodBag[] = []
+    for (let i = 0; i < maxHp; i += 1) {
+      const bx = (i - (maxHp - 1) / 2) * cfg.spacing
+      const tab = new THREE.Mesh(tabGeo, hookMat)
+      tab.position.set(bx, cfg.poleH - 0.011, 0)
+      group.add(tab)
+
+      const shell = new THREE.Mesh(shellGeo, shellMat)
+      shell.scale.z = 0.5
+      shell.position.set(bx, bagCenterY, 0)
+      group.add(shell)
+
+      const liquid = new THREE.Mesh(liquidGeo, bloodMat)
+      liquid.position.set(bx, bagCenterY, 0)
+      group.add(liquid)
+
+      const label = new THREE.Mesh(labelGeo, labelMat)
+      label.position.set(bx, bagCenterY + cfg.bagH * 0.14, cfg.bagW * 0.27)
+      group.add(label)
+
+      const stub = new THREE.Mesh(stubGeo, tubeMat)
+      stub.position.set(bx, manifoldY + 0.016, 0)
+      group.add(stub)
+
+      const bag: BloodBag = { liquid, shell, liquidH, bottomY, fill: i < hp ? 1 : 0 }
+      const f = bag.fill
+      liquid.scale.y = Math.max(0.001, f)
+      liquid.position.y = bottomY + (liquidH * f) / 2
+      shell.scale.z = 0.5 * (0.72 + 0.28 * Math.min(1, f * 1.4))
+      bags.push(bag)
+    }
+
+    // 汇流管到各自一侧的细管（世界坐标，单独挂在场景里，换架时一并销毁）
+    const extra = new THREE.Group()
+    extra.name = `BloodTube-${actor}`
+    const startY = cfg.y + manifoldY
+    const points =
+      actor === 'player'
+        ? [
+            new THREE.Vector3(cfg.x, startY, cfg.z),
+            new THREE.Vector3(cfg.x - 0.04, startY - 0.16, cfg.z + 0.12),
+            new THREE.Vector3(cfg.x - 0.06, TABLE_TOP + 0.05, cfg.z + 0.26),
+            new THREE.Vector3(cfg.x - 0.02, TABLE_TOP - 0.32, cfg.z + 0.46),
+          ]
+        : [
+            new THREE.Vector3(cfg.x, startY, cfg.z),
+            new THREE.Vector3(cfg.x + 0.16, startY - 0.08, cfg.z + 0.1),
+            new THREE.Vector3(cfg.x + 0.4, startY - 0.26, cfg.z + 0.22),
+            new THREE.Vector3(-0.62, 1.42, -2.92),
+          ]
+    const curve = new THREE.CatmullRomCurve3(points)
+    const tubeGeo = new THREE.TubeGeometry(curve, 26, 0.0045, 6, false)
+    this.disposableGeometries.add(tubeGeo)
+    const tube = new THREE.Mesh(tubeGeo, tubeMat)
+    extra.add(tube)
+    this.scene.add(extra)
+
+    return { group, extra, bags, maxHp }
   }
 
   private applyOverride(key: string, texture: THREE.Texture): void {

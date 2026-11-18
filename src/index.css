@@ -186,6 +186,17 @@ body {
   filter: blur(1.5px);
 }
 
+@keyframes vision-blur {
+  0% { opacity: 0; }
+  10% { opacity: 1; }
+  45% { opacity: 0.72; }
+  100% { opacity: 0; }
+}
+
+.vision-blur {
+  animation: vision-blur 1100ms ease-out both;
+}
+
 @keyframes banner-slide {
   0% { opacity: 0; transform: translateY(-10px); }
   12% { opacity: 1; transform: translateY(0); }

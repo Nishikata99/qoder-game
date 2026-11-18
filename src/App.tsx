@@ -40,11 +40,13 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null)
   const [bloodFlash, setBloodFlash] = useState(0)
   const [bloodSplatter, setBloodSplatter] = useState(0)
+  const [visionBlur, setVisionBlur] = useState(0)
   const noticeTimer = useRef<number | null>(null)
   const relayTimer = useRef<number | null>(null)
   const lootTimer = useRef<number | null>(null)
   const bloodTimer = useRef<number | null>(null)
   const splatterTimer = useRef<number | null>(null)
+  const blurTimer = useRef<number | null>(null)
   const bannerId = useRef(0)
 
   const showNotice = useCallback((message: string) => {
@@ -69,6 +71,9 @@ export default function App() {
               setBloodSplatter((n) => n + 1)
               if (splatterTimer.current !== null) window.clearTimeout(splatterTimer.current)
               splatterTimer.current = window.setTimeout(() => setBloodSplatter(0), 1500)
+              setVisionBlur((n) => n + 1)
+              if (blurTimer.current !== null) window.clearTimeout(blurTimer.current)
+              blurTimer.current = window.setTimeout(() => setVisionBlur(0), 1100)
             }
           } else {
             sound.playClickEmpty()
@@ -150,9 +155,23 @@ export default function App() {
   const bpm = Math.round(64 + (1 - hpRatio) * 66)
   useEffect(() => {
     if (!alive) return
-    const id = window.setInterval(() => sound.playHeartbeat(bpm), 1250)
+    // 外层鼓点也得跟着 bpm 走，否则血越少只有双拍间距变、整体节奏不变
+    const id = window.setInterval(() => {
+      if (document.hidden) return
+      sound.playHeartbeat(bpm)
+    }, Math.round(60000 / bpm))
     return () => window.clearInterval(id)
   }, [alive, bpm, sound])
+
+  // 切后台冻结整条音频图：suspend 期间 currentTime 不走，排队的心跳会在回来时一起炸开
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden) sound.suspend()
+      else sound.resume()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [sound])
 
   const unlocked = useMemo(
     () => new Set<ItemId>(snapshot?.unlockedItems ?? []),
@@ -227,6 +246,13 @@ export default function App() {
         }}
       />
 
+      {/* 自己中弹：世界瞬间失焦，只模糊画布，HUD 保持清晰 */}
+      <div
+        key={`blur-${visionBlur}`}
+        className={`pointer-events-none absolute inset-0 ${visionBlur > 0 ? 'vision-blur' : 'opacity-0'}`}
+        style={{ backdropFilter: 'blur(9px) saturate(0.65)', WebkitBackdropFilter: 'blur(9px) saturate(0.65)' }}
+      />
+
       {/* Minimal corner chrome. */}
       <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-4">
         <div className="flex items-center gap-3">
@@ -242,7 +268,7 @@ export default function App() {
         ) : null}
       </div>
 
-      {/* Hand totals: blackjack needs the numbers on screen, not mental arithmetic. */}
+      {/* Hand totals live on the felt itself (SceneManager score plates); panels keep vitals/status. */}
       {snapshot && started ? (
         <>
           <ActorPanel className="top-14 left-4" label="你" actor={snapshot.player} accent />
@@ -497,7 +523,6 @@ function ActorPanel({
 }) {
   const visibleCards = actor.visibleHand.visible.filter((card): card is Card => card !== null)
   const shown = evaluateHand(visibleCards)
-  const hidden = actor.visibleHand.visible.some((card) => card === null)
   return (
     <div
       className={`pointer-events-none absolute w-36 border bg-black/50 px-3 py-2 backdrop-blur-sm ${
@@ -506,27 +531,6 @@ function ActorPanel({
     >
       <div className="flex items-center justify-between">
         <span className="text-[9px] tracking-[0.3em] text-bone-200/40 uppercase">{label}</span>
-        <span className="flex gap-1">
-          {Array.from({ length: actor.maxHp }, (_, index) => (
-            <span
-              key={index}
-              className={`h-1 w-3 ${
-                index < actor.hp ? (accent ? 'bg-rust-400/90' : 'bg-bone-200/55') : 'bg-white/10'
-              }`}
-            />
-          ))}
-        </span>
-      </div>
-      <div className="mt-1 flex items-baseline gap-1.5">
-        <span className="font-display text-2xl leading-none text-bone-200">{shown.total}</span>
-        {hidden ? <span className="text-sm text-bone-200/35">+ ?</span> : null}
-        {shown.soft ? (
-          <span className="text-[9px] tracking-[0.2em] text-sky-300/70">软</span>
-        ) : null}
-        {shown.blackjack ? (
-          <span className="text-[9px] tracking-[0.2em] text-rust-400">BJ</span>
-        ) : null}
-        <span className="text-[9px] tracking-[0.2em] text-bone-200/30">点</span>
       </div>
       <p className="mt-1 flex items-center gap-2 text-[9px] tracking-[0.15em] text-bone-200/30">
         <span>

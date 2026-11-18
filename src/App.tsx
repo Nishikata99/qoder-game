@@ -39,10 +39,12 @@ export default function App() {
   const [loot, setLoot] = useState<LootBanner | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [bloodFlash, setBloodFlash] = useState(0)
+  const [bloodSplatter, setBloodSplatter] = useState(0)
   const noticeTimer = useRef<number | null>(null)
   const relayTimer = useRef<number | null>(null)
   const lootTimer = useRef<number | null>(null)
   const bloodTimer = useRef<number | null>(null)
+  const splatterTimer = useRef<number | null>(null)
   const bannerId = useRef(0)
 
   const showNotice = useCallback((message: string) => {
@@ -63,6 +65,11 @@ export default function App() {
             setBloodFlash((n) => n + 1)
             if (bloodTimer.current !== null) window.clearTimeout(bloodTimer.current)
             bloodTimer.current = window.setTimeout(() => setBloodFlash(0), 900)
+            if (event.target === 'player') {
+              setBloodSplatter((n) => n + 1)
+              if (splatterTimer.current !== null) window.clearTimeout(splatterTimer.current)
+              splatterTimer.current = window.setTimeout(() => setBloodSplatter(0), 1500)
+            }
           } else {
             sound.playClickEmpty()
           }
@@ -207,6 +214,16 @@ export default function App() {
         style={{
           background:
             'radial-gradient(ellipse 78% 70% at 50% 50%, rgba(120,0,0,0) 38%, rgba(122,8,6,0.42) 72%, rgba(58,0,0,0.86) 100%)',
+        }}
+      />
+
+      {/* 自己中弹：镜头被血糊住，比边缘暗红更强的一层血斑 */}
+      <div
+        key={`splat-${bloodSplatter}`}
+        className={`pointer-events-none absolute inset-0 ${bloodSplatter > 0 ? 'blood-splatter' : 'opacity-0'}`}
+        style={{
+          background:
+            'radial-gradient(circle 30vmin at 24% 20%, rgba(104,0,0,0.92) 0%, rgba(104,0,0,0.5) 40%, rgba(104,0,0,0) 72%), radial-gradient(circle 24vmin at 76% 68%, rgba(78,0,0,0.88) 0%, rgba(78,0,0,0.38) 44%, rgba(78,0,0,0) 76%), radial-gradient(circle 58vmin at 54% 44%, rgba(56,0,0,0.52) 0%, rgba(56,0,0,0.24) 55%, rgba(56,0,0,0) 84%)',
         }}
       />
 

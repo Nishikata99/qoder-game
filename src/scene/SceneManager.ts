@@ -147,6 +147,13 @@ const CEILING_Y = 6.0
 /** 灯罩下沿在世界坐标中的高度，聚光灯挂在这里才不会被罩体遮挡 */
 const LAMP_SHADE_BOT_Y = 4.02
 
+/** 枪口瞄准的旋转中心：左轮底座落在桌面上的位置 */
+const GUN_PIVOT = new THREE.Vector3(0, TABLE_TOP + 0.075, 0.08)
+/** Boss 中弹点：胸口高度、半身像正面 */
+const BOSS_HIT_POINT = new THREE.Vector3(0, 1.64, BOSS_Z + 0.62)
+/** 一次血雾爆发的粒子数 */
+const BLOOD_PARTICLE_COUNT = 80
+
 /** 环境反射强度：给金属与铁皮墙一点基础亮度，低于 0.1 时整个房间只剩纯黑 */
 const ENV_INTENSITY = 0.22
 
@@ -252,6 +259,8 @@ export class SceneManager {
   private readonly tableGroup = new THREE.Group()
   private readonly bossGroup = new THREE.Group()
   private readonly gunGroup = new THREE.Group()
+  /** 瞄准枢轴：挂在枪座位置，yaw/pitch 绕它旋转，枪口才能真的对准目标 */
+  private readonly gunAim = new THREE.Group()
   private readonly deckGroup = new THREE.Group()
   private readonly cardGroup = new THREE.Group()
   private readonly itemRoot = new THREE.Group()
@@ -282,9 +291,14 @@ export class SceneManager {
   private revealLight: THREE.PointLight | null = null
   private revealGlowLife = 0
   private aimTarget: ActorId = 'boss'
-  private aimBlend = 0
-  private aimDuration = 0.8
   private gunRestYaw = 1.02
+  private readonly aimScratch = new THREE.Vector3()
+  private readonly aimScratchTarget = new THREE.Vector3()
+  private readonly bloodBurst: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial>
+  private readonly bloodVelocity = new Float32Array(BLOOD_PARTICLE_COUNT * 3)
+  private bloodLife = 0
+  private bloodMist: THREE.Sprite | null = null
+  private bloodMistLife = 0
   private shakeTime = 0
   private shakeDuration = 0
   private shakeStrength = 0
@@ -357,11 +371,15 @@ export class SceneManager {
     this.buildTable()
     this.bossParts = this.buildBoss()
     const gun = this.buildRevolver()
-    this.gunGroup.add(gun.root)
-    this.gunGroup.rotation.y = this.gunRestYaw
+    this.gunAim.position.copy(GUN_PIVOT)
+    this.gunAim.rotation.order = 'YXZ'
+    this.gunAim.rotation.y = this.gunRestYaw
+    this.gunAim.add(gun.root)
+    this.gunGroup.add(this.gunAim)
     this.drum = gun.drum
     this.muzzleLight = gun.muzzleLight
     this.flash = gun.flash
+    this.bloodBurst = this.buildBloodBurst()
 
     const crt = this.buildCrt()
     this.crtScreen = crt.screen
@@ -448,11 +466,12 @@ export class SceneManager {
       const halo = new THREE.Mesh(geometry, material)
       halo.renderOrder = 20
       halo.visible = false
-      this.gunGroup.add(halo)
+      this.gunAim.add(halo)
       this.revealGlow = halo
     }
     const glow = this.revealGlow
-    const cylinderY = TABLE_TOP + 0.2
+    // 位置改用瞄准枢轴的局部坐标：转轮中心正上方
+    const cylinderY = 0.075
     glow.visible = true
     glow.position.set(0, cylinderY, -0.09)
     glow.material.color.setHex(live ? 0xff2a18 : 0x2f8cff)
@@ -461,7 +480,7 @@ export class SceneManager {
     if (!this.revealLight) {
       const light = new THREE.PointLight(0xff2a18, 0, 1.6, 2)
       light.position.set(0, cylinderY + 0.06, -0.09)
-      this.gunGroup.add(light)
+      this.gunAim.add(light)
       this.revealLight = light
     }
     const light = this.revealLight
@@ -494,8 +513,6 @@ export class SceneManager {
     const deathShot = payload.lethal && payload.target === 'player'
     this.setShot('execute', 0.85)
     this.aimTarget = payload.target
-    this.aimBlend = 0
-    this.aimDuration = 0.85
     if (deathShot) {
       this.tween({
         duration: 0.9,
@@ -572,8 +589,6 @@ export class SceneManager {
   playShot(payload: ShotPayload): void {
     if (this.disposed) return
     const live = payload.chamber === 'live'
-    const muzzleWorld = new THREE.Vector3()
-    this.flash.getWorldPosition(muzzleWorld)
     this.flash.visible = true
     this.flash.material.opacity = live ? 1 : 0.35
     this.flash.material.color.setHex(live ? 0xffc060 : 0x9fb8c8)
@@ -589,7 +604,6 @@ export class SceneManager {
         this.flash.material.opacity = 0
       },
     })
-    this.muzzleLight.position.copy(muzzleWorld).sub(this.gunGroup.position)
     this.muzzleLight.color.setHex(live ? 0xffb060 : 0x8fb4c8)
     this.muzzleLight.intensity = live ? 26 : 4
     this.tween({
@@ -598,6 +612,8 @@ export class SceneManager {
         this.muzzleLight.intensity = (live ? 26 : 4) * (1 - t) ** 2
       },
     })
+
+    if (live && payload.target === 'boss') this.spawnBlood(BOSS_HIT_POINT)
 
     const recoil = live ? 0.16 : 0.05
     this.tween({
@@ -875,14 +891,15 @@ export class SceneManager {
     clone.position.set(-center.x, -scaled.min.y, -center.z)
     holder.add(clone)
 
+    // 枪口火光与点光原本挂在程序化模型里，换模型前先挪到瞄准枢轴，否则一起被销毁
+    this.gunAim.add(this.flash, this.muzzleLight)
+
     if (placeholder) {
-      holder.position.copy(placeholder.position)
-      this.gunGroup.remove(placeholder)
+      // 占位枪挂在 gunAim 下，必须从真实父节点摘下，否则两把枪叠在一起
+      placeholder.removeFromParent()
       this.disposeObject(placeholder)
-    } else {
-      holder.position.set(0, TABLE_TOP + 0.075, 0.08)
     }
-    this.gunGroup.add(holder)
+    this.gunAim.add(holder)
 
     // 开火动画会旋转 drum：优先绑到模型的转轮节点
     const drumNode = clone.getObjectByName('CylinderDrum')
@@ -998,6 +1015,7 @@ export class SceneManager {
     this.updateLighting()
     this.updateBoss(dt)
     this.updateDust(dt)
+    this.updateBlood(dt)
     this.updateGunAim(dt)
     this.updateItems(dt)
     this.updateCards(dt)
@@ -1075,22 +1093,27 @@ export class SceneManager {
       this.cameraBase.y + breathe * drift + sy,
       this.cameraBase.z + Math.cos(this.elapsed * 0.17) * 0.02 * drift + sz,
     )
-    if (this.aimBlend < 1 && this.shot === 'execute') {
-      this.aimBlend = Math.min(1, this.aimBlend + dt / Math.max(0.001, this.aimDuration))
-    }
     this.spaceLook()
   }
 
   private updateGunAim(dt: number): void {
-    const targetYaw =
-      this.shot === 'execute' && this.aimBlend > 0
-        ? this.aimTarget === 'player'
-          ? this.gunRestYaw + Math.PI * 0.86
-          : this.gunRestYaw - 0.18
-        : this.gunRestYaw
-    const currentYaw = this.gunGroup.rotation.y
-    const nextYaw = currentYaw + (targetYaw - currentYaw) * Math.min(1, dt * 4.5)
-    this.gunGroup.rotation.y = nextYaw
+    if (this.shot === 'execute') {
+      this.gunAim.getWorldPosition(this.aimScratch)
+      if (this.aimTarget === 'player') {
+        // 枪口回指镜头下方一点，画面上看起来才是顶着自己的下颚
+        this.aimScratchTarget.copy(this.camera.position)
+        this.aimScratchTarget.y -= 0.24
+      } else {
+        this.aimScratchTarget.copy(BOSS_HIT_POINT)
+      }
+      this.aimScratchTarget.sub(this.aimScratch)
+      const horizontal = Math.hypot(this.aimScratchTarget.x, this.aimScratchTarget.z)
+      const yaw = Math.atan2(-this.aimScratchTarget.x, -this.aimScratchTarget.z)
+      const pitch = Math.atan2(this.aimScratchTarget.y, Math.max(0.0001, horizontal))
+      this.turnGun(yaw, pitch, dt)
+    } else {
+      this.turnGun(this.gunRestYaw, 0, dt)
+    }
     if (this.revealGlowLife > 0) {
       this.revealGlowLife = Math.max(0, this.revealGlowLife - dt)
       if (this.revealGlow) {
@@ -1103,6 +1126,15 @@ export class SceneManager {
     } else if (this.revealLight) {
       this.revealLight.intensity = 0
     }
+  }
+
+  /** 短弧插值：yaw 绕过 ±π 时不会倒着甩一整圈 */
+  private turnGun(yaw: number, pitch: number, dt: number): void {
+    const k = Math.min(1, dt * 5.5)
+    const yawDelta = Math.atan2(Math.sin(yaw - this.gunAim.rotation.y), Math.cos(yaw - this.gunAim.rotation.y))
+    const pitchDelta = Math.atan2(Math.sin(pitch - this.gunAim.rotation.x), Math.cos(pitch - this.gunAim.rotation.x))
+    this.gunAim.rotation.y += yawDelta * k
+    this.gunAim.rotation.x += pitchDelta * k
   }
 
   private spaceLook(): void {
@@ -1606,7 +1638,8 @@ export class SceneManager {
   } {
     const root = new THREE.Group()
     root.name = 'RevolverPlaceholder'
-    root.position.set(0.0, TABLE_TOP + 0.075, 0.08)
+    // 世界位置由外层 gunAim 提供，模型本身落在枢轴原点
+    root.position.set(0, 0, 0)
 
     const steel = new THREE.MeshStandardMaterial({
       color: 0x4c4a4a,
@@ -1880,6 +1913,116 @@ export class SceneManager {
     points.userData.drift = drift
     this.scene.add(points)
     return points
+  }
+
+  /** 实弹命中的血雾：一小撮带重力的血珠 + 一团扩散的红雾，都朝镜头方向喷出 */
+  private buildBloodBurst(): THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial> {
+    const positions = new Float32Array(BLOOD_PARTICLE_COUNT * 3)
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    this.disposableGeometries.add(geometry)
+    const material = new THREE.PointsMaterial({
+      map: this.textures.get('dust'),
+      color: 0xff2414,
+      size: 0.16,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true,
+      toneMapped: false,
+    })
+    this.disposableMaterials.add(material)
+    const points = new THREE.Points(geometry, material)
+    points.visible = false
+    this.scene.add(points)
+    return points
+  }
+
+  private spawnBlood(origin: THREE.Vector3): void {
+    this.bloodLife = 0.95
+    const attribute = this.bloodBurst.geometry.getAttribute('position')
+    if (!(attribute instanceof THREE.BufferAttribute)) return
+    const array = attribute.array as Float32Array
+    for (let i = 0; i < BLOOD_PARTICLE_COUNT; i += 1) {
+      const base = i * 3
+      array[base] = origin.x
+      array[base + 1] = origin.y
+      array[base + 2] = origin.z
+      // z 朝向镜头，喷得够开才会在画面上形成扇形血雾
+      this.bloodVelocity[base] = (Math.random() - 0.5) * 1.6
+      this.bloodVelocity[base + 1] = Math.random() * 1.2 - 0.15
+      this.bloodVelocity[base + 2] = 0.6 + Math.random() * 2.6
+    }
+    attribute.needsUpdate = true
+    this.bloodBurst.visible = true
+    this.bloodBurst.material.opacity = 0.95
+
+    if (!this.bloodMist) {
+      const material = new THREE.SpriteMaterial({
+        map: this.textures.get('dust'),
+        color: 0xa31208,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+      })
+      this.disposableMaterials.add(material)
+      const sprite = new THREE.Sprite(material)
+      sprite.visible = false
+      this.scene.add(sprite)
+      this.bloodMist = sprite
+    }
+    const mist = this.bloodMist
+    mist.position.copy(origin)
+    mist.scale.setScalar(0.55)
+    mist.material.opacity = 0.8
+    mist.visible = true
+    this.bloodMistLife = 0.7
+
+    // 命中瞬间的红光，让血在曝光里"炸"一下
+    const impact = new THREE.PointLight(0xff2a14, 16, 4.5, 2)
+    impact.position.copy(origin)
+    impact.position.z += 0.15
+    this.scene.add(impact)
+    this.tween({
+      duration: 0.3,
+      onUpdate: (t) => {
+        impact.intensity = 16 * (1 - t) ** 2
+      },
+      onComplete: () => {
+        this.scene.remove(impact)
+        impact.dispose()
+      },
+    })
+  }
+
+  private updateBlood(dt: number): void {
+    if (this.bloodLife > 0) {
+      this.bloodLife = Math.max(0, this.bloodLife - dt)
+      const attribute = this.bloodBurst.geometry.getAttribute('position')
+      if (attribute instanceof THREE.BufferAttribute) {
+        const array = attribute.array as Float32Array
+        for (let i = 0; i < BLOOD_PARTICLE_COUNT; i += 1) {
+          const base = i * 3
+          this.bloodVelocity[base + 1] -= 3.2 * dt
+          array[base] += this.bloodVelocity[base] * dt
+          array[base + 1] += this.bloodVelocity[base + 1] * dt
+          array[base + 2] += this.bloodVelocity[base + 2] * dt
+        }
+        attribute.needsUpdate = true
+      }
+      this.bloodBurst.material.opacity = 0.95 * (this.bloodLife / 0.95) ** 0.7
+      if (this.bloodLife === 0) this.bloodBurst.visible = false
+    }
+    if (this.bloodMistLife > 0 && this.bloodMist) {
+      this.bloodMistLife = Math.max(0, this.bloodMistLife - dt)
+      const t = 1 - this.bloodMistLife / 0.7
+      this.bloodMist.scale.setScalar(0.55 + t * 1.3)
+      this.bloodMist.material.opacity = 0.8 * (1 - t) ** 1.4
+      if (this.bloodMistLife === 0) this.bloodMist.visible = false
+    }
   }
 
   private buildDeckPile(): void {

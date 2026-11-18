@@ -174,6 +174,18 @@ body {
   animation: blood-pulse 900ms ease-out both;
 }
 
+@keyframes blood-splat {
+  0% { opacity: 0; transform: scale(1.08); }
+  7% { opacity: 1; transform: scale(1); }
+  55% { opacity: 0.82; }
+  100% { opacity: 0; transform: scale(1.02); }
+}
+
+.blood-splatter {
+  animation: blood-splat 1500ms ease-out both;
+  filter: blur(1.5px);
+}
+
 @keyframes banner-slide {
   0% { opacity: 0; transform: translateY(-10px); }
   12% { opacity: 1; transform: translateY(0); }

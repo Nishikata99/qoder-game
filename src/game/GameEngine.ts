@@ -7,6 +7,7 @@ export type Phase =
   | 'playerTurn'
   | 'bossTurn'
   | 'resolving'
+  | 'targeting'
   | 'execution'
   | 'roundEnd'
   | 'levelClear'
@@ -59,7 +60,7 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
   magnifier: {
     id: 'magnifier',
     name: '放大镜',
-    summary: '窥视当前枪膛内下一发是实弹还是空弹。',
+    summary: '窥视当前枪膛内下一发是实弹还是空弹。知道空膛时，开枪阶段可对自己开枪换取道具。',
     glyph: '◎',
   },
   sedative: {
@@ -71,7 +72,7 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
   saw: {
     id: 'saw',
     name: '锯子',
-    summary: '锯短枪管：本局实弹伤害翻倍（基础 1 点 → 2 点）。',
+    summary: '锯短枪管：实弹伤害翻倍。加成一直保留到真正打出实弹为止。',
     glyph: '⌁',
   },
   magnet: {
@@ -83,7 +84,7 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
   handcuffs: {
     id: 'handcuffs',
     name: '手铐',
-    summary: '锁住对手：强制停牌，跳过本局全部要牌与道具操作。',
+    summary: '锁住对手的下一次行动：不能要牌，也不能使用道具。',
     glyph: '∞',
   },
   hourglass: {
@@ -113,7 +114,10 @@ export interface LevelConfig {
   readonly id: number
   readonly name: string
   readonly title: string
+  /** 对手生命：逐层抬高，逼玩家必须靠牌技积累胜场 */
   readonly hp: number
+  /** 玩家生命：每层重置，低于对手，容错更小 */
+  readonly playerHp: number
   readonly supply: number
   readonly personality: BossPersonality
 }
@@ -123,7 +127,8 @@ export const LEVELS: readonly LevelConfig[] = [
     id: 1,
     name: '锈蚀看门人',
     title: '门厅 · 滴水的地下室',
-    hp: 3,
+    hp: 7,
+    playerHp: 6,
     supply: 2,
     personality: 'cautious',
   },
@@ -131,7 +136,8 @@ export const LEVELS: readonly LevelConfig[] = [
     id: 2,
     name: '赌命收账人',
     title: '账房 · 发霉的赌桌',
-    hp: 4,
+    hp: 8,
+    playerHp: 6,
     supply: 3,
     personality: 'gambler',
   },
@@ -139,7 +145,8 @@ export const LEVELS: readonly LevelConfig[] = [
     id: 3,
     name: '深渊执刑者',
     title: '刑台 · 没有出口',
-    hp: 5,
+    hp: 9,
+    playerHp: 7,
     supply: 4,
     personality: 'executioner',
   },
@@ -177,6 +184,8 @@ export interface GameSnapshot {
   readonly boss: ActorView
   readonly cylinder: CylinderView
   readonly turn: ActorId | null
+  /** 进入 targeting 阶段时持枪的人；玩家需要选择枪口朝向 */
+  readonly pendingShot: ActorId | null
   /** 本局实弹伤害加成（走火遗恨，中弹后清零） */
   readonly damageBonus: number
   /** 已累积的走火层数，等于 damageBonus，供 UI 区分「遗恨」与「基础」 */
@@ -206,6 +215,7 @@ export type GameEvent =
   | { readonly type: 'chamberRevealed'; readonly actor: ActorId; readonly chamber: Chamber }
   | { readonly type: 'chamberDiscarded'; readonly actor: ActorId; readonly chamber: Chamber }
   | { readonly type: 'magnetSwap'; readonly actor: ActorId; readonly card: Card }
+  | { readonly type: 'chamberRecovered'; readonly actor: ActorId; readonly item: ItemId }
   | { readonly type: 'hourglass'; readonly actor: ActorId }
   | { readonly type: 'daggerReshuffle'; readonly actor: ActorId; readonly live: number; readonly blank: number }
   | {
@@ -336,10 +346,9 @@ export function evaluateHand(cards: readonly Card[]): HandState {
  * 点数额仍按真实手牌计算，UI 只隐藏牌面。
  */
 function withHoleCard(hand: HandState, hidden: boolean): HandState {
-  if (!hidden) return hand
   return {
     ...hand,
-    visible: hand.cards.map((card, index) => (index === 1 ? null : card)),
+    visible: hand.cards.map((card, index) => (hidden && index === 1 ? null : card)),
   }
 }
 
@@ -394,10 +403,10 @@ class Cylinder {
   }
 
   reload(): Chamber[] {
-    // 每轮总弹数 3~6 发，实弹数 1 ~ (总数-1)，保证既有悬念也不至于全空
-    const total = 3 + Math.floor(this.rng() * 4)
+    // 装 4~6 发、实弹 2~3 发：实弹率约五成，一枪定生死但不至于一局打完还在空响
+    const total = 4 + Math.floor(this.rng() * 3)
     const maxLive = Math.min(3, total - 1)
-    const liveCount = 1 + Math.floor(this.rng() * maxLive)
+    const liveCount = 2 + Math.floor(this.rng() * (maxLive - 1))
     const chambers: Chamber[] = []
     for (let i = 0; i < liveCount; i += 1) chambers.push('live')
     for (let i = 0; i < total - liveCount; i += 1) chambers.push('blank')
@@ -454,6 +463,7 @@ export class GameEngine {
   private deck: Card[] = []
   private revealed: Chamber | null = null
   private damageBonus = 0
+  private pendingShot: ActorId = 'player'
   private hourglassActive = false
   private holeRevealed = false
   private inputLocked = false
@@ -493,6 +503,7 @@ export class GameEngine {
     this.deck = []
     this.revealed = null
     this.damageBonus = 0
+    this.pendingShot = 'player'
     this.hourglassActive = false
     this.holeRevealed = false
     this.logLines = []
@@ -600,6 +611,7 @@ export class GameEngine {
           : this.phase === 'bossTurn'
             ? 'boss'
             : null,
+      pendingShot: this.phase === 'targeting' ? this.pendingShot : null,
       damageBonus: this.damageBonus,
       crisisStacks: this.damageBonus,
       hourglassActive: this.hourglassActive,
@@ -625,8 +637,9 @@ export class GameEngine {
     this.hourglassActive = false
     this.holeRevealed = false
     this.revealed = null
+    this.pendingShot = 'player'
     const level = this.currentLevel()
-    this.player = new ActorRuntime('player', level.hp)
+    this.player = new ActorRuntime('player', level.playerHp)
     this.boss = new ActorRuntime('boss', level.hp)
     this.giveSupply(this.player, level.supply)
     this.giveSupply(this.boss, level.supply)
@@ -649,6 +662,7 @@ export class GameEngine {
     this.round += 1
     this.phase = 'dealing'
     this.revealed = null
+    this.pendingShot = 'player'
     // 走火遗恨是「永久叠加」的，直到有人真的中弹才清零，因此这里不重置
     this.hourglassActive = false
     this.holeRevealed = false
@@ -762,8 +776,15 @@ export class GameEngine {
     if (!this.alive(token)) return
     this.phase = 'resolving'
     // 结算时亮出底牌
+    const wasHidden = !this.holeRevealed
     this.holeRevealed = true
     this.boss.hand = withHoleCard(this.boss.hand, false)
+    if (wasHidden) {
+      const hole = this.boss.hand.cards[1]
+      if (hole) {
+        this.log(`它亮出底牌 ${formatCard(hole)}，共 ${this.boss.hand.total} 点。`)
+      }
+    }
     this.publish()
     await this.wait(420)
     if (!this.alive(token)) return
@@ -788,9 +809,15 @@ export class GameEngine {
     }
 
     if (winner === null) {
-      this.log(`走火危机：双方都停在 ${playerTotal} 点。`)
-      this.giveRandomItem(this.player)
-      this.giveRandomItem(this.boss)
+      if (this.player.hand.busted && this.boss.hand.busted) {
+        this.log(`双方同时爆牌（${playerTotal} 对 ${bossTotal}），这一枪没人开。`)
+      } else {
+        this.log(`走火危机：双方都停在 ${playerTotal} 点，这一枪没人开。`)
+      }
+      const mine = this.giveRandomItem(this.player)
+      const theirs = this.giveRandomItem(this.boss)
+      if (mine) this.log(`你从桌下摸到了【${ITEM_CATALOG[mine].name}】。`)
+      if (theirs) this.log(`它也摸到了【${ITEM_CATALOG[theirs].name}】。`)
       // 永久叠加，直到有人中弹才清零
       this.damageBonus += 1
       this.log(`轮盘发出空转的咔哒声。走火遗恨 +1，此后实弹伤害 +${this.damageBonus}。`)
@@ -803,21 +830,55 @@ export class GameEngine {
       return
     }
 
-    const attacker = winner === 'player' ? this.player : this.boss
-    const defender = winner === 'player' ? this.boss : this.player
-    const sawed = attacker.sawBoost > 0
-    if (sawed) attacker.sawBoost = 0
+    // 赢家拿到枪，由它决定枪口朝向：对手，或者自己
+    this.pendingShot = winner
+    this.phase = 'targeting'
+    this.publish()
+
+    if (winner === 'boss') {
+      await this.wait(760)
+      if (!this.alive(token) || this.phase !== 'targeting') return
+      const target = this.chooseBossTarget()
+      this.log(`「${this.currentLevel().name}」把枪口对准${target === 'boss' ? '自己' : '你'}。`)
+      this.publish()
+      await this.resolveShot(this.boss, target === 'boss' ? this.boss : this.player, token)
+    }
+  }
+
+  /** 处决阶段：持枪者选择枪口。只有玩家持枪时才能调用。 */
+  chooseTarget(target: ActorId): boolean {
+    if (this.phase !== 'targeting') {
+      return this.reject('现在不是决定枪口的时候。')
+    }
+    if (this.pendingShot !== 'player') {
+      return this.reject('枪在它手里。')
+    }
+    void this.resolveShot(this.player, target === 'player' ? this.player : this.boss, this.generation)
+    return true
+  }
+
+  private async resolveShot(attacker: ActorRuntime, target: ActorRuntime, token: number): Promise<void> {
+    if (!this.alive(token) || this.phase !== 'targeting') return
+    const selfShot = attacker === target
     this.ensureCylinder()
+    const sawed = attacker.sawBoost > 0
     const blackjack = attacker.hand.blackjack && !attacker.hand.busted
     const chamber = this.cylinder.current ?? 'blank'
+    // 爆牌收尾不算碾压：点差只在双方都没爆时才成立
+    const margin =
+      attacker.hand.busted || target.hand.busted
+        ? 0
+        : Math.abs(attacker.hand.total - target.hand.total)
+    const overwhelmed = margin >= 5
 
     this.phase = 'execution'
     this.hourglassActive = false
+    this.pendingShot = 'player'
     this.publish()
     this.dispatch({
       type: 'execution',
       by: attacker.id,
-      target: defender.id,
+      target: target.id,
       chamber,
       lethal: chamber === 'live',
     })
@@ -826,29 +887,48 @@ export class GameEngine {
 
     this.cylinder.fire()
     this.revealed = null
-    // 基础 1 点；锯子让本局实弹翻倍（2 点）；黑杰克 +1；走火遗恨 +N
-    const base = sawed ? 2 : 1
-    const damage = chamber === 'live' ? base + (blackjack ? 1 : 0) + this.damageBonus : 0
+    // 基础 2 点；黑杰克 +1；碾压（点差 ≥5）+1；走火遗恨 +N；锯子整体翻倍
+    const stacks = this.damageBonus
+    const base = 2 + (blackjack ? 1 : 0) + (overwhelmed ? 1 : 0) + stacks
+    const damage = chamber === 'live' ? (sawed ? base * 2 : base) : 0
+    let reward: ItemId | null = null
     if (chamber === 'live') {
-      defender.hp = Math.max(0, defender.hp - damage)
-      // 有人真的中弹了，走火遗恨清零
+      target.hp = Math.max(0, target.hp - damage)
+      // 有人真的中弹了，走火遗恨清零；锯子的加成也只在实弹时耗尽
       this.damageBonus = 0
+      attacker.sawBoost = 0
+    } else if (selfShot) {
+      // 空膛对己：弹壳掉进黑暗，换回一件道具
+      reward = this.giveRandomItem(attacker)
     }
-    const reveal = chamber === 'live' ? '实弹' : '空膛'
-    this.log(
-      chamber === 'live'
-        ? `${actorLabel(attacker.id)}扣下扳机：${reveal}。${actorLabel(defender.id)}承受 ${damage} 点伤害。`
-        : `${actorLabel(attacker.id)}扣下扳机：${reveal}。只有撞针的脆响。`,
-    )
+
+    const who = actorLabel(attacker.id)
+    const victim = selfShot ? '自己' : actorLabel(target.id)
+    if (chamber === 'live') {
+      const tags: string[] = []
+      if (blackjack) tags.push('黑杰克')
+      if (overwhelmed) tags.push('碾压')
+      if (sawed) tags.push('锯短枪管')
+      if (stacks > 0) tags.push(`走火遗恨 +${stacks}`)
+      const tag = tags.length > 0 ? `（${tags.join(' · ')}）` : ''
+      this.log(`${who}扣下扳机：实弹${tag}。${victim}承受 ${damage} 点伤害。`)
+    } else if (reward) {
+      this.log(`${who}把枪口对准${victim}：空膛。捡回一枚空弹，摸到【${ITEM_CATALOG[reward].name}】。`)
+    } else {
+      this.log(`${who}扣下扳机：空膛。只有撞针的脆响。`)
+    }
     this.dispatch({
       type: 'shot',
       by: attacker.id,
-      target: defender.id,
+      target: target.id,
       chamber,
       damage,
       sawed,
       blackjack,
     })
+    if (reward) {
+      this.dispatch({ type: 'chamberRecovered', actor: attacker.id, item: reward })
+    }
     this.publish()
     await this.wait(1500)
     if (!this.alive(token)) return
@@ -859,6 +939,12 @@ export class GameEngine {
     await this.wait(900)
     if (!this.alive(token)) return
     void this.startRound(token)
+  }
+
+  /** 对手的枪口选择：已知空膛且道具槽没满就对自己开枪换道具，否则打玩家 */
+  private chooseBossTarget(): ActorId {
+    if (this.revealed === 'blank' && this.boss.items.length < MAX_ITEMS) return 'boss'
+    return 'player'
   }
 
   private resolveDeaths(): boolean {
@@ -935,9 +1021,9 @@ export class GameEngine {
       case 'magnet': {
         const mine = actor.hand.cards
         const theirs = foe.hand.cards
-        // 玩家视角：自己的最后一张明牌，换对手的明牌（底牌未亮时为第一张）
-        const mineIndex = mine.length - 1
-        const foeIndex = theirs.length > 0 ? 0 : -1
+        // 必须拿「明牌」交换：对手的明牌是第 1 张（第 2 张是暗牌），玩家没有暗牌取最后一张
+        const mineIndex = actor.id === 'boss' ? 0 : mine.length - 1
+        const foeIndex = foe.id === 'boss' ? 0 : theirs.length - 1
         if (mineIndex < 0 || foeIndex < 0) return this.reject('桌上没有可以互换的明牌。')
         const myCard = mine[mineIndex]
         const foeCard = theirs[foeIndex]
@@ -958,7 +1044,7 @@ export class GameEngine {
       case 'handcuffs': {
         if (foe.skipTurn) return this.reject('对手已经被锁住了。')
         foe.skipTurn = true
-        detail = `${actorLabel(foe.id)}被锁住，本局强制停牌。`
+        detail = `${actorLabel(foe.id)}下一次行动被跳过。`
         break
       }
       case 'hourglass': {
@@ -1012,11 +1098,13 @@ export class GameEngine {
     const liveRate = this.liveRate()
     const loses = this.wouldLose()
     const behind = me.hand.total < foe.hand.total
+    // 锯子会一直保留到打出实弹，重复使用会被引擎拒绝并浪费整轮预算
+    const canSaw = me.sawBoost === 0
 
     // ---- 胆小看守者：保守保命 ----
     if (personality === 'cautious') {
       if (has('sedative') && me.hp < me.maxHp) return 'sedative'
-      if (has('saw') && liveRate > 0.7 && me.hand.total >= 15 && !loses) return 'saw'
+      if (canSaw && has('saw') && liveRate > 0.7 && me.hand.total >= 15 && !loses) return 'saw'
       if (has('magnifier') && this.revealed === null && this.cylinder.remaining <= 2) {
         return 'magnifier'
       }
@@ -1029,7 +1117,7 @@ export class GameEngine {
       if (has('sedative') && me.hp < me.maxHp) return 'sedative'
       if (has('handcuffs') && !foe.skipTurn && !foe.hand.busted) return 'handcuffs'
       if (has('magnet') && behind && foe.hand.total >= 8) return 'magnet'
-      if (has('saw') && me.hand.total >= 16 && liveRate >= 0.4) return 'saw'
+      if (canSaw && has('saw') && me.hand.total >= 16 && liveRate >= 0.4) return 'saw'
       if (has('magnifier') && this.revealed === null) return 'magnifier'
       return null
     }
@@ -1047,7 +1135,7 @@ export class GameEngine {
       return 'handcuffs'
     }
     if (has('magnet') && behind && foe.hand.total >= 9) return 'magnet'
-    if (has('saw') && me.hand.total >= 17 && !loses && liveRate > 0.5) return 'saw'
+    if (canSaw && has('saw') && me.hand.total >= 17 && !loses && liveRate > 0.5) return 'saw'
     if (has('magnifier') && this.revealed === null) return 'magnifier'
     return null
   }
@@ -1088,11 +1176,8 @@ export class GameEngine {
     if (this.player.standing) {
       target = Math.max(target, Math.min(21, this.player.hand.total + 1))
     }
-    // 沙漏生效时目标反转：越低越好，只需保证不爆
-    if (this.hourglassActive && !this.player.hand.busted) {
-      target = Math.max(target, 17)
-      return Math.min(target, 17)
-    }
+    // 沙漏生效时点数小者胜：再摸一张只会把自己推高，立即停牌才是最优
+    if (this.hourglassActive && !this.player.hand.busted) return 0
     return target
   }
 
@@ -1124,8 +1209,12 @@ export class GameEngine {
     const card = this.drawCard()
     actor.hand = evaluateHand([...actor.hand.cards, card])
     this.dispatch({ type: 'cardDealt', actor: actor.id, card })
+    // 对手的第二张牌是暗牌，日志不能报点数
+    const concealed = actor.id === 'boss' && !this.holeRevealed && actor.hand.cards.length === 2
     this.log(
-      `${actorLabel(actor.id)}摸到 ${formatCard(card)}，${actor.hand.total} 点${actor.hand.soft ? '（软牌）' : ''}。`,
+      concealed
+        ? '它扣下一张暗牌。'
+        : `${actorLabel(actor.id)}摸到 ${formatCard(card)}，${actor.hand.total} 点${actor.hand.soft ? '（软牌）' : ''}。`,
     )
     this.publish()
   }
@@ -1180,17 +1269,14 @@ export class GameEngine {
     }
   }
 
-  private giveRandomItem(actor: ActorRuntime): void {
-    if (actor.items.length >= MAX_ITEMS) {
-      this.log(`${actorLabel(actor.id)}的道具槽已满，补给被丢进黑暗。`)
-      return
-    }
+  private giveRandomItem(actor: ActorRuntime): ItemId | null {
+    if (actor.items.length >= MAX_ITEMS) return null
     const pool = this.unlockedItems()
     const item = pool[Math.floor(this.rng() * pool.length)]
-    if (!item) return
+    if (!item) return null
     actor.items.push(item)
-    this.log(`${actorLabel(actor.id)}摸到了【${ITEM_CATALOG[item].name}】。`)
     this.dispatch({ type: 'itemDrawn', actor: actor.id, item })
+    return item
   }
 
   private viewOf(actor: ActorRuntime): ActorView {

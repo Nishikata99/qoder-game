@@ -3,8 +3,14 @@ import { SoundEngine } from './audio/SoundEngine'
 import { GameCanvas, ItemTooltip } from './components/GameCanvas'
 import { RulesModal, type ModalTab } from './components/RulesModal'
 import type { ItemHoverPayload } from './scene/SceneManager'
-import type { ActorId, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
-import { GameEngine, ITEM_CATALOG, LEVELS, formatCard as formatCardLabel } from './game/GameEngine'
+import type { ActorId, ActorView, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
+import {
+  GameEngine,
+  ITEM_CATALOG,
+  LEVELS,
+  evaluateHand,
+  formatCard as formatCardLabel,
+} from './game/GameEngine'
 
 interface RelayBanner {
   readonly id: number
@@ -71,6 +77,16 @@ export default function App() {
         case 'hourglass':
           sound.playItemUse()
           showNotice('沙漏逆转：本局点数更小者获胜')
+          break
+        case 'chamberRevealed':
+          if (event.actor === 'player') {
+            showNotice(event.chamber === 'live' ? '放大镜：膛内是实弹' : '放大镜：膛内是空膛')
+          }
+          break
+        case 'chamberRecovered':
+          if (event.actor === 'player') {
+            showNotice(`空膛回收：获得【${ITEM_CATALOG[event.item].name}】`)
+          }
           break
         case 'daggerReshuffle':
           sound.playItemUse()
@@ -209,12 +225,42 @@ export default function App() {
         ) : null}
       </div>
 
+      {/* Hand totals: blackjack needs the numbers on screen, not mental arithmetic. */}
+      {snapshot && started ? (
+        <>
+          <ActorPanel className="top-14 left-4" label="你" actor={snapshot.player} accent />
+          <ActorPanel className="top-14 right-4" label="它" actor={snapshot.boss} />
+          <LogPanel snapshot={snapshot} />
+          <CylinderPanel snapshot={snapshot} />
+        </>
+      ) : null}
+
       {/* Bottom control rail. */}
       <div className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 px-4 pb-5">
         {!started ? (
           <MetalButton tone="primary" onClick={() => void startGame()}>
             坐下，开始交易
           </MetalButton>
+        ) : phase === 'targeting' ? (
+          <div className="flex flex-col items-center gap-2">
+            <p className="text-[9px] tracking-[0.4em] text-rust-400/80 uppercase">
+              {snapshot?.pendingShot === 'player' ? '这一轮你赢了 · 选择枪口' : '它在决定枪口'}
+            </p>
+            {snapshot?.pendingShot === 'player' ? (
+              <div className="flex items-center gap-3">
+                <MetalButton tone="primary" onClick={() => game.chooseTarget('boss')}>
+                  射向它 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">FIRE</span>
+                </MetalButton>
+                <MetalButton
+                  tone="secondary"
+                  onClick={() => game.chooseTarget('player')}
+                  hint="对自己开枪：空膛可摸一件道具，实弹则你自己受伤"
+                >
+                  射向自己 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">RISK</span>
+                </MetalButton>
+              </div>
+            ) : null}
+          </div>
         ) : (
           <div className="flex items-center gap-3">
             <MetalButton
@@ -233,13 +279,17 @@ export default function App() {
 
         <div className="flex items-center gap-2 text-[9px] tracking-[0.2em] text-bone-200/30 uppercase">
           <span>
-            {canAct
-              ? '选择要牌或停牌'
-              : locked && playerTurn
-                ? '本回合被封锁'
-                : inputLocked
-                  ? '…'
-                  : ' '}
+            {phase === 'targeting'
+              ? snapshot?.pendingShot === 'player'
+                ? targetHint(snapshot)
+                : ' ' 
+              : canAct
+                ? '选择要牌或停牌'
+                : locked && playerTurn
+                  ? '本回合被封锁'
+                  : inputLocked
+                    ? '…'
+                    : ' '}
           </span>
         </div>
       </div>
@@ -417,6 +467,121 @@ export default function App() {
   )
 }
 
+function ActorPanel({
+  className,
+  label,
+  actor,
+  accent = false,
+}: {
+  className: string
+  label: string
+  actor: ActorView
+  accent?: boolean
+}) {
+  const visibleCards = actor.visibleHand.visible.filter((card): card is Card => card !== null)
+  const shown = evaluateHand(visibleCards)
+  const hidden = actor.visibleHand.visible.some((card) => card === null)
+  return (
+    <div
+      className={`pointer-events-none absolute w-36 border bg-black/50 px-3 py-2 backdrop-blur-sm ${
+        accent ? 'border-rust-500/35' : 'border-white/8'
+      } ${className}`}
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-[9px] tracking-[0.3em] text-bone-200/40 uppercase">{label}</span>
+        <span className="flex gap-1">
+          {Array.from({ length: actor.maxHp }, (_, index) => (
+            <span
+              key={index}
+              className={`h-1 w-3 ${
+                index < actor.hp ? (accent ? 'bg-rust-400/90' : 'bg-bone-200/55') : 'bg-white/10'
+              }`}
+            />
+          ))}
+        </span>
+      </div>
+      <div className="mt-1 flex items-baseline gap-1.5">
+        <span className="font-display text-2xl leading-none text-bone-200">{shown.total}</span>
+        {hidden ? <span className="text-sm text-bone-200/35">+ ?</span> : null}
+        {shown.soft ? (
+          <span className="text-[9px] tracking-[0.2em] text-sky-300/70">软</span>
+        ) : null}
+        {shown.blackjack ? (
+          <span className="text-[9px] tracking-[0.2em] text-rust-400">BJ</span>
+        ) : null}
+        <span className="text-[9px] tracking-[0.2em] text-bone-200/30">点</span>
+      </div>
+      <p className="mt-1 flex items-center gap-2 text-[9px] tracking-[0.15em] text-bone-200/30">
+        <span>
+          {shown.busted ? '爆牌' : actor.standing ? '已停牌' : '在局中'} · 道具 {actor.items.length}
+        </span>
+        {actor.sawBoost > 0 ? <span className="text-amber-300/80">锯</span> : null}
+      </p>
+    </div>
+  )
+}
+
+function LogPanel({ snapshot }: { snapshot: GameSnapshot }) {
+  const lines = snapshot.log.slice(-3)
+  if (lines.length === 0) return null
+  return (
+    <div className="pointer-events-none absolute top-36 right-4 w-64 space-y-1 text-right">
+      {lines.map((line, index) => (
+        <p
+          key={index}
+          className={`line-clamp-2 text-[10px] leading-relaxed [text-shadow:0_1px_3px_rgba(0,0,0,0.9)] ${
+            index === lines.length - 1 ? 'text-bone-200/65' : 'text-bone-200/30'
+          }`}
+        >
+          {line}
+        </p>
+      ))}
+    </div>
+  )
+}
+
+function CylinderPanel({ snapshot }: { snapshot: GameSnapshot }) {
+  const { cylinder, damageBonus, hourglassActive } = snapshot
+  return (
+    <div className="pointer-events-none absolute bottom-24 left-4 w-40 border border-white/8 bg-black/50 px-3 py-2 backdrop-blur-sm">
+      <div className="flex items-center justify-between text-[9px] tracking-[0.2em] text-bone-200/35 uppercase">
+        <span>弹仓</span>
+        <span className="text-bone-200/60">
+          {cylinder.remaining}/{cylinder.total}
+        </span>
+      </div>
+      <div className="mt-1 flex items-center gap-3 text-[10px] tracking-[0.12em]">
+        <span className="text-rust-400/90">实 {cylinder.live}</span>
+        <span className="text-sky-300/80">空 {cylinder.blank}</span>
+      </div>
+      {cylinder.revealed ? (
+        <p
+          className={`mt-1 text-[10px] tracking-[0.12em] ${
+            cylinder.revealed === 'live' ? 'text-rust-400' : 'text-sky-300'
+          }`}
+        >
+          膛内 · {cylinder.revealed === 'live' ? '实弹' : '空膛'}
+        </p>
+      ) : null}
+      {damageBonus > 0 ? (
+        <p className="mt-1 text-[10px] tracking-[0.12em] text-amber-300/90">
+          走火遗恨 +{damageBonus}
+        </p>
+      ) : null}
+      {hourglassActive ? (
+        <p className="mt-1 text-[10px] tracking-[0.12em] text-fuchsia-300/80">沙漏逆转 · 低者胜</p>
+      ) : null}
+    </div>
+  )
+}
+
+function targetHint(snapshot: GameSnapshot): string {
+  const revealed = snapshot.cylinder.revealed
+  if (revealed === 'blank') return '膛内是空膛：对自己开枪可以摸一件道具'
+  if (revealed === 'live') return '膛内是实弹：对自己开枪会受伤'
+  return '膛内未知：对自己开枪是赌博'
+}
+
 function phaseLabel(phase: string): string {
   switch (phase) {
     case 'reloading':
@@ -429,6 +594,8 @@ function phaseLabel(phase: string): string {
       return '它在行动'
     case 'resolving':
       return '结算'
+    case 'targeting':
+      return '选择枪口'
     case 'execution':
       return '处决'
     case 'roundEnd':

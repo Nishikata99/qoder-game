@@ -43,7 +43,9 @@ src/
   phase, levelIndex, level, round,
   player: ActorView, boss: ActorView,      // 含 hp / items / hand / visibleHand
   cylinder: CylinderView,                  // 剩余实弹/空弹、是否被放大镜窥视
-  turn, damageBonus, crisisStacks,         // damageBonus = 走火遗恨（永久叠加直到中弹）
+  turn,
+  pendingShot,                             // targeting 阶段持枪者；非该阶段为 null
+  damageBonus, crisisStacks,               // damageBonus = 走火遗恨（永久叠加直到中弹）
   hourglassActive,                         // 本局沙漏反转为低分胜
   unlockedItems, inputLocked, log,
 }
@@ -57,20 +59,26 @@ src/
 
 ### 动作入口
 
-所有玩家意图只能走引擎方法：`hit()` / `stand()` / `useItem(id)` / `restart()` / `advanceLevel()`。
+所有玩家意图只能走引擎方法：`hit()` / `stand()` / `useItem(id)` / `chooseTarget(target)` / `restart()` / `advanceLevel()`。
 **禁止在 UI 或场景里改血量、手牌、弹仓。**
 
 ## 三、规则要点（易踩坑）
 
 | 规则 | 实现位置 | 注意 |
 | --- | --- | --- |
-| 对手 1 明 1 暗 | `withHoleCard()` / `ActorView.visibleHand` | 点数额始终按真实手牌算，只隐藏**显示**；亮牌在 `settleRound` 开头 |
-| 锯子翻倍 | 伤害公式 `base = sawed ? 2 : 1` | 不是 +1，是**翻倍**；消耗在本局处决时 |
-| 磁铁换明牌 | `applyItem` 的 `magnet` 分支 | 换牌后必须立刻亮底牌，否则桌面信息自相矛盾 |
-| 沙漏低分胜 | `settleRound` 的 winner 判定 | 爆牌**永远**直接判负，沙漏不改变 |
+| 对手 1 明 1 暗 | `withHoleCard()` / `ActorView.visibleHand` | 点数额始终按真实手牌算，只隐藏**显示**；亮牌在 `settleRound` 开头。`withHoleCard` 必须每次从 `cards` 重建 `visible`——若 hidden=false 时直接返回原对象，暗牌就永远翻不回来 |
+| 战斗日志 | `dealTo()` / `App.tsx` 的 `LogPanel` | HUD 只显示最后 3 条。对手暗牌发下时日志写「它扣下一张暗牌」，**不能**写牌面与点数；亮牌时在 `settleRound` 补「亮出底牌」 |
+| 枪口选择 | `phase='targeting'` + `chooseTarget()` | 只有玩家持枪才等输入；Boss 持枪由 `chooseBossTarget()` 自动决定。HUD 里的点数必须按 `visible` 手牌重新计算，不能用 `visibleHand.total`（那是真实点数） |
+| 伤害公式 | `resolveShot()` | 实弹基础 2 + 黑杰克 1 + 碾压（点差≥5）1 + 遗恨 N，锯子整体 ×2；空膛 0 |
+| 锯子翻倍 | `sawBoost` | 不是 +1，是**整体翻倍**；只在**真的打出实弹**时消耗，空膛不浪费 |
+| 空膛对己 | `resolveShot()` 的 `selfShot` 分支 | 空膛摸一件道具（`chamberRecovered` 事件）；实弹则伤害打在自己身上 |
+| 磁铁换明牌 | `applyItem` 的 `magnet` 分支 | **必须换明牌**：Boss 的明牌是第 1 张（第 2 张是暗牌），玩家取最后一张；换完立刻亮底牌 |
+| 沙漏低分胜 | `settleRound` + `bossTarget()` | 爆牌**永远**直接判负；沙漏生效时 AI 立即停牌（再摸只会把自己推高） |
 | 匕首重洗 | `applyItem` 的 `dagger` 分支 | 手牌必须立即重发，否则 0 对 0 卡死回合 |
-| 走火遗恨 | `damageBonus` | 永久叠加；只有**真的中弹**才清零 |
-| 弹仓 | `Cylinder.reload()` | 每轮 3~6 发随机；打空才重装 |
+| 走火遗恨 | `damageBonus` | 永久叠加；只有**真的中弹**才清零（包括对自己开枪） |
+| 弹仓 | `Cylinder.reload()` | 4~6 发、实弹 2~3 发；打空才重装 |
+
+`LEVELS` 里 `hp` 是对手生命、`playerHp` 是玩家生命，二者每层重置。改数值只动这一处。
 
 ## 四、3D 场景约定
 

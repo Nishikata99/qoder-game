@@ -116,7 +116,7 @@ export interface LevelConfig {
   readonly title: string
   /** 对手生命：逐层抬高，逼玩家必须靠牌技积累胜场 */
   readonly hp: number
-  /** 玩家生命：每层重置，低于对手，容错更小 */
+  /** 玩家生命：每层重置；第一关给足容错，之后收紧 */
   readonly playerHp: number
   readonly supply: number
   readonly personality: BossPersonality
@@ -127,8 +127,8 @@ export const LEVELS: readonly LevelConfig[] = [
     id: 1,
     name: '锈蚀看门人',
     title: '门厅 · 滴水的地下室',
-    hp: 7,
-    playerHp: 6,
+    hp: 6,
+    playerHp: 7,
     supply: 2,
     personality: 'cautious',
   },
@@ -266,7 +266,7 @@ interface BossProfile {
 }
 
 const BOSS_PROFILES: Readonly<Record<BossPersonality, BossProfile>> = {
-  cautious: { label: '谨慎', personality: 'cautious', standAt: 15, itemBudget: 2, thinkingMs: 900 },
+  cautious: { label: '谨慎', personality: 'cautious', standAt: 15, itemBudget: 1, thinkingMs: 900 },
   gambler: { label: '赌徒', personality: 'gambler', standAt: 17, itemBudget: 3, thinkingMs: 720 },
   executioner: { label: '算牌', personality: 'executioner', standAt: 19, itemBudget: 4, thinkingMs: 620 },
 }
@@ -1174,7 +1174,9 @@ export class GameEngine {
       target += this.executionerAdjustment()
     }
     if (this.player.standing) {
-      target = Math.max(target, Math.min(21, this.player.hand.total + 1))
+      // 谨慎的看守者不敢追高分：玩家停牌在 18 点以上时它直接认输，不硬摸
+      const tooGreedy = personality === 'cautious' && this.player.hand.total + 1 > 18
+      if (!tooGreedy) target = Math.max(target, Math.min(21, this.player.hand.total + 1))
     }
     // 沙漏生效时点数小者胜：再摸一张只会把自己推高，立即停牌才是最优
     if (this.hourglassActive && !this.player.hand.busted) return 0

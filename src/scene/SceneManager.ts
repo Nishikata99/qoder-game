@@ -147,17 +147,17 @@ const CEILING_Y = 6.0
 /** 灯罩下沿在世界坐标中的高度，聚光灯挂在这里才不会被罩体遮挡 */
 const LAMP_SHADE_BOT_Y = 4.02
 
-/** 环境反射强度：只给金属补一点高光方向，压低以免把暗调场景洗白 */
-const ENV_INTENSITY = 0.05
+/** 环境反射强度：给金属与铁皮墙一点基础亮度，低于 0.1 时整个房间只剩纯黑 */
+const ENV_INTENSITY = 0.22
 
 /**
  * Blender 预览灯与网页聚光灯差异很大：GLB 里偏亮的 baseColor 进了 Three.js 会过曝。
  * 统一压暗这一档，让材质回到「暗黑地下室」的基调。
  */
-const GLB_ALBEDO_DIM = 0.3
+const GLB_ALBEDO_DIM = 0.42
 
 /** 顶点色材质（Blender 烘焙）同样压一档，与 GLB_ALBEDO_DIM 叠加后接近线下观感 */
-const VERTEX_COLOR_DIM = 0.55
+const VERTEX_COLOR_DIM = 0.68
 
 /** 统一处理 GLB 材质：阴影、环境反射、整体压暗 */
 function tuneGltfMaterial(material: THREE.Material, vertexDim = VERTEX_COLOR_DIM): void {
@@ -316,12 +316,12 @@ export class SceneManager {
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFShadowMap
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 0.92
+    this.renderer.toneMappingExposure = 1.05
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
 
     this.scene = new THREE.Scene()
-    this.scene.background = new THREE.Color(0x050505)
-    this.scene.fog = new THREE.FogExp2(0x060606, 0.062)
+    this.scene.background = new THREE.Color(0x070a0e)
+    this.scene.fog = new THREE.FogExp2(0x070a0e, 0.028)
 
     // RoomEnvironment 给金属 / 黄铜 / 玻璃提供真实反射；强度克制到不破坏暗调
     const pmrem = new THREE.PMREMGenerator(this.renderer)
@@ -344,8 +344,8 @@ export class SceneManager {
     this.composer.addPass(this.bloomPass)
 
     this.vignettePass = new ShaderPass(VignetteShader)
-    this.vignettePass.uniforms.offset!.value = 0.92
-    this.vignettePass.uniforms.darkness!.value = 1.14
+    this.vignettePass.uniforms.offset!.value = 1.0
+    this.vignettePass.uniforms.darkness!.value = 0.85
     this.composer.addPass(this.vignettePass)
 
     // OutputPass owns tone mapping + sRGB conversion when rendering through the composer.
@@ -748,6 +748,8 @@ export class SceneManager {
     const dimFor = (key: ModelKey): number => {
       if (key === 'gaming_table') return 0.82
       if (key === 'room_environment') return 0.9
+      // Boss 是视觉焦点，压太狠时脸部和躯干细节全丢
+      if (key === 'boss_1' || key === 'boss_2' || key === 'boss_3') return 0.85
       return VERTEX_COLOR_DIM
     }
     for (const key of keys) {
@@ -1114,7 +1116,7 @@ export class SceneManager {
   private updateLighting(): void {
     // 老式钨丝灯的轻微抖动：两个不同频率的正弦叠加，模拟灯丝/电压不稳
     const fade = 0.94 + Math.sin(this.elapsed * 7.1) * 0.028 + Math.sin(this.elapsed * 17.3) * 0.018
-    this.spot.intensity = 68 * fade
+    this.spot.intensity = 70 * fade
     // 只做极小幅摆动，避免光斑在桌面上乱甩
     this.spot.position.x = Math.sin(this.elapsed * 0.42) * 0.035
     this.spot.position.z = -0.05 + Math.cos(this.elapsed * 0.33) * 0.025
@@ -1319,22 +1321,23 @@ export class SceneManager {
   }
 
   private buildLighting(): { spot: THREE.SpotLight; rim: THREE.PointLight; fill: THREE.PointLight } {
-    // 基准环境光压得极低：暗部靠轮廓光勾边，不靠环境光抬亮
-    const ambient = new THREE.HemisphereLight(0x1d2733, 0x0c0806, 0.16)
+    // 环境光负责「看得见房间」，不负责塑造体积：再低就会让整个密室沉成纯黑
+    const ambient = new THREE.HemisphereLight(0x2b3a4a, 0x14100c, 0.34)
     this.scene.add(ambient)
 
-    // ===== ① 主聚光灯：吊灯垂直向下，只照桌面与左轮 =====
-    // 落点在桌面偏前，Boss 的脸正好处在光锥外缘的半明半暗交界
-    const spot = new THREE.SpotLight(0xffc98c, 68, 16, 0.62, 0.55, 1.25)
+    // ===== ① 主聚光灯：吊灯向下，光锥覆盖桌面并延伸到 Boss 上半身 =====
+    // 光锥角度必须 >50°：Boss 在灯位下方 55° 方向，锥体太窄它的脸会完全落在光外
+    const spot = new THREE.SpotLight(0xffc98c, 70, 18, 0.88, 0.78, 1.2)
     spot.position.set(0, LAMP_SHADE_BOT_Y - 0.05, -0.05)
     spot.castShadow = true
     spot.shadow.mapSize.set(2048, 2048)
     spot.shadow.camera.near = 0.5
-    spot.shadow.camera.far = 12
+    spot.shadow.camera.far = 14
     spot.shadow.bias = -0.0005
     spot.shadow.normalBias = 0.018
     spot.shadow.radius = 2.5
-    spot.target.position.set(0, TABLE_TOP, 0.15)
+    // 落点比桌面略偏后：Boss 的脸正好卡在光锥软边缘，保留半明半暗
+    spot.target.position.set(0, TABLE_TOP + 0.1, -0.25)
     this.scene.add(spot, spot.target)
 
     const coneMat = new THREE.MeshBasicMaterial({
@@ -1359,59 +1362,59 @@ export class SceneManager {
     this.scene.add(rim)
 
     // 轮廓光的第二盏，偏另一侧，避免单点光只勾出一边
-    const rimBack = new THREE.PointLight(0x4a7cb8, 5, 6.5, 1.9)
+    const rimBack = new THREE.PointLight(0x4a7cb8, 8, 6.5, 1.9)
     rimBack.position.set(-1.7, 2.5, BOSS_Z - 1.15)
     this.scene.add(rimBack)
 
-    // ===== ③ 极弱补光：只让暗部保留轮廓，不参与塑造 =====
-    const fill = new THREE.PointLight(0x33506e, 3.2, 10, 2)
+    // ===== ③ 冷色补光：抬亮暗部细节，不让任何一面彻底死黑 =====
+    const fill = new THREE.PointLight(0x33506e, 5, 11, 2)
     fill.position.set(-3.6, 2.2, 1.2)
     this.scene.add(fill)
 
     // 暖色远景分离：让 Boss 和铁皮墙之间有一层空气感
-    const rear = new THREE.PointLight(0x7a2416, 5.5, 7.5, 2)
+    const rear = new THREE.PointLight(0x7a2416, 10, 8, 2)
     rear.position.set(3.4, 1.3, BOSS_Z - 1.5)
     this.scene.add(rear)
 
-    // 极弱的暖色正面补光，只抬亮 Boss 面具与上胸，让脸「半明半暗」而不是全黑
-    const faceFill = new THREE.SpotLight(0xffb98a, 3.0, 4.6, 0.34, 0.92, 1.7)
-    faceFill.position.set(0.15, 2.9, BOSS_Z + 1.3)
-    faceFill.target.position.set(0, 1.62, BOSS_Z)
+    // Boss 面部主光：从玩家这一侧斜上方打过来，照亮面具与上胸的形体
+    const faceFill = new THREE.SpotLight(0xffb98a, 20, 7, 0.5, 0.85, 1.4)
+    faceFill.position.set(0.8, 3.3, BOSS_Z + 1.9)
+    faceFill.target.position.set(0, 2.0, BOSS_Z)
     this.scene.add(faceFill, faceFill.target)
 
     // CRT 屏幕自身的微弱绿光（数据屏是氛围光源）
-    const torso = new THREE.PointLight(0x8fb0d0, 1.6, 3.2, 2)
+    const torso = new THREE.PointLight(0x8fb0d0, 2.5, 3.6, 2)
     torso.position.set(-0.9, 1.25, 1.0)
     this.scene.add(torso)
 
-    const nearFill = new THREE.PointLight(0xffcf9f, 4.5, 7, 2)
+    const nearFill = new THREE.PointLight(0xffcf9f, 5, 7.5, 2)
     nearFill.position.set(0, 2.5, 3.6)
     this.scene.add(nearFill)
 
-    // ===== 密室层次光：只做剪影，不抬亮主区 =====
-    const wallWash = new THREE.SpotLight(0xc98f65, 12, 15, 1.25, 1, 1.1)
+    // ===== 密室层次光：给铁皮墙/管道/铁架剪影，不让远处死黑 =====
+    const wallWash = new THREE.SpotLight(0xc98f65, 24, 16, 1.25, 1, 1.0)
     wallWash.position.set(0, 4.8, -0.9)
     wallWash.target.position.set(0, 2.2, -5.6)
     this.scene.add(wallWash, wallWash.target)
 
-    const sideWashL = new THREE.SpotLight(0xd98754, 16, 12, 1.1, 1, 1.3)
+    const sideWashL = new THREE.SpotLight(0xd98754, 30, 13, 1.1, 1, 1.2)
     sideWashL.position.set(-3.6, 3.6, -3.2)
     sideWashL.target.position.set(-6.6, 1.6, -3.6)
     this.scene.add(sideWashL, sideWashL.target)
 
-    const sideWashR = new THREE.SpotLight(0xc97d4b, 14, 12, 1.1, 1, 1.3)
+    const sideWashR = new THREE.SpotLight(0xc97d4b, 26, 13, 1.1, 1, 1.2)
     sideWashR.position.set(3.6, 3.2, -3.6)
     sideWashR.target.position.set(6.6, 1.2, -3.8)
     this.scene.add(sideWashR, sideWashR.target)
 
-    const sideCold = new THREE.PointLight(0x345f8c, 6, 9, 2)
+    const sideCold = new THREE.PointLight(0x345f8c, 8, 10, 2)
     sideCold.position.set(-5.4, 2.4, 3.0)
     this.scene.add(sideCold)
 
-    // ===== 深渊雾效：远端管道与铁皮墙自然沉入黑暗 =====
-    // 密度按房间尺度取：Boss（5.6m）仍清晰，远端墙（11m）压掉约 65%
-    this.scene.fog = new THREE.FogExp2(0x040506, 0.052)
-    this.scene.background = new THREE.Color(0x040506)
+    // ===== 深渊雾效：远端管道与铁皮墙渐隐，但不能糊成一块 =====
+    // 密度按房间尺度取：Boss（5.6m）几乎不衰减，远端墙（11m）压掉约 25%
+    this.scene.fog = new THREE.FogExp2(0x070a0e, 0.028)
+    this.scene.background = new THREE.Color(0x070a0e)
 
     return { spot, rim, fill }
   }

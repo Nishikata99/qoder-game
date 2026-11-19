@@ -45,6 +45,10 @@ const RULES: ReadonlyArray<{ title: string; body: string }> = [
     title: '层数与补给',
     body: '第 1/2/3 层：对手生命 6/8/9，你的生命 7/6/7，开局补给 2/3/4 件道具。第 2 层解锁磁铁与手铐，第 3 层解锁沙漏与匕首。',
   },
+  {
+    title: '快捷键',
+    body: 'H 要牌、S 停牌；持枪时 F 或 1 射向它、R 或 2 射向自己。快捷键与按钮共用同一套阶段校验。',
+  },
 ]
 
 export function RulesModal({

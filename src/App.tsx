@@ -31,6 +31,8 @@ export default function App() {
   const [sound] = useState(() => new SoundEngine())
   const [game] = useState(() => new GameEngine({ dealDelayMs: 340, thinkDelayMs: 800 }))
   const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null)
+  const snapshotRef = useRef<GameSnapshot | null>(null)
+  snapshotRef.current = snapshot
   const [hover, setHover] = useState<ItemHoverPayload | null>(null)
   const [muted, setMuted] = useState(false)
   const [volume, setVolume] = useState(0.85)
@@ -148,6 +150,48 @@ export default function App() {
   }, [muted, volume, sound])
 
   useEffect(() => () => sound.dispose(), [sound])
+
+  // 快捷键只是键位映射到同一批引擎动作，所有阶段/输入锁校验仍由 canAct 与引擎负责
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return
+      const target = event.target
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT')
+      ) {
+        return
+      }
+      const snap = snapshotRef.current
+      if (!snap) return
+      if (snap.phase === 'targeting') {
+        if (snap.pendingShot !== 'player') return
+        const key = event.key.toLowerCase()
+        if (key === 'f' || key === '1') {
+          event.preventDefault()
+          game.chooseTarget('boss')
+        } else if (key === 'r' || key === '2') {
+          event.preventDefault()
+          game.chooseTarget('player')
+        }
+        return
+      }
+      if (snap.phase !== 'playerTurn') return
+      const key = event.key.toLowerCase()
+      if (key === 'h') {
+        event.preventDefault()
+        game.hit()
+      } else if (key === 's') {
+        event.preventDefault()
+        game.stand()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [game])
 
   const hpRatio =
     snapshot && snapshot.player.maxHp > 0 ? snapshot.player.hp / snapshot.player.maxHp : 1
@@ -292,14 +336,14 @@ export default function App() {
             {snapshot?.pendingShot === 'player' ? (
               <div className="flex items-center gap-3">
                 <MetalButton tone="primary" onClick={() => game.chooseTarget('boss')}>
-                  射向它 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">FIRE</span>
+                  射向它 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">FIRE · F</span>
                 </MetalButton>
                 <MetalButton
                   tone="secondary"
                   onClick={() => game.chooseTarget('player')}
                   hint="对自己开枪：空膛可摸一件道具，实弹则你自己受伤"
                 >
-                  射向自己 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">RISK</span>
+                  射向自己 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">RISK · R</span>
                 </MetalButton>
               </div>
             ) : null}
@@ -312,10 +356,10 @@ export default function App() {
               onClick={() => game.hit()}
               hint={locked ? '手铐锁住了你的手腕' : undefined}
             >
-              要牌 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">HIT</span>
+              要牌 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">HIT · H</span>
             </MetalButton>
             <MetalButton tone="secondary" disabled={!canAct} onClick={() => game.stand()}>
-              停牌 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">STAND</span>
+              停牌 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">STAND · S</span>
             </MetalButton>
           </div>
         )}

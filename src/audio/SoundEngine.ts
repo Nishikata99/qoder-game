@@ -363,6 +363,20 @@ export class SoundEngine {
     this.noiseHit(t + 0.29, 0.14, 3400, 2, 0.12, 'bandpass')
   }
 
+  /** 沙漏逆转：机械秒针连走四拍，随后一声低沉的玻璃共鸣 */
+  playHourglass(): void {
+    const ctx = this.ensureContext()
+    const t = ctx.currentTime + 0.005
+    for (let i = 0; i < 4; i += 1) {
+      const when = t + i * 0.16
+      this.noiseHit(when, 0.018, 4200, 2.4, 0.16, 'highpass')
+      this.tone(when, 0.03, 1860, 1500, 0.05, 'square')
+    }
+    this.tone(t + 0.66, 0.5, 1180, 720, 0.1, 'sine')
+    this.tone(t + 0.66, 0.34, 2360, 1500, 0.045, 'triangle')
+    this.noiseHit(t + 0.64, 0.3, 2400, 1.4, 0.08, 'bandpass')
+  }
+
   dispose(): void {
     this.stopAmbient(0.05)
     const ctx = this.ctx

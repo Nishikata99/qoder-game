@@ -15,7 +15,8 @@ export default defineConfig({
     viewport: { width: 960, height: 640 },
   },
   webServer: {
-    command: 'npm run preview -- --port 4173 --strictPort',
+    // 显式绑定 127.0.0.1：CI 上 localhost 可能先解析到 ::1，导致探测一直超时
+    command: 'npm run preview -- --port 4173 --strictPort --host 127.0.0.1',
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

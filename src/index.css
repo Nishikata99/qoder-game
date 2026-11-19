@@ -227,3 +227,41 @@ body {
 .execution-pulse {
   animation: breathe 1.6s ease-in-out infinite;
 }
+
+/* 系统级「减少动态效果」：压掉高强度闪烁与缩放，状态反馈只留静态可见 */
+@media (prefers-reduced-motion: reduce) {
+  .blood-flash {
+    animation: none;
+    opacity: 0.42;
+  }
+
+  .blood-splatter {
+    animation: none;
+    opacity: 0;
+    transform: none;
+  }
+
+  .vision-blur {
+    animation: none;
+    opacity: 0.5;
+  }
+
+  .slide-banner,
+  .loot-banner {
+    animation-duration: 1ms;
+  }
+
+  .execution-pulse {
+    animation: none;
+    opacity: 0.75;
+    letter-spacing: 0.46em;
+  }
+
+  .metal-btn {
+    transition: none;
+  }
+
+  .metal-btn:not(.is-disabled):hover {
+    transform: none;
+  }
+}

@@ -317,6 +317,16 @@ export class SceneManager {
   private readonly raycaster = new THREE.Raycaster()
   private readonly pointer = new THREE.Vector2()
   private readonly listenerCleanup: Array<() => void> = []
+  private readonly motionQuery =
+    typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)')
+      : null
+  /** 系统级「减少动态效果」：只抑制震屏与镜头漂移，保留运镜与发牌演出 */
+  private reducedMotion = false
+  private readonly onMotionPreferenceChange = (event: MediaQueryListEvent): void => {
+    this.reducedMotion = event.matches
+    if (event.matches) this.shakeTime = 0
+  }
   private readonly resizeObserver: ResizeObserver
   private readonly scratchVector = new THREE.Vector3()
 
@@ -479,6 +489,14 @@ export class SceneManager {
     this.textures.startWatching()
     const unwatch = this.textures.onOverride((key, texture) => this.applyOverride(key, texture))
     this.listenerCleanup.push(unwatch)
+
+    if (this.motionQuery) {
+      this.reducedMotion = this.motionQuery.matches
+      this.motionQuery.addEventListener('change', this.onMotionPreferenceChange)
+      this.listenerCleanup.push(() =>
+        this.motionQuery?.removeEventListener('change', this.onMotionPreferenceChange),
+      )
+    }
 
     this.onPointerMove = (event) => this.handlePointerMove(event)
     this.onPointerLeave = () => this.setHovered(null)
@@ -923,7 +941,7 @@ export class SceneManager {
         })
         .catch((error: unknown) => {
           // 缺模型不是致命错误：程序化几何继续兜底
-          console.warn(`[SceneManager] 模型 ${key}.glb 加载失败，回退程序化几何`, error)
+          console.debug(`[SceneManager] 模型 ${key}.glb 加载失败，回退程序化几何`, error)
         })
       this.pendingModels.push(task)
     }
@@ -1165,6 +1183,7 @@ export class SceneManager {
   }
 
   private shake(strength: number, duration: number): void {
+    if (this.reducedMotion) return
     this.shakeStrength = Math.max(this.shakeStrength, strength)
     this.shakeDuration = Math.max(this.shakeDuration, duration)
     this.shakeTime = Math.max(this.shakeTime, duration)
@@ -1183,7 +1202,7 @@ export class SceneManager {
       }
     }
 
-    const breathe = Math.sin(this.elapsed * 0.62) * 0.012
+    const breathe = this.reducedMotion ? 0 : Math.sin(this.elapsed * 0.62) * 0.012
     let sx = 0
     let sy = 0
     let sz = 0
@@ -1196,7 +1215,7 @@ export class SceneManager {
       sz = (Math.random() - 0.5) * amp
       if (this.shakeTime === 0) this.shakeStrength = 0
     }
-    const drift = this.shot === 'table' ? 1 : 0.22
+    const drift = this.reducedMotion ? 0 : this.shot === 'table' ? 1 : 0.22
     this.camera.position.set(
       this.cameraBase.x + Math.sin(this.elapsed * 0.21) * 0.035 * drift + sx,
       this.cameraBase.y + breathe * drift + sy,

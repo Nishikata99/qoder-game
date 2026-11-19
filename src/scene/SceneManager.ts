@@ -144,6 +144,9 @@ const SCORE_PLATE_TILT: Readonly<Record<ActorId, number>> = { player: 0, boss: 0
 /** 游戏主镜头机位，用于让 Boss 贴片转向观众 */
 const SCORE_PLATE_VIEW = new THREE.Vector3(0, 3.62, 4.92)
 
+/** 放大镜特写的保持时长：读数后镜头自动落回桌面机位 */
+const MAGNIFY_HOLD_SECONDS = 2.2
+
 /**
  * 血袋架布局：每格生命挂一只血袋（袋数 = maxHp）。
  * 玩家小架摆在桌面左前角；Boss 落地架在它左后侧，袋口高度露出桌沿之上。
@@ -556,7 +559,8 @@ export class SceneManager {
     this.fovTo = target.fov
     this.cameraBlend = 0
     this.cameraBlendDuration = Math.max(0.001, duration)
-    this.revealGlowLife = shot === 'magnify' ? 3.2 : 0
+    if (shot === 'magnify') this.revealGlowLife = MAGNIFY_HOLD_SECONDS
+    else this.clearReveal()
   }
 
   /** Semi-transparent chamber hint only the player sees: red = live, blue = blank. */
@@ -608,7 +612,7 @@ export class SceneManager {
         light.intensity = 3.2 * (0.5 + t * 0.5)
       },
     })
-    this.revealGlowLife = 2.6
+    this.revealGlowLife = MAGNIFY_HOLD_SECONDS
   }
 
   clearReveal(): void {
@@ -1332,6 +1336,8 @@ export class SceneManager {
         this.revealGlow.scale.setScalar(1.24 * (0.94 + pulse * 0.08))
         if (this.revealLight) this.revealLight.intensity = 2.2 * pulse * fade
       }
+      // 特写只是一次性演出：读数结束把镜头交还桌面，否则整回合都锁在拉近视野里
+      if (this.revealGlowLife === 0 && this.shot === 'magnify') this.resetShot(0.9)
     } else if (this.revealLight) {
       this.revealLight.intensity = 0
     }

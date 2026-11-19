@@ -923,7 +923,7 @@ export class SceneManager {
         })
         .catch((error: unknown) => {
           // 缺模型不是致命错误：程序化几何继续兜底
-          console.warn(`[SceneManager] 模型 ${key}.glb 加载失败，回退程序化几何`, error)
+          console.debug(`[SceneManager] 模型 ${key}.glb 加载失败，回退程序化几何`, error)
         })
       this.pendingModels.push(task)
     }

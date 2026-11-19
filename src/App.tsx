@@ -8,6 +8,7 @@ import {
   GameEngine,
   ITEM_CATALOG,
   LEVELS,
+  createSeededRandom,
   evaluateHand,
   formatCard as formatCardLabel,
 } from './game/GameEngine'
@@ -27,9 +28,22 @@ interface LootBanner {
 
 const FADE_MS = 2400
 
+/** 开发期可用 ?seed=12345 复现同一局的发牌序列；生产构建始终使用 Math.random */
+function resolveRng(): (() => number) | undefined {
+  if (!import.meta.env.DEV) return undefined
+  const raw = new URLSearchParams(window.location.search).get('seed')
+  if (raw === null) return undefined
+  const seed = Number(raw)
+  if (!Number.isFinite(seed)) return undefined
+  console.debug(`[BloodAnte] 使用固定种子 ${seed}，复现同一局请保留该参数`)
+  return createSeededRandom(seed)
+}
+
 export default function App() {
   const [sound] = useState(() => new SoundEngine())
-  const [game] = useState(() => new GameEngine({ dealDelayMs: 340, thinkDelayMs: 800 }))
+  const [game] = useState(
+    () => new GameEngine({ dealDelayMs: 340, thinkDelayMs: 800, rng: resolveRng() }),
+  )
   const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null)
   const [hover, setHover] = useState<ItemHoverPayload | null>(null)
   const [muted, setMuted] = useState(false)

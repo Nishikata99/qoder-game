@@ -120,6 +120,8 @@ interface BloodRack {
 }
 
 const TABLE_TOP = 0.98
+/** 顶层常量便于 Rollup 静态求值，让取样代码整段在 production 被摇树移除 */
+const devStatsEnabled = import.meta.env.DEV
 const CARD_W = 0.3
 const CARD_H = 0.42
 const CARD_T = 0.012
@@ -317,6 +319,8 @@ export class SceneManager {
   private readonly raycaster = new THREE.Raycaster()
   private readonly pointer = new THREE.Vector2()
   private readonly listenerCleanup: Array<() => void> = []
+  private statFrames = 0
+  private statElapsed = 0
   private readonly resizeObserver: ResizeObserver
   private readonly scratchVector = new THREE.Vector3()
 
@@ -414,6 +418,8 @@ export class SceneManager {
     this.renderer.shadowMap.type = THREE.PCFShadowMap
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.05
+    // composer 一帧内多次 render，自动重置会把 calls/tris 冲成最后一趟的值；DEV 下改为手动 reset
+    if (devStatsEnabled) this.renderer.info.autoReset = false
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
 
     this.scene = new THREE.Scene()
@@ -1131,6 +1137,25 @@ export class SceneManager {
     this.updateCards(dt)
     this.updateCamera(dt)
     this.composer.render(dt)
+    this.sampleStats(dt)
+    if (devStatsEnabled) this.renderer.info.reset()
+  }
+
+  /**
+   * 仅开发期的性能取样：每 2 秒 console.debug 一次 FPS 与 draw call。
+   * 必须在 composer.render 之后取：一帧内多次 render，关掉 autoReset 才能累计整帧的 calls/tris。
+   */
+  private sampleStats(dt: number): void {
+    if (!devStatsEnabled) return
+    this.statFrames += 1
+    this.statElapsed += dt
+    if (this.statElapsed < 2) return
+    const info = this.renderer.info.render
+    console.debug(
+      `[SceneManager] ${Math.round(this.statFrames / this.statElapsed)} fps · calls ${info.calls} · tris ${info.triangles}`,
+    )
+    this.statFrames = 0
+    this.statElapsed = 0
   }
 
   private updateTweens(dt: number): void {

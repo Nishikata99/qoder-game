@@ -267,8 +267,8 @@ const ITEM_MODEL: Readonly<Partial<Record<ItemId, ModelKey>>> = {
 
 const MODEL_BASE = './models'
 
-/** Boss 半身像高度（米，按关卡递增）。含完整躯干与垂落斗篷，头部落在桌面上方约 1.2m */
-const BOSS_BUST_HEIGHTS = [2.15, 2.5, 3.0] as const
+// 爬行 Boss 按低矮轮廓定高，不能沿用直立半身像的缩放。
+const BOSS_BUST_HEIGHTS = [2.15, 1.7, 3.0] as const
 /** 半身像胸口高度占整体高度的比例，用于换算瞄准点 */
 const BOSS_CHEST_RATIO = 0.64
 /** 半身像底座（斗篷下摆）压到桌面以下，被桌沿挡住，形成「坐在桌后」的错觉 */
@@ -276,6 +276,8 @@ const BOSS_BUST_BASE_Y = 0.26
 /** Boss 站在桌后：桌体后沿 z=-2.23，斗篷前半 z≈-0.51 缩放后约 0.55m，
  * 所以中心必须在 -2.23-0.55=-2.78 之后，否则会穿进桌体 */
 const BOSS_Z = -3.0
+const BOSS_CRAWLER_BASE_Y = 0.65
+const BOSS_CRAWLER_Z_OFFSET = -1.2
 
 /** 密室顶棚高度（米）；吊灯摆动以这里为枢轴 */
 const CEILING_Y = 6.0
@@ -1081,8 +1083,10 @@ export class SceneManager {
       return VERTEX_COLOR_DIM
     }
     // 带贴图的模型没有顶点色，走 albedo 压暗那一支，必须单独给值
-    const albedoDimFor = (key: ModelKey): number =>
-      key === 'gothic_statue' || key === 'marble_bust_01' ? 0.62 : GLB_ALBEDO_DIM
+    const albedoDimFor = (key: ModelKey): number => {
+      if (key === 'boss_2') return 0.85
+      return key === 'gothic_statue' || key === 'marble_bust_01' ? 0.62 : GLB_ALBEDO_DIM
+    }
     for (const key of keys) {
       const task = this.gltfLoader
         .loadAsync(`${MODEL_BASE}/${key}.glb`)
@@ -1644,7 +1648,12 @@ export class SceneManager {
     } else {
       // Boss 手在桌后不可见，链子改箍住半身像下段，读作「被缚住」
       const bustHeight = BOSS_BUST_HEIGHTS[this.currentLevelIndex] ?? BOSS_BUST_HEIGHTS[0]
-      group.position.set(0, BOSS_BUST_BASE_Y + bustHeight * 0.42, BOSS_Z + 0.55)
+      if (this.currentLevelIndex === 1) {
+        this.bossHitPoint(group.position)
+        group.position.y -= 0.18
+      } else {
+        group.position.set(0, BOSS_BUST_BASE_Y + bustHeight * 0.42, BOSS_Z + 0.55)
+      }
       group.scale.setScalar(2.4)
       group.rotation.z = 0.05
     }
@@ -2391,8 +2400,10 @@ export class SceneManager {
     return points
   }
 
-  /** 中弹点随关卡半身像高度变化：胸口约在整体高度的 64% 处 */
+  /** 异形模型优先使用随动画移动的命中标记，直立半身像按胸高换算。 */
   private bossHitPoint(out: THREE.Vector3): THREE.Vector3 {
+    const marker = this.bossGroup.getObjectByName('BossHitPoint')
+    if (marker) return marker.getWorldPosition(out)
     const bustHeight = BOSS_BUST_HEIGHTS[this.currentLevelIndex] ?? BOSS_BUST_HEIGHTS[0]
     return out.set(0, BOSS_BUST_BASE_Y + bustHeight * BOSS_CHEST_RATIO, BOSS_Z + 0.62)
   }
@@ -2630,16 +2641,18 @@ export class SceneManager {
     this.activeBossMaskLevel = levelIndex
 
     const stale = this.bossGroup.getObjectByName('BossBustGLB')
-    if (stale) {
-      this.bossGroup.remove(stale)
-      this.disposeObject(stale)
-    }
+    // 克隆与模板共享几何和材质，切层时不能销毁模板资源。
+    if (stale) this.bossGroup.remove(stale)
 
     // 模型自带完整躯干，底座在自身 y=0：直接按世界高度缩放，底座落到桌沿下方
     const bustHeight = BOSS_BUST_HEIGHTS[levelIndex] ?? BOSS_BUST_HEIGHTS[0]
     const wrapper = this.placeModel(model, bustHeight, new THREE.Vector3(0, 0, 0), 0, 'height')
     wrapper.name = 'BossBustGLB'
-    wrapper.position.set(0, BOSS_BUST_BASE_Y, 0)
+    wrapper.position.set(
+      0,
+      levelIndex === 1 ? BOSS_CRAWLER_BASE_Y : BOSS_BUST_BASE_Y,
+      levelIndex === 1 ? BOSS_CRAWLER_Z_OFFSET : 0,
+    )
     this.bossGroup.add(wrapper)
 
     // 头部单独取出来做「盯视」动画；模型面朝 +Z，rotation.y 即为左右转

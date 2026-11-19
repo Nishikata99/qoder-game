@@ -23,7 +23,7 @@ const RULES: ReadonlyArray<{ title: string; body: string }> = [
   },
   {
     title: '碾压',
-    body: '双方都没有爆牌且点数差 ≥5 时，本枪实弹伤害再 +1。赢得多，伤得重。',
+    body: '赢下本轮时你的手牌达到 20 点或以上，本枪实弹伤害再 +1。牌越好，枪越重。',
   },
   {
     title: '枪口由你决定',

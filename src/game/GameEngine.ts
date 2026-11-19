@@ -876,12 +876,9 @@ export class GameEngine {
     const sawed = attacker.sawBoost > 0
     const blackjack = attacker.hand.blackjack && !attacker.hand.busted
     const chamber = this.cylinder.current ?? 'blank'
-    // 爆牌收尾不算碾压：点差只在双方都没爆时才成立
-    const margin =
-      attacker.hand.busted || target.hand.busted
-        ? 0
-        : Math.abs(attacker.hand.total - target.hand.total)
-    const overwhelmed = margin >= 5
+    // 高牌奖励：赢下本轮且手牌 ≥20 点才算「碾压」。
+    // 原来用点差 ≥5，但 AI 停牌线决定了第 2/3 关几乎不可能打出这个点差，等于死条款。
+    const overwhelmed = !attacker.hand.busted && attacker.hand.total >= 20
 
     this.phase = 'execution'
     this.hourglassActive = false
@@ -899,7 +896,7 @@ export class GameEngine {
 
     this.cylinder.fire()
     this.revealed = null
-    // 基础 2 点；黑杰克 +1；碾压（点差 ≥5）+1；走火遗恨 +N；锯子整体翻倍
+    // 基础 2 点；黑杰克 +1；碾压（手牌 ≥20）+1；走火遗恨 +N；锯子整体翻倍
     const stacks = this.damageBonus
     const base = 2 + (blackjack ? 1 : 0) + (overwhelmed ? 1 : 0) + stacks
     const damage = chamber === 'live' ? (sawed ? base * 2 : base) : 0

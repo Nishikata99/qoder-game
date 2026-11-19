@@ -10,5 +10,16 @@ export default defineConfig({
   build: {
     target: 'es2022',
     chunkSizeWarningLimit: 1200,
+    // three 体量大且几乎不随业务代码变化，单独成块可让浏览器长期复用缓存
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (id.includes('node_modules/three')) return 'three'
+          if (id.includes('node_modules/gsap')) return 'gsap'
+          if (id.includes('node_modules/react')) return 'react'
+          return undefined
+        },
+      },
+    },
   },
 })

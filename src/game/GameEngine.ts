@@ -11,6 +11,7 @@ export type Phase =
   | 'execution'
   | 'roundEnd'
   | 'levelClear'
+  | 'supply'
   | 'gameOver'
   | 'victory'
 
@@ -43,8 +44,11 @@ export const ITEM_IDS = [
   'saw',
   'magnet',
   'handcuffs',
+  'aegis',
   'hourglass',
   'dagger',
+  'decoy',
+  'hammer',
 ] as const
 
 export type ItemId = (typeof ITEM_IDS)[number]
@@ -87,6 +91,12 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
     summary: '锁住对手的下一次行动：不能要牌，也不能使用道具。',
     glyph: '∞',
   },
+  aegis: {
+    id: 'aegis',
+    name: '护心镜',
+    summary: '举起一面铜镜：下一次受到的实弹伤害被完全挡下，随后镜面碎裂。',
+    glyph: '⬟',
+  },
   hourglass: {
     id: 'hourglass',
     name: '逆转沙漏',
@@ -99,13 +109,25 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
     summary: '自损 1 点生命，立刻清空手牌、重洗牌库并重新装填弹仓。',
     glyph: '†',
   },
+  decoy: {
+    id: 'decoy',
+    name: '诱饵',
+    summary: '在身前放一个替身：对手下一次对你开枪时子弹会落空，不造成伤害。',
+    glyph: '✧',
+  },
+  hammer: {
+    id: 'hammer',
+    name: '重锤',
+    summary: '把膛内当前一发空膛砸成实弹；若这一发本来就是实弹，则无法使用。',
+    glyph: '⚒',
+  },
 }
 
 /** Items unlocked at the start of each level, in level order. */
 export const LEVEL_UNLOCKS: readonly (readonly ItemId[])[] = [
   ['magnifier', 'sedative', 'saw'],
-  ['magnet', 'handcuffs'],
-  ['hourglass', 'dagger'],
+  ['magnet', 'handcuffs', 'aegis'],
+  ['hourglass', 'dagger', 'decoy', 'hammer'],
 ]
 
 export type BossPersonality = 'cautious' | 'gambler' | 'executioner'
@@ -164,6 +186,10 @@ export interface ActorView {
   readonly standing: boolean
   readonly skipTurn: boolean
   readonly sawBoost: number
+  /** 护心镜层数：>0 时下一次实弹伤害被完全吸收 */
+  readonly shield: number
+  /** 诱饵：>0 时对手下一次对你开枪会落空 */
+  readonly decoy: number
 }
 
 export interface CylinderView {
@@ -193,6 +219,8 @@ export interface GameSnapshot {
   /** 本局是否启用逆转沙漏（点数小者胜） */
   readonly hourglassActive: boolean
   readonly unlockedItems: readonly ItemId[]
+  /** supply 阶段的三选一候选；其他阶段为空数组 */
+  readonly supplyOptions: readonly ItemId[]
   readonly inputLocked: boolean
   readonly log: readonly string[]
 }
@@ -233,6 +261,8 @@ export type GameEvent =
       readonly damage: number
       readonly sawed: boolean
       readonly blackjack: boolean
+      /** 实弹被护心镜挡下或诱饵引开时为对应来源，否则 null */
+      readonly blocked: 'shield' | 'decoy' | null
     }
   | { readonly type: 'tie'; readonly player: number; readonly boss: number }
   | { readonly type: 'reload'; readonly live: number; readonly blank: number }
@@ -242,6 +272,7 @@ export type GameEvent =
       readonly level: number
       readonly items: readonly ItemId[]
     }
+  | { readonly type: 'supplyOffer'; readonly options: readonly ItemId[] }
   | { readonly type: 'gameOver'; readonly winner: ActorId }
 
 export type GameEventListener = (event: GameEvent, snapshot: GameSnapshot) => void
@@ -273,6 +304,11 @@ const BOSS_PROFILES: Readonly<Record<BossPersonality, BossProfile>> = {
 
 const MAX_ITEMS = 8
 const LOG_LIMIT = 80
+const SUPPLY_OPTION_COUNT = 3
+/** 门前补给停留时长；超时自动抓取第一件，避免玩家离开后整局卡死 */
+const SUPPLY_PICK_MS = 12_000
+/** 清层横幅先播完，再摆出三选一 */
+const SUPPLY_DELAY_MS = 2600
 const SUIT_SYMBOLS: Readonly<Record<CardSuit, string>> = {
   spade: '♠',
   heart: '♥',
@@ -373,6 +409,8 @@ class ActorRuntime {
   standing = false
   skipTurn = false
   sawBoost = 0
+  shield = 0
+  decoy = 0
 
   constructor(id: ActorId, hp: number) {
     this.id = id
@@ -442,6 +480,13 @@ class Cylinder {
     this.cursor += 1
     return chamber
   }
+
+  /** 重锤：把当前空膛压成实弹；已经是实弹或弹仓见底时返回 false */
+  forceLive(): boolean {
+    if (this.current !== 'blank') return false
+    this.chambers[this.cursor] = 'live'
+    return true
+  }
 }
 
 function actorLabel(id: ActorId): string {
@@ -462,6 +507,12 @@ export class GameEngine {
   private inputUnlockTimer: ReturnType<typeof setTimeout> | null = null
   private executionTimer: ReturnType<typeof setTimeout> | null = null
   private executionSkip: (() => void) | null = null
+  private supplyTimer: ReturnType<typeof setTimeout> | null = null
+  private supplyOptions: ItemId[] = []
+  private supplyChoice: ItemId | null = null
+  private supplyResolver: (() => void) | null = null
+  /** 层间三选一选中的道具：beginLevel 会重建 Actor，必须先寄存再注入 */
+  private carryOver: ItemId[] = []
   private readonly listeners = new Set<GameEventListener>()
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
   private readonly cylinder: Cylinder
@@ -521,6 +572,9 @@ export class GameEngine {
     this.hourglassActive = false
     this.holeRevealed = false
     this.logLines = []
+    this.supplyOptions = []
+    this.supplyChoice = null
+    this.carryOver = []
     this.publish()
     this.start()
   }
@@ -590,6 +644,20 @@ export class GameEngine {
     return true
   }
 
+  /** 层间三选一：只能带走一件，选完才开门 */
+  chooseSupply(item: ItemId): boolean {
+    if (this.phase !== 'supply') {
+      return this.reject('现在没有可供挑选的补给。')
+    }
+    if (!this.supplyOptions.includes(item)) {
+      return this.reject('这件补给不在桌上。')
+    }
+    if (this.supplyResolver === null) return false
+    this.supplyChoice = item
+    this.supplyResolver()
+    return true
+  }
+
   subscribe(listener: GameEventListener): () => void {
     this.listeners.add(listener)
     const snapshot = this.getSnapshot()
@@ -630,6 +698,7 @@ export class GameEngine {
       crisisStacks: this.damageBonus,
       hourglassActive: this.hourglassActive,
       unlockedItems: this.unlockedItems(),
+      supplyOptions: this.phase === 'supply' ? [...this.supplyOptions] : [],
       inputLocked: this.inputLocked,
       log: [...this.logLines],
     }
@@ -655,6 +724,17 @@ export class GameEngine {
     const level = this.currentLevel()
     this.player = new ActorRuntime('player', level.playerHp)
     this.boss = new ActorRuntime('boss', level.hp)
+    if (this.carryOver.length > 0) {
+      const carried = this.carryOver
+      this.carryOver = []
+      for (const item of carried) {
+        if (this.player.items.length >= MAX_ITEMS) break
+        this.player.items.push(item)
+      }
+      this.log(
+        `门前的补给还在你身上：${carried.map((item) => `【${ITEM_CATALOG[item].name}】`).join('')}。`,
+      )
+    }
     this.giveSupply(this.player, level.supply)
     this.giveSupply(this.boss, level.supply)
     const chambers = this.cylinder.reload()
@@ -908,7 +988,19 @@ export class GameEngine {
     // 基础 2 点；黑杰克 +1；碾压（手牌 ≥20）+1；走火遗恨 +N；锯子整体翻倍
     const stacks = this.damageBonus
     const base = 2 + (blackjack ? 1 : 0) + (overwhelmed ? 1 : 0) + stacks
-    const damage = chamber === 'live' ? (sawed ? base * 2 : base) : 0
+    const rawDamage = chamber === 'live' ? (sawed ? base * 2 : base) : 0
+    // 诱饵只挡「别人打你」，护心镜挡任何来源的实弹；两者都只挡一发
+    let blocked: 'shield' | 'decoy' | null = null
+    if (rawDamage > 0) {
+      if (!selfShot && target.decoy > 0) {
+        target.decoy = 0
+        blocked = 'decoy'
+      } else if (target.shield > 0) {
+        target.shield = 0
+        blocked = 'shield'
+      }
+    }
+    const damage = blocked === null ? rawDamage : 0
     let reward: ItemId | null = null
     if (chamber === 'live') {
       target.hp = Math.max(0, target.hp - damage)
@@ -922,7 +1014,11 @@ export class GameEngine {
 
     const who = actorLabel(attacker.id)
     const victim = selfShot ? '自己' : actorLabel(target.id)
-    if (chamber === 'live') {
+    if (chamber === 'live' && blocked === 'shield') {
+      this.log(`${who}扣下扳机：实弹。${victim}的护心镜应声碎裂，伤害被完全挡下。`)
+    } else if (chamber === 'live' && blocked === 'decoy') {
+      this.log(`${who}扣下扳机：实弹。${victim}身前的替身被击中，本尊毫发无伤。`)
+    } else if (chamber === 'live') {
       const tags: string[] = []
       if (blackjack) tags.push('黑杰克')
       if (overwhelmed) tags.push('碾压')
@@ -943,6 +1039,7 @@ export class GameEngine {
       damage,
       sawed,
       blackjack,
+      blocked,
     })
     if (reward) {
       this.dispatch({ type: 'chamberRecovered', actor: attacker.id, item: reward })
@@ -985,7 +1082,7 @@ export class GameEngine {
           })
         }
         this.publish()
-        void this.autoAdvance(this.generation)
+        void this.offerSupply(this.generation)
       }
       return true
     }
@@ -999,11 +1096,58 @@ export class GameEngine {
     return false
   }
 
-  private async autoAdvance(token: number): Promise<void> {
-    await this.wait(4200)
+  /**
+   * 清层后先让横幅播完，再摆出三件补给。
+   * 等待期间玩家可以离开页面：超时自动抓走第一件，避免整局永久停在 supply。
+   */
+  private async offerSupply(token: number): Promise<void> {
+    await this.wait(SUPPLY_DELAY_MS)
     if (!this.alive(token) || this.phase !== 'levelClear') return
-    this.log('你推开下一道生锈的铁门。')
-    void this.beginLevel(this.levelIndex + 1, token)
+    const options = this.rollSupplyOptions()
+    if (options.length === 0) {
+      void this.beginLevel(this.levelIndex + 1, token)
+      return
+    }
+    this.supplyOptions = options
+    this.supplyChoice = null
+    this.phase = 'supply'
+    this.log('门前的桌上摆着三件补给，你只能带走一件。')
+    this.dispatch({ type: 'supplyOffer', options: [...options] })
+    this.publish()
+    await this.waitSupplyPick()
+    if (!this.alive(token) || this.phase !== 'supply') return
+    const picked = this.supplyChoice ?? options[0] ?? null
+    this.supplyOptions = []
+    this.supplyChoice = null
+    if (picked) {
+      this.carryOver.push(picked)
+      this.log(`你把【${ITEM_CATALOG[picked].name}】别在腰间，推开了下一道生锈的铁门。`)
+    }
+    this.generation += 1
+    this.cancelTimers()
+    void this.beginLevel(this.levelIndex + 1, this.generation)
+  }
+
+  private rollSupplyOptions(): ItemId[] {
+    return shuffle(this.unlockedItems(), this.rng).slice(0, SUPPLY_OPTION_COUNT)
+  }
+
+  private waitSupplyPick(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const finish = () => {
+        if (this.supplyTimer !== null) {
+          clearTimeout(this.supplyTimer)
+          this.timers.delete(this.supplyTimer)
+          this.supplyTimer = null
+        }
+        this.supplyResolver = null
+        resolve()
+      }
+      this.supplyResolver = finish
+      const id = setTimeout(finish, SUPPLY_PICK_MS)
+      this.supplyTimer = id
+      this.timers.add(id)
+    })
   }
 
   private applyItem(actor: ActorRuntime, item: ItemId): boolean {
@@ -1065,6 +1209,27 @@ export class GameEngine {
         detail = `${actorLabel(foe.id)}下一次行动被跳过。`
         break
       }
+      case 'aegis': {
+        if (actor.shield > 0) return this.reject('护心镜已经举起来了。')
+        actor.shield = 1
+        detail = '护心镜展开：下一次实弹伤害将被完全挡下。'
+        break
+      }
+      case 'decoy': {
+        if (actor.decoy > 0) return this.reject('诱饵已经放好了。')
+        actor.decoy = 1
+        detail = '替身就位：对手下一次对你开枪会落空。'
+        break
+      }
+      case 'hammer': {
+        this.ensureCylinder()
+        if (this.cylinder.current === null) return this.reject('弹仓里空无一物。')
+        if (!this.cylinder.forceLive()) return this.reject('膛内已是实弹，无需再砸。')
+        // 放大镜已经窥见的读数必须跟着改，否则桌面信息自相矛盾
+        if (this.revealed !== null) this.revealed = 'live'
+        detail = '重锤落下：空膛被砸成了实弹。'
+        break
+      }
       case 'hourglass': {
         if (this.hourglassActive) return this.reject('沙漏已经在逆转了。')
         this.hourglassActive = true
@@ -1122,6 +1287,10 @@ export class GameEngine {
     // ---- 胆小看守者：保守保命 ----
     if (personality === 'cautious') {
       if (has('sedative') && me.hp < me.maxHp) return 'sedative'
+      // 手里捏着实弹又必须开枪时，先举起护心镜最稳
+      if (has('aegis') && me.shield === 0 && this.cylinder.current === 'live' && loses) {
+        return 'aegis'
+      }
       if (canSaw && has('saw') && liveRate > 0.7 && me.hand.total >= 15 && !loses) return 'saw'
       if (has('magnifier') && this.revealed === null && this.cylinder.remaining <= 2) {
         return 'magnifier'
@@ -1133,9 +1302,12 @@ export class GameEngine {
     // ---- 狂热老千：激进赌徒 ----
     if (personality === 'gambler') {
       if (has('sedative') && me.hp < me.maxHp) return 'sedative'
+      if (has('decoy') && me.decoy === 0 && loses) return 'decoy'
       if (has('handcuffs') && !foe.skipTurn && !foe.hand.busted) return 'handcuffs'
       if (has('magnet') && behind && foe.hand.total >= 8) return 'magnet'
       if (canSaw && has('saw') && me.hand.total >= 16 && liveRate >= 0.4) return 'saw'
+      // 已知空膛 → 砸成实弹，这一枪就落在对手身上
+      if (has('hammer') && this.cylinder.current === 'blank' && !loses) return 'hammer'
       if (has('magnifier') && this.revealed === null) return 'magnifier'
       return null
     }
@@ -1147,11 +1319,16 @@ export class GameEngine {
       return 'dagger'
     }
     if (has('sedative') && me.hp < me.maxHp) return 'sedative'
+    if (has('aegis') && me.shield === 0 && this.cylinder.current === 'live' && loses) {
+      return 'aegis'
+    }
+    if (has('decoy') && me.decoy === 0 && loses) return 'decoy'
     if (has('handcuffs') && !foe.skipTurn && !foe.hand.busted && foe.hand.total >= 16) {
       return 'handcuffs'
     }
     if (has('magnet') && behind && foe.hand.total >= 9) return 'magnet'
     if (canSaw && has('saw') && me.hand.total >= 17 && !loses && liveRate > 0.5) return 'saw'
+    if (has('hammer') && this.cylinder.current === 'blank' && !loses) return 'hammer'
     if (has('magnifier') && this.revealed === null) return 'magnifier'
     return null
   }
@@ -1311,6 +1488,8 @@ export class GameEngine {
       standing: actor.standing,
       skipTurn: actor.skipTurn,
       sawBoost: actor.sawBoost,
+      shield: actor.shield,
+      decoy: actor.decoy,
     }
   }
 
@@ -1417,5 +1596,10 @@ export class GameEngine {
     this.executionSkip = null
     this.clearInputLockTimer()
     this.inputLocked = false
+    // 取消 supply 等待时也要放行挂起的 offerSupply，否则 Promise 永久悬空
+    this.supplyTimer = null
+    const supplyFinish = this.supplyResolver
+    this.supplyResolver = null
+    supplyFinish?.()
   }
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { GameEngine, evaluateHand, type Card, type CardSuit, type GameEngineOptions } from './GameEngine'
+import { GameEngine, ITEM_IDS, evaluateHand, type Card, type CardSuit, type GameEngineOptions, type ItemId, type LevelConfig } from './GameEngine'
 
 const card = (rank: number, suit: CardSuit = 'spade'): Card => ({
   id: `${suit}-${rank}`,
@@ -309,7 +309,133 @@ describe('沙漏与 Boss AI', () => {
   })
 })
 
+describe('层间补给三选一', () => {
+  const levels: readonly LevelConfig[] = [
+    { id: 1, name: '看门人', title: '门厅', hp: 6, playerHp: 7, supply: 0, personality: 'cautious' },
+    { id: 2, name: '收账人', title: '账房', hp: 6, playerHp: 7, supply: 0, personality: 'gambler' },
+  ]
+
+  /** 把引擎摆到「第一层已清空」并触发补给三选一 */
+  async function toSupplyOffer(engine: GameEngine, probe: Probe): Promise<void> {
+    await toPlayerTurn(engine)
+    probe.boss.hp = 0
+    probe.phase = 'levelClear'
+    void probe.offerSupply(probe.generation)
+    await settleUntil(() => engine.getSnapshot().phase === 'supply')
+  }
+
+  it('清层后给出三件候选，选中道具带进下一层', async () => {
+    const { engine, probe } = newEngine({ levels })
+    await toSupplyOffer(engine, probe)
+    const options = engine.getSnapshot().supplyOptions
+    expect(options).toHaveLength(3)
+    expect(new Set(options).size).toBe(3)
+
+    const picked = options[1] as ItemId
+    expect(engine.chooseSupply(picked)).toBe(true)
+    await settleUntil(() => engine.getSnapshot().phase === 'playerTurn')
+    const snapshot = engine.getSnapshot()
+    expect(snapshot.levelIndex).toBe(1)
+    expect(snapshot.player.items).toContain(picked)
+    // 补给面板只在 supply 阶段出现
+    expect(snapshot.supplyOptions).toHaveLength(0)
+  })
+
+  it('不在候选里的道具会被拒绝，阶段不变', async () => {
+    const { engine, probe } = newEngine({ levels })
+    await toSupplyOffer(engine, probe)
+    const options = engine.getSnapshot().supplyOptions
+    const outside = ITEM_IDS.find((item) => !options.includes(item))
+    expect(outside).toBeDefined()
+    expect(engine.chooseSupply(outside as ItemId)).toBe(false)
+    expect(engine.getSnapshot().phase).toBe('supply')
+  })
+
+  it('超时未选则自动带走第一件，不会卡死在补给阶段', async () => {
+    const { engine, probe } = newEngine({ levels })
+    await toSupplyOffer(engine, probe)
+    const first = engine.getSnapshot().supplyOptions[0] as ItemId
+    await settleUntil(() => engine.getSnapshot().phase !== 'supply')
+    await settleUntil(() => engine.getSnapshot().phase === 'playerTurn')
+    const snapshot = engine.getSnapshot()
+    expect(snapshot.levelIndex).toBe(1)
+    expect(snapshot.player.items).toContain(first)
+  })
+
+  it('非 supply 阶段调用会被拒绝', async () => {
+    const { engine } = newEngine()
+    expect(engine.chooseSupply('magnifier')).toBe(false)
+  })
+})
+
 describe('道具效果', () => {
+  it('护心镜完全挡下一次实弹伤害后碎裂', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.player.items = ['aegis']
+    expect(engine.useItem('aegis')).toBe(true)
+    expect(engine.getSnapshot().player.shield).toBe(1)
+    expect(engine.useItem('aegis')).toBe(false)
+
+    const shots: { damage: number; blocked: string | null }[] = []
+    engine.subscribe((event) => {
+      if (event.type === 'shot') shots.push({ damage: event.damage, blocked: event.blocked })
+    })
+    setTargeting(probe, [10, 9], [10, 5], 'live')
+    probe.boss.shield = 1
+    engine.chooseTarget('boss')
+    await settleUntil(() => shots.length > 0)
+    expect(shots[0]).toEqual({ damage: 0, blocked: 'shield' })
+    expect(engine.getSnapshot().boss.hp).toBe(6)
+    expect(engine.getSnapshot().boss.shield).toBe(0)
+  })
+
+  it('诱饵只挡对手打你的实弹，挡不住自己开枪', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    probe.player.items = ['decoy']
+    expect(engine.useItem('decoy')).toBe(true)
+    expect(engine.getSnapshot().player.decoy).toBe(1)
+
+    // 自己对自己开实弹：诱饵不生效
+    setTargeting(probe, [10, 9], [10, 5], 'live')
+    probe.player.decoy = 1
+    engine.chooseTarget('player')
+    await settleUntil(() => engine.getSnapshot().phase !== 'execution')
+    expect(engine.getSnapshot().player.hp).toBe(5)
+    expect(engine.getSnapshot().player.decoy).toBe(1)
+  })
+
+  it('重锤把空膛砸成实弹，实弹时拒绝', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.player.items = ['hammer']
+    probe.cylinder.chambers = ['blank', 'blank']
+    probe.cylinder.cursor = 0
+    probe.revealed = null
+    expect(engine.useItem('hammer')).toBe(true)
+    expect(engine.getSnapshot().cylinder.live).toBe(1)
+    expect(engine.getSnapshot().cylinder.blank).toBe(1)
+    expect(engine.getSnapshot().cylinder.revealed).toBeNull()
+
+    probe.player.items = ['hammer']
+    expect(engine.useItem('hammer')).toBe(false)
+    expect(engine.getSnapshot().player.items).toContain('hammer')
+  })
+
+  it('重锤砸中已窥见的空膛后读数同步为实弹', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.player.items = ['magnifier', 'hammer']
+    probe.cylinder.chambers = ['blank']
+    probe.cylinder.cursor = 0
+    probe.revealed = null
+    expect(engine.useItem('magnifier')).toBe(true)
+    expect(engine.getSnapshot().cylinder.revealed).toBe('blank')
+    expect(engine.useItem('hammer')).toBe(true)
+    expect(engine.getSnapshot().cylinder.revealed).toBe('live')
+  })
+
   it('手铐让对手跳过下一次行动', async () => {
     const { engine, probe } = newEngine()
     await toPlayerTurn(engine)

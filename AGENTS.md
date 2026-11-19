@@ -13,6 +13,7 @@ npm run dev        # 开发服务器
 npm run build      # 类型检查 + 生产构建
 npm run typecheck  # 仅类型检查
 npm run preview    # 预览 dist
+npm test           # Vitest 单元测试（引擎核心规则）
 ```
 
 ## 一、分层架构：三层，单向依赖
@@ -220,7 +221,7 @@ git add package-lock.json
 npm run build      # 必须通过，否则 PR 的 build 检查会红
 ```
 
-CI 在 PR 上会自动跑 `npm ci && npm run build`，红色 PR 无法合并。
+CI 在 PR 上会自动跑 `npm ci && npm test && npm run build`，红色 PR 无法合并。
 
 ## 九、代码风格
 

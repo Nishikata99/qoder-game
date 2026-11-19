@@ -460,6 +460,8 @@ export class GameEngine {
   private readonly dealLockMs: number
   private readonly itemLockMs: number
   private inputUnlockTimer: ReturnType<typeof setTimeout> | null = null
+  private executionTimer: ReturnType<typeof setTimeout> | null = null
+  private executionSkip: (() => void) | null = null
   private readonly listeners = new Set<GameEventListener>()
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
   private readonly cylinder: Cylinder
@@ -869,6 +871,13 @@ export class GameEngine {
     return true
   }
 
+  /** 跳过处决悬念停顿，立即揭晓枪响结果；只在处决演出进行中有效 */
+  skipExecution(): boolean {
+    if (this.phase !== 'execution' || this.executionSkip === null) return false
+    this.executionSkip()
+    return true
+  }
+
   private async resolveShot(attacker: ActorRuntime, target: ActorRuntime, token: number): Promise<void> {
     if (!this.alive(token) || this.phase !== 'targeting') return
     const selfShot = attacker === target
@@ -894,7 +903,7 @@ export class GameEngine {
       chamber,
       lethal: chamber === 'live',
     })
-    await this.wait(2900)
+    await this.waitExecution(2900)
     if (!this.alive(token)) return
 
     this.cylinder.fire()
@@ -1385,9 +1394,30 @@ export class GameEngine {
     })
   }
 
+  /** 与 wait 相同，但允许玩家用 skipExecution() 提前放行 */
+  private waitExecution(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const finish = () => {
+        if (this.executionTimer !== null) {
+          clearTimeout(this.executionTimer)
+          this.timers.delete(this.executionTimer)
+          this.executionTimer = null
+        }
+        this.executionSkip = null
+        resolve()
+      }
+      this.executionSkip = finish
+      const id = setTimeout(finish, Math.max(0, ms))
+      this.executionTimer = id
+      this.timers.add(id)
+    })
+  }
+
   private cancelTimers(): void {
     for (const id of this.timers) clearTimeout(id)
     this.timers.clear()
+    this.executionTimer = null
+    this.executionSkip = null
     this.clearInputLockTimer()
     this.inputLocked = false
   }

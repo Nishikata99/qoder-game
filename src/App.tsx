@@ -182,6 +182,13 @@ export default function App() {
       }
       const snap = snapshotRef.current
       if (!snap) return
+      if (snap.phase === 'execution') {
+        if (event.code === 'Space' || event.key === ' ') {
+          event.preventDefault()
+          game.skipExecution()
+        }
+        return
+      }
       if (snap.phase === 'targeting') {
         if (snap.pendingShot !== 'player') return
         const key = event.key.toLowerCase()
@@ -471,10 +478,11 @@ export default function App() {
 
       {/* Execution flavour line. */}
       {phase === 'execution' ? (
-        <div className="pointer-events-none absolute inset-x-0 top-[18%] flex justify-center">
+        <div className="pointer-events-none absolute inset-x-0 top-[18%] flex flex-col items-center gap-1">
           <p className="execution-pulse text-[10px] tracking-[0.44em] text-rust-400/70 uppercase">
             屏住呼吸
           </p>
+          <p className="text-[9px] tracking-[0.3em] text-bone-200/30 uppercase">空格跳过</p>
         </div>
       ) : null}
 

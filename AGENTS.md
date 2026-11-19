@@ -16,6 +16,8 @@ npm run preview    # 预览 dist
 npm test           # Vitest 单元测试（引擎核心规则）
 ```
 
+复现对局问题时，开发模式可加 `?seed=12345` 固定发牌与 AI 随机序列（仅 DEV 生效，生产构建始终用 `Math.random`）。
+
 ## 一、分层架构：三层，单向依赖
 
 ```text

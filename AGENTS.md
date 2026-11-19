@@ -225,6 +225,6 @@ CI 在 PR 上会自动跑 `npm ci && npm run build`，红色 PR 无法合并。
 ## 九、代码风格
 
 - TypeScript `strict` 已开启；不要用 `any`、`@ts-ignore`
-- 不留 `console.log`；`console.warn/error` 用于异常分支
+- 不留 `console.log`；`console.warn/error` 只用于真正的异常分支，设计内的降级（如 GLB 缺失回退程序化几何）用 `console.debug`
 - 注释只写「为什么」，不写「做了什么」
 - 演出节奏：发牌 340ms、AI 思考 620–900ms、处决停顿 2.9s；不要随手改这些时长

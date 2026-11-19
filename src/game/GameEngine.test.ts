@@ -126,15 +126,25 @@ describe('结算伤害公式', () => {
     expect(log).toContain('锯短枪管')
   })
 
-  it('点差 ≥5 触发碾压 +1', async () => {
+  it('赢家手牌 ≥20 触发碾压 +1', async () => {
     const { engine, probe } = newEngine()
     await toPlayerTurn(engine)
     setTargeting(probe, [10, 10], [10, 5], 'live')
     engine.chooseTarget('boss')
     await settleUntil(() => engine.getSnapshot().boss.hp !== 6)
-    // 20 对 15，点差 5
+    // 20 点赢下本轮
     expect(engine.getSnapshot().log.join(' ')).toContain('碾压')
     expect(engine.getSnapshot().boss.hp).toBe(3)
+  })
+
+  it('手牌 19 点不触发碾压', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    setTargeting(probe, [10, 9], [10, 5], 'live')
+    engine.chooseTarget('boss')
+    await settleUntil(() => engine.getSnapshot().boss.hp !== 6)
+    expect(engine.getSnapshot().log.join(' ')).not.toContain('碾压')
+    expect(engine.getSnapshot().boss.hp).toBe(4)
   })
 
   it('爆牌收尾不算碾压', async () => {
@@ -145,6 +155,24 @@ describe('结算伤害公式', () => {
     await settleUntil(() => engine.getSnapshot().boss.hp !== 6)
     expect(engine.getSnapshot().log.join(' ')).not.toContain('碾压')
     expect(engine.getSnapshot().boss.hp).toBe(4)
+  })
+
+  it('低分赢下本轮（沙漏）不算碾压', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    // 沙漏下 15 点赢，虽然赢家手牌不足 20
+    setTargeting(probe, [10, 5], [10, 9], 'live')
+    probe.hourglassActive = true
+    probe.phase = 'resolving'
+    void probe.settleRound(probe.generation)
+    for (let i = 0; i < 40; i += 1) {
+      await vi.advanceTimersByTimeAsync(250)
+      if (engine.getSnapshot().phase === 'targeting') break
+    }
+    expect(engine.getSnapshot().pendingShot).toBe('player')
+    engine.chooseTarget('boss')
+    await settleUntil(() => engine.getSnapshot().boss.hp !== 6)
+    expect(engine.getSnapshot().log.join(' ')).not.toContain('碾压')
   })
 
   it('走火遗恨计入基础伤害，中弹后清零', async () => {

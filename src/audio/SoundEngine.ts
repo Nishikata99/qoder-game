@@ -207,8 +207,12 @@ export class SoundEngine {
     this.noiseHit(t + 0.035, 0.06, 1800, 2.5, 0.06, 'bandpass')
   }
 
-  /** Deafening live round followed by a two second ringing decay. */
-  playGunshot(): void {
+  /**
+   * Deafening live round followed by a two second ringing decay.
+   * 打向自己（或自己中弹）保留完整耳鸣；打向对手时缩短尾音，避免吞掉局间节奏。
+   */
+  playGunshot(options: { selfShot?: boolean } = {}): void {
+    const selfShot = options.selfShot ?? true
     const ctx = this.ensureContext()
     const t = ctx.currentTime + 0.005
 
@@ -247,17 +251,20 @@ export class SoundEngine {
 
     this.tone(t, 0.5, 92, 34, 1, 'sine')
 
+    // 耳鸣尾音：打对手时压到 0.8s 并降 6dB
+    const ringDuration = selfShot ? 2 : 0.8
+    const ringLevel = selfShot ? 1 : 0.5
     const ringStart = t + 0.09
-    const ringEnd = ringStart + 2
+    const ringEnd = ringStart + ringDuration
     const ring = ctx.createOscillator()
     ring.type = 'sine'
     ring.frequency.value = 4300
     const ringGain = ctx.createGain()
     ringGain.gain.setValueAtTime(0.0001, ringStart)
-    ringGain.gain.linearRampToValueAtTime(0.075, ringStart + 0.05)
-    ringGain.gain.exponentialRampToValueAtTime(0.055, ringStart + 0.5)
-    ringGain.gain.exponentialRampToValueAtTime(0.02, ringStart + 1.2)
-    ringGain.gain.exponentialRampToValueAtTime(0.005, ringStart + 1.75)
+    ringGain.gain.linearRampToValueAtTime(0.075 * ringLevel, ringStart + 0.05)
+    ringGain.gain.exponentialRampToValueAtTime(0.055 * ringLevel, ringStart + ringDuration * 0.25)
+    ringGain.gain.exponentialRampToValueAtTime(0.02 * ringLevel, ringStart + ringDuration * 0.6)
+    ringGain.gain.exponentialRampToValueAtTime(0.005 * ringLevel, ringStart + ringDuration * 0.875)
     ringGain.gain.exponentialRampToValueAtTime(0.0001, ringEnd)
     ring.connect(ringGain).connect(this.inputNode)
     ring.start(ringStart)
@@ -268,10 +275,10 @@ export class SoundEngine {
     overtone.frequency.value = 6450
     const overtoneGain = ctx.createGain()
     overtoneGain.gain.setValueAtTime(0.0001, ringStart)
-    overtoneGain.gain.linearRampToValueAtTime(0.028, ringStart + 0.07)
-    overtoneGain.gain.exponentialRampToValueAtTime(0.02, ringStart + 0.55)
-    overtoneGain.gain.exponentialRampToValueAtTime(0.008, ringStart + 1.25)
-    overtoneGain.gain.exponentialRampToValueAtTime(0.002, ringStart + 1.8)
+    overtoneGain.gain.linearRampToValueAtTime(0.028 * ringLevel, ringStart + ringDuration * 0.035)
+    overtoneGain.gain.exponentialRampToValueAtTime(0.02 * ringLevel, ringStart + ringDuration * 0.275)
+    overtoneGain.gain.exponentialRampToValueAtTime(0.008 * ringLevel, ringStart + ringDuration * 0.625)
+    overtoneGain.gain.exponentialRampToValueAtTime(0.002 * ringLevel, ringStart + ringDuration * 0.9)
     overtoneGain.gain.exponentialRampToValueAtTime(0.0001, ringEnd - 0.05)
     overtone.connect(overtoneGain).connect(this.inputNode)
     overtone.start(ringStart)
@@ -281,9 +288,9 @@ export class SoundEngine {
     const hissFilter = this.createFilter('bandpass', 5600, 1.4)
     const hissGain = ctx.createGain()
     hissGain.gain.setValueAtTime(0.0001, ringStart)
-    hissGain.gain.exponentialRampToValueAtTime(0.016, ringStart + 0.05)
-    hissGain.gain.exponentialRampToValueAtTime(0.006, ringStart + 1.1)
-    hissGain.gain.exponentialRampToValueAtTime(0.0015, ringStart + 1.8)
+    hissGain.gain.exponentialRampToValueAtTime(0.016 * ringLevel, ringStart + ringDuration * 0.025)
+    hissGain.gain.exponentialRampToValueAtTime(0.006 * ringLevel, ringStart + ringDuration * 0.55)
+    hissGain.gain.exponentialRampToValueAtTime(0.0015 * ringLevel, ringStart + ringDuration * 0.9)
     hissGain.gain.exponentialRampToValueAtTime(0.0001, ringEnd)
     hiss.connect(hissFilter).connect(hissGain).connect(this.inputNode)
     hiss.start(ringStart, 0.2)

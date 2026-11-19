@@ -211,8 +211,7 @@ export class SoundEngine {
    * Deafening live round followed by a two second ringing decay.
    * 打向自己（或自己中弹）保留完整耳鸣；打向对手时缩短尾音，避免吞掉局间节奏。
    */
-  playGunshot(options: { selfShot?: boolean } = {}): void {
-    const selfShot = options.selfShot ?? true
+  playGunshot({ selfShot }: { selfShot: boolean }): void {
     const ctx = this.ensureContext()
     const t = ctx.currentTime + 0.005
 

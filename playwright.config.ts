@@ -13,6 +13,9 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:4173',
     trace: 'retain-on-failure',
     viewport: { width: 960, height: 640 },
+    // 无头软件渲染按像素量计费：全分辨率只有 2~3fps，降到 0.25 约 10fps。
+    // 布局断言只看 CSS 像素，降 DPR 不影响任何被测尺寸
+    deviceScaleFactor: 0.25,
   },
   webServer: {
     // 显式绑定 127.0.0.1：CI 上 localhost 可能先解析到 ::1，导致探测一直超时

@@ -206,6 +206,33 @@ describe('沙漏与 Boss AI', () => {
     expect(engine.getSnapshot().pendingShot).toBe('boss')
   })
 
+  it('沙漏生效时双方同点仍无人开枪，遗恨 +1', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    probe.player.hand = hand(10, 8)
+    probe.boss.hand = hand(10, 8)
+    probe.player.standing = true
+    probe.boss.standing = true
+    probe.holeRevealed = true
+    probe.hourglassActive = true
+    probe.damageBonus = 0
+    probe.player.items = []
+    probe.boss.items = []
+    const events: string[] = []
+    engine.subscribe((event) => {
+      if (event.type !== 'state') events.push(event.type)
+    })
+    probe.phase = 'resolving'
+    void probe.settleRound(probe.generation)
+    await settleUntil(() => engine.getSnapshot().damageBonus === 1)
+    const snapshot = engine.getSnapshot()
+    expect(snapshot.log.join(' ')).toContain('走火危机')
+    expect(snapshot.damageBonus).toBe(1)
+    expect(events).toContain('tie')
+    // 同点不产生赢家：沙漏只翻转「谁点数更小谁赢」，不改变平局，也不把枪交给任何一方
+    expect(snapshot.pendingShot).toBeNull()
+  })
+
   it('没有沙漏时高分方赢下本轮', async () => {
     const { engine, probe } = newEngine()
     await toPlayerTurn(engine)

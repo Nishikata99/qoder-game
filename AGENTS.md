@@ -34,7 +34,7 @@ src/
 ```
 
 依赖方向严格单向：`game` ← `scene` / `audio` ← `components` ← `App`。
-**`game/GameEngine.ts` 不得 import 任何层级的东西**，它是可以被独立测试的纯状态机。
+**`game/GameEngine.ts` 不得 import 任何层级的东西**：它是纯逻辑状态机，不依赖 React / Three / DOM。注意它内部用 `setTimeout` 控制发牌、AI 思考与处决停顿，**测试时须配合假定时器（Vitest fake timers）或后续引入时钟注入**，不能直接按同步纯函数断言。
 
 ## 二、跨层契约（改动必须同步三处）
 
@@ -227,6 +227,6 @@ CI 在 PR 上会自动跑 `npm ci && npm run build`，红色 PR 无法合并。
 ## 九、代码风格
 
 - TypeScript `strict` 已开启；不要用 `any`、`@ts-ignore`
-- 不留 `console.log`；`console.warn/error` 用于异常分支
+- 不留 `console.log`；`console.warn/error` 只用于真正的异常分支，设计内的降级（如 GLB 缺失回退程序化几何）用 `console.debug`
 - 注释只写「为什么」，不写「做了什么」
 - 演出节奏：发牌 340ms、AI 思考 620–900ms、处决停顿 2.9s；不要随手改这些时长

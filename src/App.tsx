@@ -77,7 +77,8 @@ export default function App() {
           break
         case 'shot':
           if (event.chamber === 'live') {
-            sound.playGunshot()
+            // 自己中弹才保留完整耳鸣长尾，打向对手时缩短以避免拖沓
+            sound.playGunshot({ selfShot: event.target === 'player' })
             setBloodFlash((n) => n + 1)
             if (bloodTimer.current !== null) window.clearTimeout(bloodTimer.current)
             bloodTimer.current = window.setTimeout(() => setBloodFlash(0), 900)

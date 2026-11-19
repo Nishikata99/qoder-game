@@ -32,7 +32,7 @@ src/
 ```
 
 依赖方向严格单向：`game` ← `scene` / `audio` ← `components` ← `App`。
-**`game/GameEngine.ts` 不得 import 任何层级的东西**，它是可以被独立测试的纯状态机。
+**`game/GameEngine.ts` 不得 import 任何层级的东西**：它是纯逻辑状态机，不依赖 React / Three / DOM。注意它内部用 `setTimeout` 控制发牌、AI 思考与处决停顿，**测试时须配合假定时器（Vitest fake timers）或后续引入时钟注入**，不能直接按同步纯函数断言。
 
 ## 二、跨层契约（改动必须同步三处）
 

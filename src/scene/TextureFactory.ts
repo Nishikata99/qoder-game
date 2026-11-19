@@ -630,11 +630,16 @@ export class TextureFactory {
     }
   }
 
+  /**
+   * 开发期贴图热替换：每 2.5 秒用 HEAD 探测 public/assets 下是否有同名覆盖图。
+   * 这是本地开发工具，不是后台请求；生产构建不会启动轮询。
+   */
   startWatching(): void {
     if (this.watchTimer !== null || this.disposed) return
     void this.scan(true)
     if (import.meta.env.DEV) {
       this.watchTimer = window.setInterval(() => {
+        if (document.hidden) return
         void this.scan(false)
       }, 2500)
     }

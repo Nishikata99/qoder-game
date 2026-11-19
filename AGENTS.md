@@ -105,14 +105,16 @@ src/
 - 道具拾取：`raycaster` → 沿 `parent` 找 `userData.item` → `callbacks.onItemClick`。
 - 血袋架布局集中在 `BLOOD_RACK_LAYOUT`；玩家架占桌面左前角，Boss 架落地在左后侧，袋口高度要露出桌沿之上。
 - 运镜用 `setShot(shot, duration)`，不要直接改 `camera.position`。
-- **枪口朝向**：`gunAim` 是枪的瞄准枢轴，执行阶段由 `updateGunAim` 算 yaw/pitch 指向 `BOSS_HIT_POINT` 或镜头；枪口火光、膛内提示也挂在它下面。不要再动 `gunGroup.rotation.y` 摆枪。换 GLB 时占位枪要用 `removeFromParent()` 摘下（它挂在 `gunAim` 下，`gunGroup.remove` 摘不到，会叠成两把枪）。枪口火光位置从模型 `MuzzlePoint` 计算，装填时推拉 `PumpSlide`，不要再假设火光固定在 -1.06。
-- 实弹命中 Boss 时 `spawnBlood(BOSS_HIT_POINT)` 生成血珠 + 血雾 + 瞬时光，并触发 `knockBossDown()`：`bossKnock`（0..1）叠加在呼吸动画上把整个 `bossGroup` 压下去，停一拍再缓慢起身，用 generation 计数取消上一轮起身 tween。
+- **枪口朝向**：`gunAim` 是枪的瞄准枢轴，执行阶段由 `updateGunAim` 算 yaw/pitch 指向 `bossHitPoint()` 或镜头；枪口火光、膛内提示也挂在它下面。不要再动 `gunGroup.rotation.y` 摆枪。换 GLB 时占位枪要用 `removeFromParent()` 摘下（它挂在 `gunAim` 下，`gunGroup.remove` 摘不到，会叠成两把枪）。枪口火光位置从模型 `MuzzlePoint` 计算，装填时推拉 `PumpSlide`，不要再假设火光固定在 -1.06。
+- **中弹点不是常量**：`bossHitPoint(out)` 按当前关卡从 `BOSS_BUST_HEIGHTS` 换算（胸口约在整体高度 64% 处），换关后自动跟着半身像变高，不要再写死坐标。
+- 实弹命中 Boss 时 `spawnBlood(this.bossHitPoint(...))` 生成血珠 + 血雾 + 瞬时光，并触发 `knockBossDown()`：`bossKnock`（0..1）叠加在呼吸动画上把整个 `bossGroup` 压下去，停一拍再缓慢起身，用 generation 计数取消上一轮起身 tween。
+- **背景陈设放 `propsGroup`，不要塞 `roomGroup`**：`swapRoom()` 会清空 `roomGroup`，道具会跟着被删。`refreshProps()` 每次整组重建，旧克隆只 `remove` 不 dispose——几何与材质和 `models` 里的模板共享，销毁会把模板一起废掉。
 - 玩家中弹是纯 DOM 覆盖层：`.blood-splatter` 血斑 + `.vision-blur`（`backdrop-filter`，只糊画布，HUD 保持清晰），在 `App.tsx` 的 `handleEventSound` 里由实弹事件驱动；不要用后期处理去做模糊。
 - **Blender 程序化节点图无法导出到 glTF**：噪声/渐变接 Base Color 会被压成纯白。要么把颜色烘焙进顶点色（`COLOR_0`），要么只给 Principled 一个平涂 Base Color；后者导出为 `baseColorFactor`，**是线性色值**，游戏里还会再乘 0.42，按 `目标线性色 ÷ 0.42` 反推，否则会像白模。
 
 ## 五、美术资源热替换
 
-### 3D 模型（`public/models/*.glb`，13 个在用）
+### 3D 模型（`public/models/*.glb`，15 个在用）
 
 | 文件 | 用途 | 约束 |
 | --- | --- | --- |
@@ -120,7 +122,11 @@ src/
 | `room_environment.glb` | 地下铁皮密室 + 工业吊灯 | 地面在 y=0；吊灯节点名以 `Lamp` 开头 |
 | `shotgun.glb` | 泵动霰弹枪 | 枪口朝 glTF -Z；`MuzzlePoint` 空物体标定枪口（火光位置），`PumpSlide` 是装填动画推拉节点 |
 | `boss_1/2/3.glb` | 三层半身像（完整躯干） | 面朝 +Z，底部中心为原点，头部节点名 `BossHead` |
+| `gothic_statue.glb` | 左后墙葬像（Poly Haven CC0） | 面朝 +Z，底座在自身 y=0；带贴图，压暗系数走 `albedoDimFor` |
+| `marble_bust_01.glb` | 右货架层板上的大理石胸像（Poly Haven CC0） | 面朝 +Z，底座在自身 y=0；**必须摆在货架层板顶面**，悬空会穿帮 |
 | `item_*.glb` | 7 件桌面道具 | 尺寸 0.15–0.30m，底部 z=0 |
+
+**带贴图的模型不走顶点色分支**：`tuneGltfMaterial(material, vertexDim, albedoDim)` 的第三个参数只对无顶点色的模型生效，新增贴图模型要在 `preloadModels` 的 `albedoDimFor` 里单独给值，否则一律被压到 `GLB_ALBEDO_DIM = 0.42`，在暗场里等于看不见。
 
 缺文件时自动回退程序化几何（控制台 warn，不报错）。
 

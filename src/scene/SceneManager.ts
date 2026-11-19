@@ -212,6 +212,8 @@ type ModelKey =
   | 'item_dagger'
   | 'gaming_table'
   | 'room_environment'
+  | 'gothic_statue'
+  | 'marble_bust_01'
 
 /** 道具 id → 模型键（与 GameEngine 的 ITEM_IDS 一一对应） */
 const ITEM_MODEL: Readonly<Record<ItemId, ModelKey>> = {
@@ -226,8 +228,10 @@ const ITEM_MODEL: Readonly<Record<ItemId, ModelKey>> = {
 
 const MODEL_BASE = './models'
 
-/** Boss 半身像统一高度（米）。含完整躯干与垂落斗篷，头部落在桌面上方约 1.2m */
-const BOSS_BUST_HEIGHT = 2.15
+/** Boss 半身像高度（米，按关卡递增）。含完整躯干与垂落斗篷，头部落在桌面上方约 1.2m */
+const BOSS_BUST_HEIGHTS = [2.15, 2.5, 3.0] as const
+/** 半身像胸口高度占整体高度的比例，用于换算瞄准点 */
+const BOSS_CHEST_RATIO = 0.64
 /** 半身像底座（斗篷下摆）压到桌面以下，被桌沿挡住，形成「坐在桌后」的错觉 */
 const BOSS_BUST_BASE_Y = 0.26
 /** Boss 站在桌后：桌体后沿 z=-2.23，斗篷前半 z≈-0.51 缩放后约 0.55m，
@@ -241,13 +245,11 @@ const LAMP_SHADE_BOT_Y = 4.02
 
 /** 枪口瞄准的旋转中心：枪座落在桌面上的位置 */
 const GUN_PIVOT = new THREE.Vector3(0, TABLE_TOP + 0.075, 0.08)
-/** Boss 中弹点：胸口高度、半身像正面 */
-const BOSS_HIT_POINT = new THREE.Vector3(0, 1.64, BOSS_Z + 0.62)
 /** 一次血雾爆发的粒子数 */
 const BLOOD_PARTICLE_COUNT = 80
 
-/** 环境反射强度：给金属与铁皮墙一点基础亮度，低于 0.1 时整个房间只剩纯黑 */
-const ENV_INTENSITY = 0.22
+/** 环境反射强度：只留一点金属高光，压低后棚拍感消失、暗部沉入黑里 */
+const ENV_INTENSITY = 0.12
 
 /**
  * Blender 预览灯与网页聚光灯差异很大：GLB 里偏亮的 baseColor 进了 Three.js 会过曝。
@@ -259,14 +261,18 @@ const GLB_ALBEDO_DIM = 0.42
 const VERTEX_COLOR_DIM = 0.68
 
 /** 统一处理 GLB 材质：阴影、环境反射、整体压暗 */
-function tuneGltfMaterial(material: THREE.Material, vertexDim = VERTEX_COLOR_DIM): void {
+function tuneGltfMaterial(
+  material: THREE.Material,
+  vertexDim = VERTEX_COLOR_DIM,
+  albedoDim = GLB_ALBEDO_DIM,
+): void {
   if (!(material instanceof THREE.MeshStandardMaterial)) return
   material.envMapIntensity = ENV_INTENSITY
   // 顶点色材质（Blender 烘焙）本身颜色已正确，只做轻度压暗
   if (material.vertexColors) {
     material.color.multiplyScalar(vertexDim)
   } else {
-    material.color.multiplyScalar(GLB_ALBEDO_DIM)
+    material.color.multiplyScalar(albedoDim)
   }
   // Blender 的高金属度在网页 IBL 下会整片反射成白，压到 0.55 保留金属感又不失细节
   if (material.metalness > 0.55) material.metalness = 0.55
@@ -333,6 +339,7 @@ export class SceneManager {
   private statElapsed = 0
   private readonly resizeObserver: ResizeObserver
   private readonly scratchVector = new THREE.Vector3()
+  private readonly scratchHitPoint = new THREE.Vector3()
 
   private readonly gltfLoader = new GLTFLoader()
   /** 已加载的模型模板；缺失表示加载失败或尚未完成，此时回退程序化几何 */
@@ -362,6 +369,8 @@ export class SceneManager {
   private readonly cardGroup = new THREE.Group()
   private readonly itemRoot = new THREE.Group()
   private readonly lampRig = new THREE.Group()
+  /** 背景陈设单独成组：swapRoom 会清空 roomGroup，道具不能跟着被删 */
+  private readonly propsGroup = new THREE.Group()
   private readonly dust: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial>
   private readonly spot: THREE.SpotLight
   private readonly rimLight: THREE.PointLight
@@ -427,14 +436,14 @@ export class SceneManager {
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFShadowMap
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.05
+    this.renderer.toneMappingExposure = 0.98
     // composer 一帧内多次 render，自动重置会把 calls/tris 冲成最后一趟的值；DEV 下改为手动 reset
     if (devStatsEnabled) this.renderer.info.autoReset = false
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
 
     this.scene = new THREE.Scene()
     this.scene.background = new THREE.Color(0x070a0e)
-    this.scene.fog = new THREE.FogExp2(0x070a0e, 0.028)
+    this.scene.fog = new THREE.FogExp2(0x070a0e, 0.042)
 
     // RoomEnvironment 给金属 / 黄铜 / 玻璃提供真实反射；强度克制到不破坏暗调
     const pmrem = new THREE.PMREMGenerator(this.renderer)
@@ -452,8 +461,8 @@ export class SceneManager {
     this.renderPass = new RenderPass(this.scene, this.camera)
     this.composer.addPass(this.renderPass)
 
-    // Very restrained bloom: only the lamp, muzzle flash and blood-bag highlights.
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.16, 0.42, 0.9)
+    // 只让灯丝、枪口火光、血袋高光发光：阈值压到 0.72，暗场里才有真正的光晕
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.42, 0.5, 0.72)
     this.composer.addPass(this.bloomPass)
 
     this.vignettePass = new ShaderPass(VignetteShader)
@@ -464,7 +473,7 @@ export class SceneManager {
     // OutputPass owns tone mapping + sRGB conversion when rendering through the composer.
     this.composer.addPass(new OutputPass())
 
-    this.scene.add(this.roomGroup, this.tableGroup, this.bossGroup, this.gunGroup, this.deckGroup, this.cardGroup, this.itemRoot, this.lampRig)
+    this.scene.add(this.roomGroup, this.tableGroup, this.bossGroup, this.gunGroup, this.deckGroup, this.cardGroup, this.itemRoot, this.lampRig, this.propsGroup)
 
     this.buildRoom()
     this.buildTable()
@@ -719,7 +728,7 @@ export class SceneManager {
     })
 
     if (live && payload.target === 'boss') {
-      this.spawnBlood(BOSS_HIT_POINT)
+      this.spawnBlood(this.bossHitPoint(this.scratchHitPoint))
       this.knockBossDown()
     }
 
@@ -911,6 +920,8 @@ export class SceneManager {
       'item_dagger',
       'gaming_table',
       'room_environment',
+      'gothic_statue',
+      'marble_bust_01',
     ]
     // 大件场景模型不必和道具一样压那么暗，否则整个桌面沉进黑里
     const dimFor = (key: ModelKey): number => {
@@ -920,6 +931,9 @@ export class SceneManager {
       if (key === 'boss_1' || key === 'boss_2' || key === 'boss_3') return 0.85
       return VERTEX_COLOR_DIM
     }
+    // 带贴图的模型没有顶点色，走 albedo 压暗那一支，必须单独给值
+    const albedoDimFor = (key: ModelKey): number =>
+      key === 'gothic_statue' || key === 'marble_bust_01' ? 0.62 : GLB_ALBEDO_DIM
     for (const key of keys) {
       const task = this.gltfLoader
         .loadAsync(`${MODEL_BASE}/${key}.glb`)
@@ -938,7 +952,7 @@ export class SceneManager {
                 // 模板材质只处理一次；后续 clone(true) 共享同一批材质，不会重复压暗
                 if (tuned.has(material)) continue
                 tuned.add(material)
-                tuneGltfMaterial(material, dim)
+                tuneGltfMaterial(material, dim, albedoDimFor(key))
               }
             }
           })
@@ -1003,6 +1017,11 @@ export class SceneManager {
       }
       case 'room_environment': {
         this.swapRoom(root)
+        break
+      }
+      case 'gothic_statue':
+      case 'marble_bust_01': {
+        this.refreshProps()
         break
       }
       default: {
@@ -1138,6 +1157,43 @@ export class SceneManager {
     }
   }
 
+  /**
+   * 背景陈设：两件 Poly Haven 静态道具。
+   * 每件模型独立到达，所以每次都整组重建——两件共享同一批几何/材质，重建不额外占显存。
+   */
+  private refreshProps(): void {
+    const statue = this.models.get('gothic_statue')
+    const bust = this.models.get('marble_bust_01')
+    if (!statue && !bust) return
+    // 旧克隆只摘不销毁：几何与材质和模板共享，销毁会把仍在用的模板一起废掉
+    for (const child of [...this.propsGroup.children]) this.propsGroup.remove(child)
+
+    if (statue) {
+      // 左后墙下的葬像：冷色轮廓光从右后方勾出剪影，头顶是那扇冷光窗
+      const wrapper = this.placeModel(
+        statue,
+        1.74,
+        new THREE.Vector3(-3.35, 0, -4.35),
+        0.55,
+        'height',
+      )
+      wrapper.name = 'GothicStatue'
+      this.propsGroup.add(wrapper)
+    }
+    if (bust) {
+      // 右侧货架第二层：底座落在层板顶面 y=1.48，被后方红光从侧面舔亮
+      const wrapper = this.placeModel(
+        bust,
+        0.51,
+        new THREE.Vector3(2.15, 1.48, -5.05),
+        0.5,
+        'height',
+      )
+      wrapper.name = 'MarbleBust'
+      this.propsGroup.add(wrapper)
+    }
+  }
+
   /** 第一关面具到货即换掉程序化面具贴图 */
   private tick(): void {
     if (this.disposed) return
@@ -1257,7 +1313,7 @@ export class SceneManager {
         this.aimScratchTarget.copy(this.camera.position)
         this.aimScratchTarget.y -= 0.24
       } else {
-        this.aimScratchTarget.copy(BOSS_HIT_POINT)
+        this.bossHitPoint(this.aimScratchTarget)
       }
       this.aimScratchTarget.sub(this.aimScratch)
       const horizontal = Math.hypot(this.aimScratchTarget.x, this.aimScratchTarget.z)
@@ -1505,8 +1561,8 @@ export class SceneManager {
   }
 
   private buildLighting(): { spot: THREE.SpotLight; rim: THREE.PointLight; fill: THREE.PointLight } {
-    // 环境光负责「看得见房间」，不负责塑造体积：再低就会让整个密室沉成纯黑
-    const ambient = new THREE.HemisphereLight(0x2b3a4a, 0x14100c, 0.34)
+    // 环境光只留「能分辨轮廓」的最低量：再高就会把暗部抬平，恐怖感消失
+    const ambient = new THREE.HemisphereLight(0x2b3a4a, 0x14100c, 0.20)
     this.scene.add(ambient)
 
     // ===== ① 主聚光灯：吊灯向下，光锥覆盖桌面并延伸到 Boss 上半身 =====
@@ -1550,8 +1606,8 @@ export class SceneManager {
     rimBack.position.set(-1.7, 2.5, BOSS_Z - 1.15)
     this.scene.add(rimBack)
 
-    // ===== ③ 冷色补光：抬亮暗部细节，不让任何一面彻底死黑 =====
-    const fill = new THREE.PointLight(0x33506e, 5, 11, 2)
+    // ===== ③ 冷色补光：只抬一点暗部细节，让形体不至于糊成剪影 =====
+    const fill = new THREE.PointLight(0x33506e, 3.2, 11, 2)
     fill.position.set(-3.6, 2.2, 1.2)
     this.scene.add(fill)
 
@@ -1560,10 +1616,11 @@ export class SceneManager {
     rear.position.set(3.4, 1.3, BOSS_Z - 1.5)
     this.scene.add(rear)
 
-    // Boss 面部主光：从玩家这一侧斜上方打过来，照亮面具与上胸的形体
-    const faceFill = new THREE.SpotLight(0xffb98a, 20, 7, 0.5, 0.85, 1.4)
-    faceFill.position.set(0.8, 3.3, BOSS_Z + 1.9)
-    faceFill.target.position.set(0, 2.0, BOSS_Z)
+    // Boss 侧下方硬光：恐怖片的标准打法，一半脸亮一半脸沉进黑里。
+    // 从前上方平铺会把它照成影棚里的粘土人，立体感和威胁感全没了。
+    const faceFill = new THREE.SpotLight(0xffb98a, 30, 8, 0.40, 0.55, 1.6)
+    faceFill.position.set(-1.85, 1.15, BOSS_Z + 1.35)
+    faceFill.target.position.set(0, 2.05, BOSS_Z)
     this.scene.add(faceFill, faceFill.target)
 
     // 冷色补光落在玩家血袋架一侧，让半透明袋体有层次
@@ -1571,33 +1628,19 @@ export class SceneManager {
     torso.position.set(-0.9, 1.25, 1.0)
     this.scene.add(torso)
 
-    const nearFill = new THREE.PointLight(0xffcf9f, 5, 7.5, 2)
-    nearFill.position.set(0, 2.5, 3.6)
-    this.scene.add(nearFill)
-
-    // ===== 密室层次光：给铁皮墙/管道/铁架剪影，不让远处死黑 =====
-    const wallWash = new THREE.SpotLight(0xc98f65, 24, 16, 1.25, 1, 1.0)
+    // ===== 密室层次光：只留一盏从后方扫墙，制造纵深剪影 =====
+    const wallWash = new THREE.SpotLight(0xc98f65, 20, 16, 1.25, 1, 1.0)
     wallWash.position.set(0, 4.8, -0.9)
     wallWash.target.position.set(0, 2.2, -5.6)
     this.scene.add(wallWash, wallWash.target)
 
-    const sideWashL = new THREE.SpotLight(0xd98754, 30, 13, 1.1, 1, 1.2)
-    sideWashL.position.set(-3.6, 3.6, -3.2)
-    sideWashL.target.position.set(-6.6, 1.6, -3.6)
-    this.scene.add(sideWashL, sideWashL.target)
-
-    const sideWashR = new THREE.SpotLight(0xc97d4b, 26, 13, 1.1, 1, 1.2)
-    sideWashR.position.set(3.6, 3.2, -3.6)
-    sideWashR.target.position.set(6.6, 1.2, -3.8)
-    this.scene.add(sideWashR, sideWashR.target)
-
-    const sideCold = new THREE.PointLight(0x345f8c, 8, 10, 2)
+    const sideCold = new THREE.PointLight(0x345f8c, 5, 10, 2)
     sideCold.position.set(-5.4, 2.4, 3.0)
     this.scene.add(sideCold)
 
-    // ===== 深渊雾效：远端管道与铁皮墙渐隐，但不能糊成一块 =====
-    // 密度按房间尺度取：Boss（5.6m）几乎不衰减，远端墙（11m）压掉约 25%
-    this.scene.fog = new THREE.FogExp2(0x070a0e, 0.028)
+    // ===== 深渊雾效：远端管道与铁皮墙渐隐 =====
+    // 密度 0.042：Boss 处（5.6m）压掉约 6%，远端墙（11m）压掉约 20%，空间有了纵深
+    this.scene.fog = new THREE.FogExp2(0x070a0e, 0.042)
     this.scene.background = new THREE.Color(0x070a0e)
 
     return { spot, rim, fill }
@@ -2004,6 +2047,12 @@ export class SceneManager {
     return points
   }
 
+  /** 中弹点随关卡半身像高度变化：胸口约在整体高度的 64% 处 */
+  private bossHitPoint(out: THREE.Vector3): THREE.Vector3 {
+    const bustHeight = BOSS_BUST_HEIGHTS[this.currentLevelIndex] ?? BOSS_BUST_HEIGHTS[0]
+    return out.set(0, BOSS_BUST_BASE_Y + bustHeight * BOSS_CHEST_RATIO, BOSS_Z + 0.62)
+  }
+
   private spawnBlood(origin: THREE.Vector3): void {
     this.bloodLife = 0.95
     const attribute = this.bloodBurst.geometry.getAttribute('position')
@@ -2147,7 +2196,8 @@ export class SceneManager {
     }
 
     // 模型自带完整躯干，底座在自身 y=0：直接按世界高度缩放，底座落到桌沿下方
-    const wrapper = this.placeModel(model, BOSS_BUST_HEIGHT, new THREE.Vector3(0, 0, 0), 0, 'height')
+    const bustHeight = BOSS_BUST_HEIGHTS[levelIndex] ?? BOSS_BUST_HEIGHTS[0]
+    const wrapper = this.placeModel(model, bustHeight, new THREE.Vector3(0, 0, 0), 0, 'height')
     wrapper.name = 'BossBustGLB'
     wrapper.position.set(0, BOSS_BUST_BASE_Y, 0)
     this.bossGroup.add(wrapper)

@@ -6,7 +6,7 @@ export default defineConfig({
   // 用 .e2e.ts 后缀与 Vitest 的 *.spec.ts 区分，避免两个 runner 互相捡文件
   testMatch: '**/*.e2e.ts',
   // 无头环境是软件渲染，引擎定时器会比真机慢一个数量级，超时给足
-  timeout: 180_000,
+  timeout: 240_000,
   fullyParallel: false,
   reporter: process.env.CI ? 'line' : 'list',
   use: {

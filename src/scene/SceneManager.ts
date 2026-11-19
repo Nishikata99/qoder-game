@@ -56,6 +56,7 @@ export interface ShotPayload {
   readonly damage: number
   readonly sawed: boolean
   readonly blackjack: boolean
+  readonly blocked: 'shield' | 'decoy' | null
 }
 
 interface Tween {
@@ -86,6 +87,41 @@ interface ItemEntry {
   baseY: number
   phase: number
   materials: THREE.MeshStandardMaterial[]
+}
+
+/** 手铐锁链：挂在该侧身上的金属环组，随 skipTurn 出现/消失 */
+interface ChainEntry {
+  readonly group: THREE.Group
+  readonly materials: THREE.MeshStandardMaterial[]
+}
+
+/** 沙漏逆转：整屏压成冷青色调，中心保留读数亮度 */
+const HourglassShader = {
+  name: 'HourglassShader',
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    amount: { value: 0 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float amount;
+    varying vec2 vUv;
+    void main() {
+      vec4 color = texture2D(tDiffuse, vUv);
+      float luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+      vec3 cooled = mix(color.rgb, vec3(luma) * vec3(0.66, 0.94, 1.06), 0.6);
+      float edge = smoothstep(0.15, 0.85, distance(vUv, vec2(0.5)));
+      color.rgb = mix(color.rgb, cooled * vec3(0.92, 1.0, 1.06) + edge * vec3(0.02, 0.09, 0.12), amount);
+      gl_FragColor = color;
+    }
+  `,
 }
 
 interface TorsoParts {
@@ -218,8 +254,8 @@ type ModelKey =
   | 'gothic_statue'
   | 'marble_bust_01'
 
-/** 道具 id → 模型键（与 GameEngine 的 ITEM_IDS 一一对应） */
-const ITEM_MODEL: Readonly<Record<ItemId, ModelKey>> = {
+/** 道具 id → 模型键（与 GameEngine 的 ITEM_IDS 一一对应）；暂无 GLB 的道具留空走程序化几何 */
+const ITEM_MODEL: Readonly<Partial<Record<ItemId, ModelKey>>> = {
   magnifier: 'item_magnifier',
   sedative: 'item_syringe',
   saw: 'item_saw',
@@ -250,6 +286,25 @@ const LAMP_SHADE_BOT_Y = 4.02
 const GUN_PIVOT = new THREE.Vector3(0, TABLE_TOP + 0.075, 0.08)
 /** 一次血雾爆发的粒子数 */
 const BLOOD_PARTICLE_COUNT = 80
+/** 护心镜 / 诱饵挡下实弹时的碎屑粒子数 */
+const SPARK_PARTICLE_COUNT = 70
+const BOSS_FLASH_COLOR = new THREE.Color(0xffffff)
+const BOSS_FLASH_LIFE = 0.16
+/**
+ * 闪白峰值。Boss 的贴图接近纯白且带顶点色，自发光是均匀叠加，
+ * 系数一高就把明暗关系抹平成一块白板；实测 0.05 附近只把亮度抬高约一成，
+ * 0.09 仍保得住轮廓，第一帧的顿感也更明确
+ */
+const BOSS_FLASH_PEAK = 0.09
+
+/**
+ * 处决推近：机位稳定后沿视线前推的距离（米）。
+ * 枪在近景，推得越远枪身放大得越快；0.24 附近 Boss 的五官还在画面里，枪也没压过去
+ */
+const EXECUTION_PUSH_DISTANCE = 0.24
+/** 等镜头先落稳再推，推的过程占掉处决停顿的大半 */
+const EXECUTION_PUSH_DELAY = 0.7
+const EXECUTION_PUSH_DURATION = 2.1
 
 /** 环境反射强度：只留一点金属高光，压低后棚拍感消失、暗部沉入黑里 */
 const ENV_INTENSITY = 0.12
@@ -314,6 +369,7 @@ export class SceneManager {
   private readonly renderer: THREE.WebGLRenderer
   private readonly composer: EffectComposer
   private readonly renderPass: RenderPass
+  private readonly hourglassPass: ShaderPass
   private readonly vignettePass: ShaderPass
   private readonly bloomPass: UnrealBloomPass
   private readonly scene: THREE.Scene
@@ -358,6 +414,12 @@ export class SceneManager {
   private readonly itemModelTemplates = new Map<ItemId, THREE.Object3D>()
   private readonly scorePlates = new Map<ActorId, ScorePlate>()
   private readonly bloodRacks = new Map<ActorId, BloodRack>()
+  private readonly chains = new Map<ActorId, ChainEntry>()
+  /** 沙漏滤镜：0=正常，1=全强度冷青；由快照的 hourglassActive 驱动 */
+  private hourglassAmount = 0
+  private hourglassTarget = 0
+  /** 使用瞬间的额外闪白，随时间衰减 */
+  private hourglassPulse = 0
   /** 0..1 的倒地量，叠加在呼吸动画上：命中时冲到 1 再缓慢回到 0 */
   private bossKnock = 0
   private knockGeneration = 0
@@ -401,12 +463,25 @@ export class SceneManager {
   private revealLight: THREE.PointLight | null = null
   private revealGlowLife = 0
   private aimTarget: ActorId = 'boss'
+  /** 处决推近进度 0..1；作为视线方向上的偏移叠在相机基座上 */
+  private executionPush = 0
+  private executionPushGeneration = 0
   private gunRestYaw = 1.02
   private readonly aimScratch = new THREE.Vector3()
   private readonly aimScratchTarget = new THREE.Vector3()
   private readonly bloodBurst: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial>
   private readonly bloodVelocity = new Float32Array(BLOOD_PARTICLE_COUNT * 3)
   private bloodLife = 0
+  private readonly sparkBurst: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial>
+  private readonly sparkVelocity = new Float32Array(SPARK_PARTICLE_COUNT * 3)
+  private sparkLife = 0
+  /** 受击闪白：记录 Boss 各材质原始自发光，衰减后原样还原 */
+  private bossFlashLife = 0
+  private bossFlashMaterials: Array<{
+    material: THREE.MeshStandardMaterial
+    emissive: THREE.Color
+    intensity: number
+  }> = []
   private bloodMist: THREE.Sprite | null = null
   private bloodMistLife = 0
   private shakeTime = 0
@@ -468,6 +543,9 @@ export class SceneManager {
     this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.42, 0.5, 0.72)
     this.composer.addPass(this.bloomPass)
 
+    this.hourglassPass = new ShaderPass(HourglassShader)
+    this.composer.addPass(this.hourglassPass)
+
     this.vignettePass = new ShaderPass(VignetteShader)
     this.vignettePass.uniforms.offset!.value = 1.0
     this.vignettePass.uniforms.darkness!.value = 0.85
@@ -491,6 +569,7 @@ export class SceneManager {
     this.muzzleLight = gun.muzzleLight
     this.flash = gun.flash
     this.bloodBurst = this.buildBloodBurst()
+    this.sparkBurst = this.buildSparkBurst()
 
     const lighting = this.buildLighting()
     this.spot = lighting.spot
@@ -544,6 +623,8 @@ export class SceneManager {
     this.syncItems(snapshot)
     this.syncScores(snapshot)
     this.syncBlood(snapshot)
+    this.syncChains(snapshot)
+    this.hourglassTarget = snapshot.hourglassActive ? 1 : 0
   }
 
   /** Blends the camera to a named shot; `hold` keeps it there until another shot is set. */
@@ -559,6 +640,12 @@ export class SceneManager {
     this.fovTo = target.fov
     this.cameraBlend = 0
     this.cameraBlendDuration = Math.max(0.001, duration)
+    // 离开处决机位时把推近缓回去；无论当前进度是否为 0 都要作废在途的推近 tween，
+    // 否则跳过演出后那段延迟 tween 还会在桌面机位里把镜头往前推
+    if (shot !== 'execute') {
+      this.executionPushGeneration += 1
+      if (this.executionPush > 0) this.pushExecutionCamera(0, duration)
+    }
     if (shot === 'magnify') this.revealGlowLife = MAGNIFY_HOLD_SECONDS
     else this.clearReveal()
   }
@@ -631,6 +718,14 @@ export class SceneManager {
     const deathShot = payload.lethal && payload.target === 'player'
     this.setShot('execute', 0.85)
     this.aimTarget = payload.target
+    // 推进被跳过演出时新旧两段 tween 会并存，用 generation 只让最新的一段写值
+    // 玩家中枪那一镜本身有 fov 收窄，再叠推近会顶进玩家模型，这里只留 fov
+    if (this.reducedMotion || deathShot) {
+      this.executionPushGeneration += 1
+      this.executionPush = 0
+    } else {
+      this.pushExecutionCamera(1, EXECUTION_PUSH_DURATION, EXECUTION_PUSH_DELAY)
+    }
     if (deathShot) {
       this.tween({
         duration: 0.9,
@@ -656,6 +751,20 @@ export class SceneManager {
   /** Falls back to the gameplay framing. */
   resetShot(duration = 0.9): void {
     this.setShot('table', duration)
+  }
+
+  private pushExecutionCamera(target: number, duration: number, delay = 0): void {
+    this.executionPushGeneration += 1
+    const generation = this.executionPushGeneration
+    const from = this.executionPush
+    this.tween({
+      duration,
+      delay,
+      onUpdate: (t) => {
+        if (generation !== this.executionPushGeneration) return
+        this.executionPush = from + (target - from) * easeInOutCubic(t)
+      },
+    })
   }
 
   private shotFraming(shot: CameraShot): {
@@ -732,11 +841,18 @@ export class SceneManager {
     })
 
     if (live && payload.target === 'boss') {
-      this.spawnBlood(this.bossHitPoint(this.scratchHitPoint))
-      this.knockBossDown()
+      const origin = this.bossHitPoint(this.scratchHitPoint)
+      if (payload.blocked) {
+        // 被挡下：Boss 不受伤，也不闪白、不后仰，只给一次材质化的碎屑反馈
+        this.spawnSparks(origin, payload.blocked)
+      } else {
+        this.flashBoss()
+        this.spawnBlood(origin)
+        this.knockBossDown()
+      }
     }
 
-    const recoil = live ? 0.16 : 0.05
+    const recoil = live ? 0.19 : 0.05
     this.tween({
       duration: live ? 0.55 : 0.3,
       onUpdate: (t) => {
@@ -750,7 +866,36 @@ export class SceneManager {
       },
     })
 
-    this.shake(live ? 0.085 : 0.018, live ? 0.6 : 0.3)
+    this.shake(live ? 0.11 : 0.018, live ? 0.6 : 0.3)
+  }
+
+  /** Boss 被实弹命中：整身材质瞬间泛白，随后指数衰减回原样 */
+  private flashBoss(): void {
+    // 上一次闪白还没衰减完就再次命中：先把原色还回去，
+    // 否则会把泛白的自发光当成「原色」记下来，Boss 就永久变白了
+    this.restoreBossFlash()
+    this.bossGroup.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return
+      const materials = Array.isArray(child.material) ? child.material : [child.material]
+      for (const material of materials) {
+        if (!(material instanceof THREE.MeshStandardMaterial)) continue
+        this.bossFlashMaterials.push({
+          material,
+          emissive: material.emissive.clone(),
+          intensity: material.emissiveIntensity,
+        })
+      }
+    })
+    this.bossFlashLife = BOSS_FLASH_LIFE
+  }
+
+  private restoreBossFlash(): void {
+    for (const entry of this.bossFlashMaterials) {
+      entry.material.emissive.copy(entry.emissive)
+      entry.material.emissiveIntensity = entry.intensity
+    }
+    this.bossFlashMaterials = []
+    this.bossFlashLife = 0
   }
 
   /** 命中：先被压下去，停顿一拍，再慢慢撑起来 */
@@ -1210,6 +1355,9 @@ export class SceneManager {
     this.updateBoss(dt)
     this.updateDust(dt)
     this.updateBlood(dt)
+    this.updateSparks(dt)
+    this.updateHourglass(dt)
+    this.updateChains(dt)
     this.updateGunAim(dt)
     this.updateItems(dt)
     this.updateCards(dt)
@@ -1306,6 +1454,17 @@ export class SceneManager {
       this.cameraBase.y + breathe * drift + sy,
       this.cameraBase.z + Math.cos(this.elapsed * 0.17) * 0.02 * drift + sz,
     )
+    // 沿视线前推：lookAt 不动，构图中心保持，只有景别在收紧
+    if (this.executionPush > 0.001) {
+      const direction = this.scratchVector.copy(this.cameraLookAt).sub(this.camera.position)
+      const length = direction.length()
+      if (length > 0.001) {
+        this.camera.position.addScaledVector(
+          direction.multiplyScalar(1 / length),
+          this.executionPush * EXECUTION_PUSH_DISTANCE,
+        )
+      }
+    }
     this.spaceLook()
   }
 
@@ -1376,10 +1535,19 @@ export class SceneManager {
     // 呼吸：三个不成整数比的正弦叠加，周期压在 4~6 秒，避免机械重复感
     const breath = Math.sin(t * 1.32) * 0.018 + Math.sin(t * 0.61 + 1.7) * 0.010
     const knock = this.bossKnock
-    this.bossGroup.position.y = breath - knock * 0.62
+    this.bossGroup.position.y = breath - knock * 0.72
     // 吸气时胸口微微前压，呼气抬回；中弹时整个上半身后仰并侧倾
-    this.bossGroup.rotation.x = -breath * 0.55 - knock * 0.62
-    this.bossGroup.rotation.z = knock * 0.12
+    this.bossGroup.rotation.x = -breath * 0.55 - knock * 0.82
+    this.bossGroup.rotation.z = knock * 0.2
+
+    if (this.bossFlashLife > 0) {
+      this.bossFlashLife = Math.max(0, this.bossFlashLife - dt)
+      const k = this.bossFlashLife / BOSS_FLASH_LIFE
+      for (const entry of this.bossFlashMaterials) {
+        entry.material.emissive.copy(entry.emissive).lerp(BOSS_FLASH_COLOR, k * k * BOSS_FLASH_PEAK)
+      }
+      if (this.bossFlashLife === 0) this.restoreBossFlash()
+    }
 
     // 盯视：大部分时间缓慢扫视，偶尔停顿后猛转向玩家
     const sweep = Math.sin(t * 0.37) * 0.55 + Math.sin(t * 0.19 + 2.3) * 0.45
@@ -1398,7 +1566,177 @@ export class SceneManager {
       this.bossParts.mask.position.y = (this.bossParts.mask.userData.baseY as number) + maskBob
       this.bossParts.maskBack.position.y = (this.bossParts.maskBack.userData.baseY as number) + maskBob
     }
+  }
+
+  /** 沙漏滤镜强度平滑跟随快照状态；使用瞬间叠一次短闪 */
+  private updateHourglass(dt: number): void {
+    const rate = this.reducedMotion ? 6 : 2.6
+    this.hourglassAmount += (this.hourglassTarget - this.hourglassAmount) * Math.min(1, dt * rate)
+    if (this.hourglassPulse > 0) this.hourglassPulse = Math.max(0, this.hourglassPulse - dt * 1.6)
+    const amount = Math.min(1, this.hourglassAmount + this.hourglassPulse * 0.55)
+    this.hourglassPass.uniforms.amount!.value = amount
+  }
+
+   /** 沙漏打出的瞬间：滤镜先压满再回落到「本局持续」强度 */
+  playHourglass(): void {
+    if (this.disposed) return
+    this.hourglassPulse = 1
+    this.hourglassTarget = 1
+  }
+
+  /** 手铐锁链：按 skipTurn 挂上或拆下，拆下时播放碎裂下落 */
+  private syncChains(snapshot: GameSnapshot): void {
+    for (const actor of ['player', 'boss'] as const) {
+      const view = actor === 'player' ? snapshot.player : snapshot.boss
+      const existing = this.chains.get(actor)
+      if (!view.skipTurn) {
+        if (existing) {
+          this.chains.delete(actor)
+          this.dropChain(existing)
+        }
+        continue
+      }
+      if (existing) continue
+      const entry = this.buildChain(actor)
+      this.chains.set(actor, entry)
+      const start = entry.group.scale.x
+      entry.group.scale.setScalar(0.001)
+      this.tween({
+        duration: 0.4,
+        onUpdate: (t) => {
+          entry.group.scale.setScalar(start * easeOutCubic(t))
+        },
+      })
+    }
+  }
+
+  /** 两条交叉铁链箍住手部高度；Boss 侧放大并抬到半身像腰部 */
+  private buildChain(actor: ActorId): ChainEntry {
+    const group = new THREE.Group()
+    const materials: THREE.MeshStandardMaterial[] = []
+    const iron = new THREE.MeshStandardMaterial({
+      color: 0x6d747a,
+      metalness: 0.88,
+      roughness: 0.42,
+      emissive: 0x0d1418,
+      emissiveIntensity: 0.5,
+    })
+    this.disposableMaterials.add(iron)
+    materials.push(iron)
+
+    const links = 9
+    for (let i = 0; i < links; i += 1) {
+      const geo = new THREE.TorusGeometry(0.028, 0.0085, 6, 14)
+      this.disposableGeometries.add(geo)
+      const link = new THREE.Mesh(geo, iron)
+      // 相邻环交替 90°，看起来才是扣合的链节
+      link.rotation.x = Math.PI / 2
+      link.rotation.y = i % 2 === 0 ? 0 : Math.PI / 2
+      link.position.x = (i - (links - 1) / 2) * 0.052
+      link.castShadow = true
+      group.add(link)
+    }
+
+    if (actor === 'player') {
+      group.position.set(0, TABLE_TOP + 0.11, 0.55)
+      group.rotation.z = -0.06
+      group.scale.setScalar(1)
+    } else {
+      // Boss 手在桌后不可见，链子改箍住半身像下段，读作「被缚住」
+      const bustHeight = BOSS_BUST_HEIGHTS[this.currentLevelIndex] ?? BOSS_BUST_HEIGHTS[0]
+      group.position.set(0, BOSS_BUST_BASE_Y + bustHeight * 0.42, BOSS_Z + 0.55)
+      group.scale.setScalar(2.4)
+      group.rotation.z = 0.05
+    }
+    this.scene.add(group)
+
+    const entry: ChainEntry = { group, materials }
+    const sway = this.reducedMotion ? 0 : 1
+    this.tween({
+      duration: 0.5,
+      onUpdate: (t) => {
+        group.rotation.y = Math.sin(t * Math.PI) * 0.22 * sway
+      },
+    })
+    return entry
+  }
+
+  private dropChain(entry: ChainEntry): void {
+    const fromY = entry.group.position.y
+    this.tween({
+      duration: 0.55,
+      onUpdate: (t) => {
+        entry.group.position.y = fromY - easeOutCubic(t) * 0.5
+        entry.group.rotation.x = t * 0.9
+        entry.group.scale.setScalar(Math.max(0.001, entry.group.scale.x * (1 - t * 0.04)))
+      },
+      onComplete: () => {
+        entry.group.removeFromParent()
+        this.disposeObject(entry.group)
+      },
+    })
+  }
+
+  private updateChains(dt: number): void {
     void dt
+    for (const entry of this.chains.values()) {
+      const flicker = 0.45 + Math.sin(this.elapsed * 3.1) * 0.12
+      for (const material of entry.materials) material.emissiveIntensity = flicker
+    }
+  }
+
+  /**
+   * 磁铁换牌：一张牌从对手明牌位沿弧线飞到自己最后一张明牌位，
+   * 用一张临时贴图牌做替身，落位后销毁；快照同步会各自就位。
+   */
+  playMagnetSwap(card: Card): void {
+    if (this.disposed) return
+    const geo = new THREE.BoxGeometry(CARD_W, CARD_T, CARD_H)
+    this.disposableGeometries.add(geo)
+    const side = new THREE.MeshStandardMaterial({ color: 0x231b16, roughness: 0.88 })
+    this.disposableMaterials.add(side)
+    const face = new THREE.MeshStandardMaterial({
+      map: this.textures.get(this.textures.cardKey(card.rank, card.suit)),
+      roughness: 0.66,
+      metalness: 0.04,
+    })
+    this.disposableMaterials.add(face)
+    const back = new THREE.MeshStandardMaterial({
+      map: this.textures.get(this.textures.cardBackKey),
+      roughness: 0.76,
+      metalness: 0.05,
+    })
+    this.disposableMaterials.add(back)
+    const mesh = new THREE.Mesh(geo, [side, side, face, back, side, side])
+    mesh.castShadow = true
+
+    const bossCount = Math.max(1, this.handCount('boss'))
+    const playerCount = Math.max(1, this.handCount('player'))
+    const from = this.cardSlot('boss', bossCount - 1, bossCount).position.clone()
+    const to = this.cardSlot('player', playerCount - 1, playerCount).position.clone()
+    const lift = this.reducedMotion ? 0.08 : 0.55
+    mesh.position.copy(from)
+    mesh.position.y += 0.02
+    mesh.rotation.order = 'YXZ'
+    mesh.rotation.set(0, Math.PI, 0)
+    mesh.scale.setScalar(0.72)
+    this.cardGroup.add(mesh)
+
+    this.tween({
+      duration: this.reducedMotion ? 0.22 : 0.72,
+      onUpdate: (t) => {
+        const eased = easeInOutCubic(t)
+        mesh.position.lerpVectors(from, to, eased)
+        mesh.position.y += Math.sin(eased * Math.PI) * lift
+        mesh.rotation.y = Math.PI + eased * Math.PI * 2
+        mesh.rotation.z = Math.sin(eased * Math.PI) * 0.5
+        mesh.scale.setScalar(0.72 + eased * 0.28)
+      },
+      onComplete: () => {
+        mesh.removeFromParent()
+        this.disposeObject(mesh)
+      },
+    })
   }
 
   private updateDust(dt: number): void {
@@ -2145,6 +2483,102 @@ export class SceneManager {
     }
   }
 
+  private buildSparkBurst(): THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial> {
+    const positions = new Float32Array(SPARK_PARTICLE_COUNT * 3)
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    this.disposableGeometries.add(geometry)
+    const material = new THREE.PointsMaterial({
+      map: this.textures.get('dust'),
+      color: 0xffe6b0,
+      size: 0.18,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true,
+      toneMapped: false,
+    })
+    this.disposableMaterials.add(material)
+    const points = new THREE.Points(geometry, material)
+    points.visible = false
+    this.scene.add(points)
+    return points
+  }
+
+  /**
+   * 格挡碎屑：护心镜是金色金属火花（会发光、带一盏短命点光），
+   * 诱饵是哑光的稻草/陶土渣（重、不发光），两者一眼能分清是被什么挡下的
+   */
+  private spawnSparks(origin: THREE.Vector3, kind: 'shield' | 'decoy'): void {
+    this.sparkLife = 0.5
+    const attribute = this.sparkBurst.geometry.getAttribute('position')
+    if (!(attribute instanceof THREE.BufferAttribute)) return
+    const material = this.sparkBurst.material
+    const shield = kind === 'shield'
+    material.color.setHex(shield ? 0xffe6b0 : 0x9c7a4a)
+    material.size = shield ? 0.18 : 0.11
+    material.blending = shield ? THREE.AdditiveBlending : THREE.NormalBlending
+    material.needsUpdate = true
+
+    const array = attribute.array as Float32Array
+    for (let i = 0; i < SPARK_PARTICLE_COUNT; i += 1) {
+      const base = i * 3
+      array[base] = origin.x
+      array[base + 1] = origin.y
+      array[base + 2] = origin.z
+      if (shield) {
+        this.sparkVelocity[base] = (Math.random() - 0.5) * 2.6
+        this.sparkVelocity[base + 1] = Math.random() * 1.6 - 0.2
+        this.sparkVelocity[base + 2] = 1.2 + Math.random() * 2.4
+      } else {
+        // 稻草渣更重、更贴近命中点往下掉
+        this.sparkVelocity[base] = (Math.random() - 0.5) * 1.1
+        this.sparkVelocity[base + 1] = Math.random() * 0.8 - 0.3
+        this.sparkVelocity[base + 2] = 0.5 + Math.random() * 1.2
+      }
+    }
+    attribute.needsUpdate = true
+    this.sparkBurst.visible = true
+    material.opacity = shield ? 1 : 0.85
+
+    if (!shield) return
+    // 火花是瞬时强光：补一盏短命点光，否则在暗场里只剩几个像素点
+    const impact = new THREE.PointLight(0xffc070, 4, 2, 2)
+    impact.position.copy(origin)
+    impact.position.z += 0.2
+    this.scene.add(impact)
+    this.tween({
+      duration: 0.32,
+      onUpdate: (t) => {
+        impact.intensity = 4 * (1 - t) ** 2
+      },
+      onComplete: () => {
+        this.scene.remove(impact)
+        impact.dispose()
+      },
+    })
+  }
+
+  private updateSparks(dt: number): void {
+    if (this.sparkLife <= 0) return
+    this.sparkLife = Math.max(0, this.sparkLife - dt)
+    const attribute = this.sparkBurst.geometry.getAttribute('position')
+    if (attribute instanceof THREE.BufferAttribute) {
+      const array = attribute.array as Float32Array
+      for (let i = 0; i < SPARK_PARTICLE_COUNT; i += 1) {
+        const base = i * 3
+        this.sparkVelocity[base + 1] -= 7.5 * dt
+        array[base] += this.sparkVelocity[base] * dt
+        array[base + 1] += this.sparkVelocity[base + 1] * dt
+        array[base + 2] += this.sparkVelocity[base + 2] * dt
+      }
+      attribute.needsUpdate = true
+    }
+    this.sparkBurst.material.opacity = (this.sparkLife / 0.5) ** 0.6 * (this.sparkBurst.material.blending === THREE.AdditiveBlending ? 1 : 0.85)
+    if (this.sparkLife === 0) this.sparkBurst.visible = false
+  }
+
   private buildDeckPile(): void {
     const back = this.textures.get(this.textures.cardBackKey)
     for (let i = 0; i < 12; i += 1) {
@@ -2755,6 +3189,79 @@ export class SceneManager {
         add(new THREE.BoxGeometry(0.012, 0.06, 0.012), bloodMat, (mesh) => {
           mesh.position.set(0.02, 0.16, 0.01)
           mesh.rotation.z = 0.2
+        })
+        break
+      }
+      case 'aegis': {
+        // 护心镜：倾斜立起的铜镜，边缘一圈刻纹
+        const bronzeMat = makeStandardMaterial(0x8a6a3a, 0.9, 0.32)
+        const faceMat = new THREE.MeshStandardMaterial({
+          color: 0xb9a06a,
+          metalness: 0.85,
+          roughness: 0.18,
+          emissive: 0x2a1f0c,
+          emissiveIntensity: 0.3,
+        })
+        this.disposableMaterials.add(faceMat)
+        add(new THREE.CylinderGeometry(0.15, 0.15, 0.022, 24), bronzeMat, (mesh) => {
+          mesh.position.y = 0.16
+          mesh.rotation.x = Math.PI / 2 - 0.35
+        })
+        add(new THREE.CylinderGeometry(0.115, 0.115, 0.03, 24), faceMat, (mesh) => {
+          mesh.position.set(0, 0.163, 0.012)
+          mesh.rotation.x = Math.PI / 2 - 0.35
+        })
+        add(new THREE.TorusGeometry(0.15, 0.014, 8, 24), bronzeMat, (mesh) => {
+          mesh.position.y = 0.16
+          mesh.rotation.x = -0.35
+        })
+        add(new THREE.BoxGeometry(0.05, 0.1, 0.03), bronzeMat, (mesh) => {
+          mesh.position.set(0, 0.03, -0.045)
+        })
+        break
+      }
+      case 'decoy': {
+        // 诱饵：一尊粗糙的小泥偶，头顶插着草标
+        const clayMat = makeStandardMaterial(0x6b5238, 0.15, 0.85)
+        const strawMat = makeStandardMaterial(0xb59a52, 0.05, 0.9)
+        add(new THREE.CapsuleGeometry(0.055, 0.1, 6, 12), clayMat, (mesh) => {
+          mesh.position.y = 0.085
+        })
+        add(new THREE.SphereGeometry(0.055, 14, 10), clayMat, (mesh) => {
+          mesh.position.y = 0.19
+        })
+        add(new THREE.BoxGeometry(0.11, 0.02, 0.02), clayMat, (mesh) => {
+          mesh.position.y = 0.13
+        })
+        add(new THREE.CylinderGeometry(0.006, 0.006, 0.09, 6), strawMat, (mesh) => {
+          mesh.position.set(0, 0.26, 0)
+        })
+        add(new THREE.BoxGeometry(0.07, 0.04, 0.006), strawMat, (mesh) => {
+          mesh.position.set(0, 0.3, 0)
+          mesh.rotation.z = 0.3
+        })
+        break
+      }
+      case 'hammer': {
+        // 重锤：短柄方头锤，锤头缠着脏布条
+        const headMat = makeStandardMaterial(0x5a5f63, 0.95, 0.34)
+        const haftMat = makeStandardMaterial(0x4a2d18, 0.1, 0.8)
+        const ragMat = makeStandardMaterial(0x7d2a22, 0.05, 0.9)
+        add(new THREE.BoxGeometry(0.2, 0.09, 0.09), headMat, (mesh) => {
+          mesh.position.set(0, 0.19, 0)
+          mesh.rotation.z = 0.08
+        })
+        add(new THREE.CylinderGeometry(0.017, 0.021, 0.26, 10), haftMat, (mesh) => {
+          mesh.position.y = 0.06
+          mesh.rotation.z = 0.08
+        })
+        add(new THREE.CylinderGeometry(0.024, 0.024, 0.05, 10), ragMat, (mesh) => {
+          mesh.position.y = 0.155
+          mesh.rotation.z = 0.08
+        })
+        add(new THREE.TorusGeometry(0.026, 0.007, 6, 12), haftMat, (mesh) => {
+          mesh.position.set(0, -0.06, 0)
+          mesh.rotation.x = Math.PI / 2
         })
         break
       }

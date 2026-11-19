@@ -106,6 +106,10 @@ export default function App() {
           if (event.chamber === 'live') {
             // 自己中弹才保留完整耳鸣长尾，打向对手时缩短以避免拖沓
             sound.playGunshot({ selfShot: event.target === 'player' })
+            if (event.blocked !== null) {
+              showNotice(event.blocked === 'shield' ? '护心镜碎裂：伤害被完全挡下' : '替身被击中：子弹落空')
+              break
+            }
             setBloodFlash((n) => n + 1)
             if (bloodTimer.current !== null) window.clearTimeout(bloodTimer.current)
             bloodTimer.current = window.setTimeout(() => setBloodFlash(0), 900)
@@ -129,7 +133,7 @@ export default function App() {
           showNotice(`磁铁换牌：你拿到 ${formatCardLabel(event.card)}`)
           break
         case 'hourglass':
-          sound.playItemUse()
+          sound.playHourglass()
           showNotice('沙漏逆转：本局点数更小者获胜')
           break
         case 'chamberRevealed':
@@ -159,6 +163,9 @@ export default function App() {
           break
         case 'levelClear':
           bannerId.current += 1
+          break
+        case 'supplyOffer':
+          sound.playItemUse()
           break
         case 'lootUnlocked':
           bannerId.current += 1
@@ -223,6 +230,15 @@ export default function App() {
         } else if (key === 'r' || key === '2') {
           event.preventDefault()
           game.chooseTarget('player')
+        }
+        return
+      }
+      if (snap.phase === 'supply') {
+        const index = Number(event.key)
+        if (Number.isInteger(index) && index >= 1 && index <= snap.supplyOptions.length) {
+          event.preventDefault()
+          const item = snap.supplyOptions[index - 1]
+          if (item) game.chooseSupply(item)
         }
         return
       }
@@ -347,7 +363,7 @@ export default function App() {
       {/* Minimal corner chrome. */}
       <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-4">
         <div className="flex items-center gap-3">
-          <span className="h-[1px] w-8 bg-rust-500/50" />
+          <span className="h-[1px] w-8 bg-rust-500/50 max-[420px]:hidden" />
           <p className="text-[9px] tracking-[0.42em] text-bone-200/35 uppercase">
             Abyss XXI · 第 {level.id} 层
           </p>
@@ -383,14 +399,20 @@ export default function App() {
             {snapshot?.pendingShot === 'player' ? (
               <div className="flex items-center gap-3">
                 <MetalButton tone="primary" onClick={() => game.chooseTarget('boss')}>
-                  射向它 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">FIRE · F</span>
+                  射向它{' '}
+                  <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45 max-[420px]:hidden">
+                    FIRE · F
+                  </span>
                 </MetalButton>
                 <MetalButton
                   tone="secondary"
                   onClick={() => game.chooseTarget('player')}
                   hint="对自己开枪：空膛可摸一件道具，实弹则你自己受伤"
                 >
-                  射向自己 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">RISK · R</span>
+                  射向自己{' '}
+                  <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45 max-[420px]:hidden">
+                    RISK · R
+                  </span>
                 </MetalButton>
               </div>
             ) : null}
@@ -403,10 +425,16 @@ export default function App() {
               onClick={() => game.hit()}
               hint={locked ? '手铐锁住了你的手腕' : undefined}
             >
-              要牌 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">HIT · H</span>
+              要牌{' '}
+              <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45 max-[420px]:hidden">
+                HIT · H
+              </span>
             </MetalButton>
             <MetalButton tone="secondary" disabled={!canAct} onClick={() => game.stand()}>
-              停牌 <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45">STAND · S</span>
+              停牌{' '}
+              <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45 max-[420px]:hidden">
+                STAND · S
+              </span>
             </MetalButton>
           </div>
         )}
@@ -428,8 +456,9 @@ export default function App() {
         </div>
       </div>
 
-      {/* Corner utilities: volume + codex. */}
-      <div className="absolute right-4 bottom-4 flex flex-col items-end gap-2">
+      {/* Corner utilities: volume + codex.
+          窄屏改成横排抬到操作栏上方，否则会和底部按钮叠在一起 */}
+      <div className="absolute right-4 bottom-4 flex flex-col items-end gap-2 max-[420px]:right-3 max-[420px]:bottom-[6.25rem] max-[420px]:flex-row max-[420px]:items-center">
         <button
           type="button"
           onClick={() => setModal(modal === 'items' ? null : 'items')}
@@ -456,7 +485,7 @@ export default function App() {
             setVolume(Number(event.target.value))
             setMuted(false)
           }}
-          className="volume-slider w-24"
+          className="volume-slider w-24 max-[420px]:w-20"
         />
       </div>
 
@@ -501,6 +530,48 @@ export default function App() {
         </div>
       ) : null}
 
+      {/* Supply pick: one item only, then the door opens. */}
+      {phase === 'supply' && snapshot ? (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="层间补给"
+            className="max-h-[calc(100dvh-2rem)] w-full max-w-xl overflow-y-auto border border-rust-500/35 bg-abyss-900/95 p-5 shadow-2xl shadow-black/80"
+          >
+            <p className="text-[9px] tracking-[0.45em] text-rust-400/75 uppercase">before the next door</p>
+            <h2 className="mt-2 font-display text-2xl text-bone-200">门前的补给</h2>
+            <p className="mt-1 text-[11px] text-bone-200/45">只能带走一件。选中的道具会跟到下一层。</p>
+            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              {snapshot.supplyOptions.map((item, index) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => game.chooseSupply(item)}
+                  className="group flex flex-col items-start gap-1 border border-white/8 bg-black/30 p-3 text-left transition-colors hover:border-rust-500/60 hover:bg-rust-500/10"
+                >
+                  <span className="flex w-full items-center justify-between">
+                    <span className="font-display text-2xl text-rust-400/85">
+                      {ITEM_CATALOG[item].glyph}
+                    </span>
+                    <span className="text-[9px] tracking-[0.25em] text-bone-200/25 uppercase">
+                      {index + 1}
+                    </span>
+                  </span>
+                  <span className="font-display text-sm text-bone-200">{ITEM_CATALOG[item].name}</span>
+                  <span className="text-[10px] leading-relaxed text-bone-200/50">
+                    {ITEM_CATALOG[item].summary}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <p className="mt-3 text-[9px] tracking-[0.2em] text-bone-200/25 uppercase">
+              快捷键 1 / 2 / 3 · 12 秒后自动带走第一件
+            </p>
+          </div>
+        </div>
+      ) : null}
+
       {/* Execution flavour line. */}
       {phase === 'execution' ? (
         <div className="pointer-events-none absolute inset-x-0 top-[18%] flex flex-col items-center gap-1">
@@ -513,7 +584,7 @@ export default function App() {
 
       {/* Death / victory end screens. */}
       {finished ? (
-        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-6 bg-black/78 px-6 text-center backdrop-blur-sm">
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-6 overflow-y-auto bg-black/78 px-6 py-8 text-center backdrop-blur-sm">
           {phase === 'victory' ? (
             <>
               <p className="text-[9px] tracking-[0.5em] text-rust-400/80 uppercase">run the gauntlet</p>
@@ -602,7 +673,7 @@ export default function App() {
           aria-modal="true"
           aria-label="开局说明"
         >
-          <div className="w-full max-w-md border border-rust-500/35 bg-abyss-900/95 p-6 shadow-2xl shadow-black/80">
+          <div className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto border border-rust-500/35 bg-abyss-900/95 p-6 shadow-2xl shadow-black/80">
             <p className="text-[9px] tracking-[0.45em] text-rust-400/75 uppercase">
               before you sit down
             </p>
@@ -665,7 +736,7 @@ function ActorPanel({
   const shown = evaluateHand(visibleCards)
   return (
     <div
-      className={`pointer-events-none absolute w-36 border bg-black/50 px-3 py-2 backdrop-blur-sm ${
+      className={`pointer-events-none absolute w-36 border bg-black/50 px-3 py-2 backdrop-blur-sm max-[420px]:w-32 ${
         accent ? 'border-rust-500/35' : 'border-white/8'
       } ${className}`}
     >
@@ -677,6 +748,8 @@ function ActorPanel({
           {shown.busted ? '爆牌' : actor.standing ? '已停牌' : '在局中'} · 道具 {actor.items.length}
         </span>
         {actor.sawBoost > 0 ? <span className="text-amber-300/80">锯</span> : null}
+        {actor.shield > 0 ? <span className="text-sky-300/80">盾</span> : null}
+        {actor.decoy > 0 ? <span className="text-fuchsia-300/70">饵</span> : null}
       </p>
     </div>
   )
@@ -686,7 +759,7 @@ function LogPanel({ snapshot }: { snapshot: GameSnapshot }) {
   const lines = snapshot.log.slice(-3)
   if (lines.length === 0) return null
   return (
-    <div className="pointer-events-none absolute top-36 right-4 w-64 space-y-1 text-right">
+    <div className="pointer-events-none absolute top-36 right-4 w-64 space-y-1 text-right max-[420px]:w-40">
       {lines.map((line, index) => (
         <p
           key={index}
@@ -703,8 +776,9 @@ function LogPanel({ snapshot }: { snapshot: GameSnapshot }) {
 
 function CylinderPanel({ snapshot }: { snapshot: GameSnapshot }) {
   const { cylinder, damageBonus, hourglassActive } = snapshot
+  // 窄屏把弹仓挪到左上角：留在下方会盖住牌桌上的手牌点数
   return (
-    <div className="pointer-events-none absolute bottom-24 left-4 w-40 border border-white/8 bg-black/50 px-3 py-2 backdrop-blur-sm">
+    <div className="pointer-events-none absolute bottom-24 left-4 w-40 border border-white/8 bg-black/50 px-3 py-2 backdrop-blur-sm max-[420px]:top-32 max-[420px]:bottom-auto max-[420px]:w-32">
       <div className="flex items-center justify-between text-[9px] tracking-[0.2em] text-bone-200/35 uppercase">
         <span>弹仓</span>
         <span className="text-bone-200/60">
@@ -763,6 +837,8 @@ function phaseLabel(phase: string): string {
       return '回合结束'
     case 'levelClear':
       return '层已净空'
+    case 'supply':
+      return '挑选补给'
     case 'gameOver':
       return '实验结束'
     case 'victory':

@@ -42,8 +42,12 @@ const RULES: ReadonlyArray<{ title: string; body: string }> = [
     body: '每次装填 4~6 发，其中 2~3 发实弹，顺序打乱。每打一发消耗一发、不重洗；打空后才重新装填。',
   },
   {
+    title: '层间补给',
+    body: '打倒一层后，门前会摆出三件补给，你只能带走一件进入下一层。12 秒不选则自动拿走第一件。',
+  },
+  {
     title: '层数与补给',
-    body: '第 1/2/3 层：对手生命 6/8/8，你的生命 7/7/7，开局补给 2/3/4 件道具。第 2 层解锁磁铁与手铐，第 3 层解锁沙漏与匕首。',
+    body: '第 1/2/3 层：对手生命 6/8/8，你的生命 7/7/7，开局补给 2/3/4 件道具。第 2 层解锁磁铁、手铐与护心镜，第 3 层解锁沙漏、匕首、诱饵与重锤。',
   },
   {
     title: '快捷键',
@@ -72,6 +76,9 @@ export function RulesModal({
     <div
       className="absolute inset-0 z-40 flex items-center justify-center bg-black/78 p-4 backdrop-blur-sm"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="规则与图鉴"
     >
       <div
         className="relative max-h-[82vh] w-full max-w-2xl overflow-y-auto border border-rust-500/30 bg-abyss-900/95 p-6 shadow-2xl shadow-black/80"

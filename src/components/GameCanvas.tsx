@@ -98,6 +98,7 @@ export function GameCanvas({
           damage: event.damage,
           sawed: event.sawed,
           blackjack: event.blackjack,
+          blocked: event.blocked,
         })
         scene.resetShot(1.1)
         break
@@ -108,8 +109,18 @@ export function GameCanvas({
       case 'itemUsed':
         scene.playItemUse(event.actor, event.item)
         break
+      case 'magnetSwap':
+        scene.playMagnetSwap(event.card)
+        break
+      case 'hourglass':
+        scene.playHourglass()
+        break
       case 'levelClear':
         scene.setShot('victory', 1.4)
+        break
+      case 'supplyOffer':
+        // 补给面板是纯 DOM 覆盖层，机位停在清层后的远景，别跟着回合机位抖
+        scene.setShot('victory', 1.2)
         break
       case 'gameOver':
         scene.setShot(event.winner === 'boss' ? 'death' : 'victory', 1.6)

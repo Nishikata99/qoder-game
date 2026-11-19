@@ -214,6 +214,21 @@ describe('处决重入保护', () => {
   })
 })
 
+describe('跳过处决演出', () => {
+  it('skipExecution 立即揭晓结果，不必等满悬念时长', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    setTargeting(probe, [10, 8], [10, 5], 'live')
+    engine.chooseTarget('boss')
+    expect(engine.getSnapshot().phase).toBe('execution')
+    expect(engine.skipExecution()).toBe(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(engine.getSnapshot().boss.hp).toBe(4)
+    // 演出结束后再按不会重复结算
+    expect(engine.skipExecution()).toBe(false)
+  })
+})
+
 describe('沙漏与 Boss AI', () => {
   it('沙漏生效时点数更小的一方赢下本轮', async () => {
     const { engine, probe } = newEngine()

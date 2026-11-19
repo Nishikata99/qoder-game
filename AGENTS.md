@@ -80,7 +80,7 @@ src/
 | 对手 1 明 1 暗 | `withHoleCard()` / `ActorView.visibleHand` | 点数额始终按真实手牌算，只隐藏**显示**；亮牌在 `settleRound` 开头。`withHoleCard` 必须每次从 `cards` 重建 `visible`——若 hidden=false 时直接返回原对象，暗牌就永远翻不回来 |
 | 战斗日志 | `dealTo()` / `App.tsx` 的 `LogPanel` | HUD 只显示最后 3 条。对手暗牌发下时日志写「它扣下一张暗牌」，**不能**写牌面与点数；亮牌时在 `settleRound` 补「亮出底牌」 |
 | 枪口选择 | `phase='targeting'` + `chooseTarget()` | 只有玩家持枪才等输入；Boss 持枪由 `chooseBossTarget()` 自动决定。台面点数贴片必须按 `visible` 手牌重新计算，不能用 `visibleHand.total`（那是真实点数） |
-| 伤害公式 | `resolveShot()` | 实弹基础 2 + 黑杰克 1 + 碾压（点差≥5）1 + 遗恨 N，锯子整体 ×2；空膛 0 |
+| 伤害公式 | `resolveShot()` | 实弹基础 2 + 黑杰克 1 + 碾压（赢家手牌≥20）1 + 遗恨 N，锯子整体 ×2；空膛 0 |
 | 锯子翻倍 | `sawBoost` | 不是 +1，是**整体翻倍**；只在**真的打出实弹**时消耗，空膛不浪费 |
 | 空膛对己 | `resolveShot()` 的 `selfShot` 分支 | 空膛摸一件道具（`chamberRecovered` 事件）；实弹则伤害打在自己身上 |
 | 磁铁换明牌 | `applyItem` 的 `magnet` 分支 | **必须换明牌**：Boss 的明牌是第 1 张（第 2 张是暗牌），玩家取最后一张；换完立刻亮底牌 |

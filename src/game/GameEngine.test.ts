@@ -126,15 +126,25 @@ describe('结算伤害公式', () => {
     expect(log).toContain('锯短枪管')
   })
 
-  it('点差 ≥5 触发碾压 +1', async () => {
+  it('赢家手牌 ≥20 触发碾压 +1', async () => {
     const { engine, probe } = newEngine()
     await toPlayerTurn(engine)
     setTargeting(probe, [10, 10], [10, 5], 'live')
     engine.chooseTarget('boss')
     await settleUntil(() => engine.getSnapshot().boss.hp !== 6)
-    // 20 对 15，点差 5
+    // 20 点赢下本轮
     expect(engine.getSnapshot().log.join(' ')).toContain('碾压')
     expect(engine.getSnapshot().boss.hp).toBe(3)
+  })
+
+  it('手牌 19 点不触发碾压', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    setTargeting(probe, [10, 9], [10, 5], 'live')
+    engine.chooseTarget('boss')
+    await settleUntil(() => engine.getSnapshot().boss.hp !== 6)
+    expect(engine.getSnapshot().log.join(' ')).not.toContain('碾压')
+    expect(engine.getSnapshot().boss.hp).toBe(4)
   })
 
   it('爆牌收尾不算碾压', async () => {
@@ -145,6 +155,24 @@ describe('结算伤害公式', () => {
     await settleUntil(() => engine.getSnapshot().boss.hp !== 6)
     expect(engine.getSnapshot().log.join(' ')).not.toContain('碾压')
     expect(engine.getSnapshot().boss.hp).toBe(4)
+  })
+
+  it('低分赢下本轮（沙漏）不算碾压', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    // 沙漏下 15 点赢，虽然赢家手牌不足 20
+    setTargeting(probe, [10, 5], [10, 9], 'live')
+    probe.hourglassActive = true
+    probe.phase = 'resolving'
+    void probe.settleRound(probe.generation)
+    for (let i = 0; i < 40; i += 1) {
+      await vi.advanceTimersByTimeAsync(250)
+      if (engine.getSnapshot().phase === 'targeting') break
+    }
+    expect(engine.getSnapshot().pendingShot).toBe('player')
+    engine.chooseTarget('boss')
+    await settleUntil(() => engine.getSnapshot().boss.hp !== 6)
+    expect(engine.getSnapshot().log.join(' ')).not.toContain('碾压')
   })
 
   it('走火遗恨计入基础伤害，中弹后清零', async () => {
@@ -186,6 +214,21 @@ describe('处决重入保护', () => {
   })
 })
 
+describe('跳过处决演出', () => {
+  it('skipExecution 立即揭晓结果，不必等满悬念时长', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    setTargeting(probe, [10, 8], [10, 5], 'live')
+    engine.chooseTarget('boss')
+    expect(engine.getSnapshot().phase).toBe('execution')
+    expect(engine.skipExecution()).toBe(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(engine.getSnapshot().boss.hp).toBe(4)
+    // 演出结束后再按不会重复结算
+    expect(engine.skipExecution()).toBe(false)
+  })
+})
+
 describe('沙漏与 Boss AI', () => {
   it('沙漏生效时点数更小的一方赢下本轮', async () => {
     const { engine, probe } = newEngine()
@@ -204,6 +247,33 @@ describe('沙漏与 Boss AI', () => {
       if (engine.getSnapshot().phase === 'targeting') break
     }
     expect(engine.getSnapshot().pendingShot).toBe('boss')
+  })
+
+  it('沙漏生效时双方同点仍无人开枪，遗恨 +1', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    probe.player.hand = hand(10, 8)
+    probe.boss.hand = hand(10, 8)
+    probe.player.standing = true
+    probe.boss.standing = true
+    probe.holeRevealed = true
+    probe.hourglassActive = true
+    probe.damageBonus = 0
+    probe.player.items = []
+    probe.boss.items = []
+    const events: string[] = []
+    engine.subscribe((event) => {
+      if (event.type !== 'state') events.push(event.type)
+    })
+    probe.phase = 'resolving'
+    void probe.settleRound(probe.generation)
+    await settleUntil(() => engine.getSnapshot().damageBonus === 1)
+    const snapshot = engine.getSnapshot()
+    expect(snapshot.log.join(' ')).toContain('走火危机')
+    expect(snapshot.damageBonus).toBe(1)
+    expect(events).toContain('tie')
+    // 同点不产生赢家：沙漏只翻转「谁点数更小谁赢」，不改变平局，也不把枪交给任何一方
+    expect(snapshot.pendingShot).toBeNull()
   })
 
   it('没有沙漏时高分方赢下本轮', async () => {

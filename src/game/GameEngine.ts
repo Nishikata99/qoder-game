@@ -137,7 +137,7 @@ export const LEVELS: readonly LevelConfig[] = [
     name: '赌命收账人',
     title: '账房 · 发霉的赌桌',
     hp: 8,
-    playerHp: 6,
+    playerHp: 7,
     supply: 3,
     personality: 'gambler',
   },
@@ -145,7 +145,7 @@ export const LEVELS: readonly LevelConfig[] = [
     id: 3,
     name: '深渊执刑者',
     title: '刑台 · 没有出口',
-    hp: 9,
+    hp: 8,
     playerHp: 7,
     supply: 4,
     personality: 'executioner',
@@ -460,6 +460,8 @@ export class GameEngine {
   private readonly dealLockMs: number
   private readonly itemLockMs: number
   private inputUnlockTimer: ReturnType<typeof setTimeout> | null = null
+  private executionTimer: ReturnType<typeof setTimeout> | null = null
+  private executionSkip: (() => void) | null = null
   private readonly listeners = new Set<GameEventListener>()
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
   private readonly cylinder: Cylinder
@@ -869,6 +871,13 @@ export class GameEngine {
     return true
   }
 
+  /** 跳过处决悬念停顿，立即揭晓枪响结果；只在处决演出进行中有效 */
+  skipExecution(): boolean {
+    if (this.phase !== 'execution' || this.executionSkip === null) return false
+    this.executionSkip()
+    return true
+  }
+
   private async resolveShot(attacker: ActorRuntime, target: ActorRuntime, token: number): Promise<void> {
     if (!this.alive(token) || this.phase !== 'targeting') return
     const selfShot = attacker === target
@@ -876,12 +885,9 @@ export class GameEngine {
     const sawed = attacker.sawBoost > 0
     const blackjack = attacker.hand.blackjack && !attacker.hand.busted
     const chamber = this.cylinder.current ?? 'blank'
-    // 爆牌收尾不算碾压：点差只在双方都没爆时才成立
-    const margin =
-      attacker.hand.busted || target.hand.busted
-        ? 0
-        : Math.abs(attacker.hand.total - target.hand.total)
-    const overwhelmed = margin >= 5
+    // 高牌奖励：赢下本轮且手牌 ≥20 点才算「碾压」。
+    // 原来用点差 ≥5，但 AI 停牌线决定了第 2/3 关几乎不可能打出这个点差，等于死条款。
+    const overwhelmed = !attacker.hand.busted && attacker.hand.total >= 20
 
     this.phase = 'execution'
     this.hourglassActive = false
@@ -894,12 +900,12 @@ export class GameEngine {
       chamber,
       lethal: chamber === 'live',
     })
-    await this.wait(2900)
+    await this.waitExecution(2900)
     if (!this.alive(token)) return
 
     this.cylinder.fire()
     this.revealed = null
-    // 基础 2 点；黑杰克 +1；碾压（点差 ≥5）+1；走火遗恨 +N；锯子整体翻倍
+    // 基础 2 点；黑杰克 +1；碾压（手牌 ≥20）+1；走火遗恨 +N；锯子整体翻倍
     const stacks = this.damageBonus
     const base = 2 + (blackjack ? 1 : 0) + (overwhelmed ? 1 : 0) + stacks
     const damage = chamber === 'live' ? (sawed ? base * 2 : base) : 0
@@ -1385,9 +1391,30 @@ export class GameEngine {
     })
   }
 
+  /** 与 wait 相同，但允许玩家用 skipExecution() 提前放行 */
+  private waitExecution(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const finish = () => {
+        if (this.executionTimer !== null) {
+          clearTimeout(this.executionTimer)
+          this.timers.delete(this.executionTimer)
+          this.executionTimer = null
+        }
+        this.executionSkip = null
+        resolve()
+      }
+      this.executionSkip = finish
+      const id = setTimeout(finish, Math.max(0, ms))
+      this.executionTimer = id
+      this.timers.add(id)
+    })
+  }
+
   private cancelTimers(): void {
     for (const id of this.timers) clearTimeout(id)
     this.timers.clear()
+    this.executionTimer = null
+    this.executionSkip = null
     this.clearInputLockTimer()
     this.inputLocked = false
   }

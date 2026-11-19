@@ -228,6 +228,21 @@ body {
   animation: breathe 1.6s ease-in-out infinite;
 }
 
+/* 最小宽度跟着视口走：成对按钮（2×min + gap + px-4）在 320~390 之间都能并排放下，
+   不用按断点猜窗口，也就没有断点边界处几像素的溢出 */
+.metal-btn {
+  min-width: min(10rem, calc((100vw - 3.5rem) / 2));
+}
+
+/* 极窄屏（≤360px）：再收紧内边距与字距，给中文标签留出呼吸空间 */
+@media (max-width: 360px) {
+  .metal-btn {
+    padding: 0.72rem 0.9rem;
+    font-size: 0.66rem;
+    letter-spacing: 0.18em;
+  }
+}
+
 /* 系统级「减少动态效果」：压掉高强度闪烁与缩放，状态反馈只留静态可见 */
 @media (prefers-reduced-motion: reduce) {
   .blood-flash {

@@ -50,6 +50,7 @@ src/
   pendingShot,                             // targeting 阶段持枪者；非该阶段为 null
   damageBonus, crisisStacks,               // damageBonus = 走火遗恨（永久叠加直到中弹）
   hourglassActive,                         // 本局沙漏反转为低分胜
+  supplyOptions,                           // 仅 supply 阶段：层间三选一候选
   unlockedItems, inputLocked, log,
 }
 ```
@@ -62,8 +63,12 @@ src/
 
 ### 动作入口
 
-所有玩家意图只能走引擎方法：`hit()` / `stand()` / `useItem(id)` / `chooseTarget(target)` / `restart()` / `advanceLevel()`。
+所有玩家意图只能走引擎方法：`hit()` / `stand()` / `useItem(id)` / `chooseTarget(target)` / `chooseSupply(item)` / `restart()` / `advanceLevel()`。
 **禁止在 UI 或场景里改血量、手牌、弹仓。**
+
+### 层间补给（supply 阶段）
+
+清层后不再自动进下一层：引擎先播 2.6s 横幅，再进入 `supply` 摆出 3 件候选（`supplyOptions`），玩家调 `chooseSupply(item)` 或 12s 超时自动取第一件。选中道具先存进 `carryOver`，因为 `beginLevel` 会重建双方 `ActorRuntime`——直接 push 会被覆盖。新增道具时记得它可能出现在候选里。
 
 ### 手牌点数（台面贴片，不进 HUD）
 

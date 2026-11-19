@@ -27,6 +27,30 @@ interface LootBanner {
 }
 
 const FADE_MS = 2400
+const GUIDE_KEY = 'blood-ante.guideSeen'
+
+const GUIDE_LINES = [
+  '谁的点数更接近 21，谁赢下这一轮。',
+  '赢家拿枪：可以射向对面，也可以射向自己。',
+  '射向对面造成伤害；对自己开空膛，白拿一件道具。',
+] as const
+
+/** 首次进入的三句话规则；localStorage 记住已读，之后只在角落留一个「规则 / 图鉴」入口 */
+function hasSeenGuide(): boolean {
+  try {
+    return window.localStorage.getItem(GUIDE_KEY) === '1'
+  } catch {
+    return true
+  }
+}
+
+function markGuideSeen(): void {
+  try {
+    window.localStorage.setItem(GUIDE_KEY, '1')
+  } catch {
+    // 隐私模式写入会抛错，忽略即可，最多下次再弹一次
+  }
+}
 
 /** 开发期可用 ?seed=12345 复现同一局的发牌序列；生产构建始终使用 Math.random */
 function resolveRng(): (() => number) | undefined {
@@ -51,6 +75,7 @@ export default function App() {
   const [muted, setMuted] = useState(false)
   const [volume, setVolume] = useState(0.85)
   const [modal, setModal] = useState<ModalTab | null>(null)
+  const [guideOpen, setGuideOpen] = useState(() => !hasSeenGuide())
   const [relay, setRelay] = useState<RelayBanner | null>(null)
   const [loot, setLoot] = useState<LootBanner | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -559,6 +584,54 @@ export default function App() {
           <p className="rounded-sm border border-white/8 bg-black/70 px-4 py-1.5 text-[10px] tracking-[0.15em] text-bone-200/65">
             {notice}
           </p>
+        </div>
+      ) : null}
+
+      {guideOpen && !started ? (
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center bg-black/82 p-6 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="开局说明"
+        >
+          <div className="w-full max-w-md border border-rust-500/35 bg-abyss-900/95 p-6 shadow-2xl shadow-black/80">
+            <p className="text-[9px] tracking-[0.45em] text-rust-400/75 uppercase">
+              before you sit down
+            </p>
+            <h2 className="mt-2 font-display text-2xl text-bone-200">三句话，坐上这张桌子</h2>
+            <ol className="mt-5 space-y-3">
+              {GUIDE_LINES.map((line, index) => (
+                <li key={line} className="flex gap-3">
+                  <span className="font-display text-sm text-rust-400/80">
+                    {String(index + 1).padStart(2, '0')}
+                  </span>
+                  <p className="text-xs leading-relaxed text-bone-200/65">{line}</p>
+                </li>
+              ))}
+            </ol>
+            <div className="mt-6 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => {
+                  markGuideSeen()
+                  setGuideOpen(false)
+                  setModal('rules')
+                }}
+                className="text-[10px] tracking-[0.25em] text-bone-200/35 uppercase hover:text-bone-200/70"
+              >
+                看完整规则
+              </button>
+              <MetalButton
+                tone="primary"
+                onClick={() => {
+                  markGuideSeen()
+                  setGuideOpen(false)
+                }}
+              >
+                我知道了
+              </MetalButton>
+            </div>
+          </div>
         </div>
       ) : null}
 

@@ -90,7 +90,7 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
   hourglass: {
     id: 'hourglass',
     name: '逆转沙漏',
-    summary: '本局胜负反转：点数更小者获胜（爆牌依然直接判负）。',
+    summary: '本局胜负反转：点数更小者获胜（爆牌依然直接判负）。仅玩家可用。',
     glyph: '⧗',
   },
   dagger: {
@@ -1123,9 +1123,7 @@ export class GameEngine {
     }
 
     // ---- 机械典狱长：冷酷算牌 ----
-    if (has('hourglass') && !this.hourglassActive && behind && me.hand.total > 0 && !me.hand.busted) {
-      return 'hourglass'
-    }
+    // 沙漏是玩家专属：Boss 落后时开沙漏再立刻停牌等于一键必胜，玩家无从补救
     // 下一发必为实弹且自己大概率输牌 → 用匕首强行续命
     if (has('dagger') && this.cylinder.remaining > 0 && liveRate >= 1 && loses && me.hp > 1) {
       return 'dagger'

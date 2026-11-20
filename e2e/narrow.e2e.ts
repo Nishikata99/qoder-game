@@ -107,16 +107,21 @@ for (const vp of VIEWPORTS) {
     test('牌桌操作栏与角落工具不越界也不重叠', async ({ page }) => {
       await page.goto('./')
 
-      const start = page.getByRole('button', { name: '坐下，开始交易' })
+      const start = page.getByRole('button', { name: '开始', exact: true })
       await expect(start).toBeVisible({ timeout: 30_000 })
       await expectInsideViewport(page, start, 'xy')
       await dismissGuide(page)
       await start.click()
 
-      // 等引擎发完牌进入玩家回合；无头软件渲染下定时器很慢，给足超时
+      const rightDoor = page.getByRole('button', { name: '右门' })
+      await rightDoor.waitFor({ timeout: 60_000 })
+      await rightDoor.evaluate((el) => (el as HTMLElement).click())
+
+      // 等引擎发完牌进入玩家回合。入场分镜 40s 时钟，软件渲染 fps≈10 时
+      // dt clamp 0.05 让时钟半速 → 真实约 80s，加发牌余量给到 150s
       const hit = page.getByRole('button', { name: /要牌/ })
       const stand = page.getByRole('button', { name: /停牌/ })
-      await expect(hit).toBeEnabled({ timeout: 60_000 })
+      await expect(hit).toBeEnabled({ timeout: 150_000 })
 
       for (const locator of [hit, stand]) {
         await expectInsideViewport(page, locator, 'xy')

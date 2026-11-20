@@ -41,6 +41,13 @@ export type CameraShot =
   | 'execute'
   | 'death'
   | 'victory'
+  | 'introWake'
+  | 'introStain'
+  | 'introPaper'
+  | 'introDoor'
+  | 'introTowel'
+  | 'tally'
+  | 'endingReach'
 
 export interface ExecutionPayload {
   readonly by: ActorId
@@ -156,6 +163,42 @@ interface BloodRack {
 }
 
 const TABLE_TOP = 0.98
+/** 叙事转头惊吓的包络时长：快攻慢释 */
+const HEAD_SNAP_LIFE = 0.9
+
+/** 胶片噪点 + 轻微色偏：暗部偏冷绿，强度由导演层驱动 */
+const GrainShader = {
+  name: 'GrainShader',
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    amount: { value: 0.04 },
+    time: { value: 0 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float amount;
+    uniform float time;
+    varying vec2 vUv;
+    float hash(vec2 p) {
+      return fract(sin(dot(p, vec2(127.1, 311.7)) + time * 43.7) * 43758.5453);
+    }
+    void main() {
+      vec4 color = texture2D(tDiffuse, vUv);
+      float g = hash(vUv * vec2(1920.0, 1080.0)) - 0.5;
+      color.rgb += g * amount;
+      float luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+      color.rgb = mix(color.rgb, color.rgb * vec3(0.94, 1.02, 0.98), amount * 2.0 * (1.0 - luma));
+      gl_FragColor = color;
+    }
+  `,
+}
 /** 顶层常量便于 Rollup 静态求值，让取样代码整段在 production 被摇树移除 */
 const devStatsEnabled = import.meta.env.DEV
 const CARD_W = 0.3
@@ -234,6 +277,20 @@ const LEVEL_LOOK: ReadonlyArray<{
   { rim: 0xff5a2a, fill: 0x2f4763, lamp: 0xffb066 },
   { rim: 0xffa53a, fill: 0x3a4f63, lamp: 0xffa951 },
   { rim: 0xff2f22, fill: 0x3a2c4f, lamp: 0xff8a52 },
+]
+
+/** 逐章压力参数：灯下降 + 雾加浓 + fov 收窄，不换房间几何；lampDrop 是相对灯架基准高度的下沉量 */
+const CHAPTER_MOOD: ReadonlyArray<{
+  readonly fog: number
+  readonly vignette: number
+  readonly grain: number
+  readonly fov: number
+  readonly flicker: number
+  readonly lampDrop: number
+}> = [
+  { fog: 0.042, vignette: 0.85, grain: 0.04, fov: 48, flicker: 1, lampDrop: 0 },
+  { fog: 0.05, vignette: 0.95, grain: 0.07, fov: 46, flicker: 1.3, lampDrop: 0.3 },
+  { fog: 0.06, vignette: 1.05, grain: 0.1, fov: 44, flicker: 1.6, lampDrop: 0.6 },
 ]
 
 /** Blender 导出的模型，键名与 public/models/*.glb 对应 */
@@ -372,6 +429,7 @@ export class SceneManager {
   private readonly composer: EffectComposer
   private readonly renderPass: RenderPass
   private readonly hourglassPass: ShaderPass
+  private readonly grainPass: ShaderPass
   private readonly vignettePass: ShaderPass
   private readonly bloomPass: UnrealBloomPass
   private readonly scene: THREE.Scene
@@ -422,6 +480,34 @@ export class SceneManager {
   private hourglassTarget = 0
   /** 使用瞬间的额外闪白，随时间衰减 */
   private hourglassPulse = 0
+  /** 叙事后期参数：平滑跟随导演层目标（入场 / 逐章压力） */
+  private gradeFog = 0.042
+  private gradeFogTarget = 0.042
+  private gradeVignette = 0.85
+  private gradeVignetteTarget = 0.85
+  private gradeGrain = 0.04
+  private gradeGrainTarget = 0.04
+  private gradeLamp = 1
+  private gradeLampTarget = 1
+  private gradeFlicker = 1
+  private gradeFlickerTarget = 1
+  private lampBulbMat: THREE.MeshStandardMaterial | null = null
+  private lampConeMat: THREE.MeshBasicMaterial | null = null
+  private headSnapLife = 0
+  /** 当前章节压力档位（0=门厅 1=账房 2=刑台），由 setChapterMood 驱动 */
+  private chapterIndex = 0
+  private lampBaseY = 5.4
+  private lampDrop = 0
+  private lampDropTarget = 0
+  private doorSlitMat: THREE.MeshBasicMaterial | null = null
+  private doorSlitOpacity = 0.5
+  private doorSlitTarget = 0.5
+  private tallyGroup: THREE.Group | null = null
+  private sutureGlow: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> | null = null
+  private reachHand: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> | null = null
+  /** 叙事陈设单独成组：swapRoom / refreshProps 都不会清掉 */
+  private readonly narrativeGroup = new THREE.Group()
+  private towelMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial> | null = null
   /** 0..1 的倒地量，叠加在呼吸动画上：命中时冲到 1 再缓慢回到 0 */
   private bossKnock = 0
   private knockGeneration = 0
@@ -548,6 +634,9 @@ export class SceneManager {
     this.hourglassPass = new ShaderPass(HourglassShader)
     this.composer.addPass(this.hourglassPass)
 
+    this.grainPass = new ShaderPass(GrainShader)
+    this.composer.addPass(this.grainPass)
+
     this.vignettePass = new ShaderPass(VignetteShader)
     this.vignettePass.uniforms.offset!.value = 1.0
     this.vignettePass.uniforms.darkness!.value = 0.85
@@ -556,7 +645,7 @@ export class SceneManager {
     // OutputPass owns tone mapping + sRGB conversion when rendering through the composer.
     this.composer.addPass(new OutputPass())
 
-    this.scene.add(this.roomGroup, this.tableGroup, this.bossGroup, this.gunGroup, this.deckGroup, this.cardGroup, this.itemRoot, this.lampRig, this.propsGroup)
+    this.scene.add(this.roomGroup, this.tableGroup, this.bossGroup, this.gunGroup, this.deckGroup, this.cardGroup, this.itemRoot, this.lampRig, this.propsGroup, this.narrativeGroup)
 
     this.buildRoom()
     this.buildTable()
@@ -582,6 +671,7 @@ export class SceneManager {
     this.deckGroup.position.copy(DECK_POS)
     this.buildDeckPile()
     this.buildScorePlates()
+    this.buildNarrativeProps()
 
     this.preloadModels()
 
@@ -755,6 +845,156 @@ export class SceneManager {
     this.setShot('table', duration)
   }
 
+  /** 导演层后期目标：雾密度 / 暗角 / 噪点 / 灯强度 / 灯抖幅，平滑过渡 */
+  setNarrativeGrade(grade: {
+    fog?: number
+    vignette?: number
+    grain?: number
+    lamp?: number
+    flicker?: number
+  }): void {
+    if (this.disposed) return
+    if (grade.fog !== undefined) this.gradeFogTarget = grade.fog
+    if (grade.vignette !== undefined) this.gradeVignetteTarget = grade.vignette
+    if (grade.grain !== undefined) this.gradeGrainTarget = grade.grain
+    if (grade.lamp !== undefined) this.gradeLampTarget = grade.lamp
+    if (grade.flicker !== undefined) this.gradeFlickerTarget = grade.flicker
+  }
+
+  resetNarrativeGrade(): void {
+    const mood = CHAPTER_MOOD[this.chapterIndex]!
+    this.setNarrativeGrade({
+      fog: mood.fog,
+      vignette: mood.vignette,
+      grain: mood.grain,
+      lamp: 1,
+      flicker: mood.flicker,
+    })
+  }
+
+  /** 逐章压力：雾/暗角/噪点/抖幅/灯高/门缝光/毛巾/刻痕板，顺带提前渐入 LEVEL_LOOK 三色。
+   *  不写 levelLookIndex——applyLevel 对同层早退，过渡期间引擎快照不会把颜色回退；
+   *  beginLevel 真正换层时 applyLevel 再写一次同样的颜色，天然幂等 */
+  setChapterMood(levelIndex: number): void {
+    if (this.disposed) return
+    const index = Math.min(CHAPTER_MOOD.length - 1, Math.max(0, levelIndex))
+    this.chapterIndex = index
+    const mood = CHAPTER_MOOD[index]!
+    const look = LEVEL_LOOK[index]!
+    this.rimLight.color.setHex(look.rim)
+    this.fillLight.color.setHex(look.fill)
+    this.spot.color.setHex(look.lamp)
+    this.resetNarrativeGrade()
+    this.lampDropTarget = mood.lampDrop
+    this.doorSlitTarget = index === 2 ? 0 : 0.5
+    this.setTowelReadable(index >= 1)
+    if (this.tallyGroup) this.tallyGroup.visible = index === 2
+    // 结局道具不跨章/跨 run 残留
+    if (this.sutureGlow) this.sutureGlow.material.opacity = 0
+    if (this.reachHand) this.reachHand.visible = false
+  }
+
+  /** 结局 B：Boss 缝线里透出刻痕微光，复用 ch3 刻痕贴图，加色混合让「小满」笔划发光 */
+  triggerSutureGlow(): void {
+    if (this.disposed) return
+    if (!this.sutureGlow) {
+      const geo = new THREE.PlaneGeometry(0.5, 0.26)
+      // 只取刻痕贴图底部「小满 + 空白新刻痕」一条：uv.y 0.08~0.42，不克隆贴图
+      const uv = geo.getAttribute('uv')
+      for (let i = 0; i < uv.count; i += 1) uv.setY(i, 0.08 + uv.getY(i) * 0.34)
+      uv.needsUpdate = true
+      this.disposableGeometries.add(geo)
+      const mat = new THREE.MeshBasicMaterial({
+        map: this.textures.get('tally-list'),
+        color: 0xffb08a,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+      })
+      this.disposableMaterials.add(mat)
+      const glow = new THREE.Mesh(geo, mat)
+      this.bossHitPoint(glow.position)
+      // 命中点可能在躯干内部：微光必须贴在身体前方，否则被模型吃掉
+      glow.position.z = BOSS_Z + 0.75
+      glow.renderOrder = 15
+      this.narrativeGroup.add(glow)
+      this.sutureGlow = glow
+    }
+    this.tween({
+      duration: 1.8,
+      onUpdate: (t) => {
+        if (this.sutureGlow) this.sutureGlow.material.opacity = t * 0.95
+      },
+    })
+  }
+
+  /** 结局 B：玩家伸手——手部剪影面片挂在相机下，从画面下缘升起 */
+  triggerReachHand(): void {
+    if (this.disposed) return
+    if (!this.reachHand) {
+      const geo = new THREE.PlaneGeometry(0.34, 0.34)
+      this.disposableGeometries.add(geo)
+      const mat = new THREE.MeshBasicMaterial({
+        map: this.textures.get('hand-silhouette'),
+        transparent: true,
+        opacity: 0.94,
+        toneMapped: false,
+        depthTest: false,
+      })
+      this.disposableMaterials.add(mat)
+      const hand = new THREE.Mesh(geo, mat)
+      hand.position.set(0.16, -0.52, -0.5)
+      hand.renderOrder = 30
+      // 相机不挂进 scene 的话，它的子节点不会被渲染
+      this.scene.add(this.camera)
+      this.camera.add(hand)
+      this.reachHand = hand
+    }
+    const hand = this.reachHand
+    hand.visible = true
+    this.tween({
+      duration: 1.5,
+      onUpdate: (t) => {
+        hand.position.y = -0.52 + t * 0.26
+      },
+    })
+  }
+
+  /** 脚本化惊吓：Boss 猛地转面向玩家再缓慢释放；整 run 由导演层限次 */
+  triggerHeadSnap(): void {
+    if (this.disposed) return
+    this.headSnapLife = HEAD_SNAP_LIFE
+  }
+
+  /** 毛巾绣字：第一章模糊，第二章起可读 */
+  setTowelReadable(readable: boolean): void {
+    if (!this.towelMesh) return
+    this.towelMesh.material.map = this.textures.get(readable ? 'towel-readable' : 'towel-blurry')
+    this.towelMesh.material.needsUpdate = true
+  }
+
+  private updateNarrativeGrade(dt: number): void {
+    const k = Math.min(1, dt * 2.2)
+    this.gradeFog += (this.gradeFogTarget - this.gradeFog) * k
+    this.gradeVignette += (this.gradeVignetteTarget - this.gradeVignette) * k
+    this.gradeGrain += (this.gradeGrainTarget - this.gradeGrain) * k
+    this.gradeLamp += (this.gradeLampTarget - this.gradeLamp) * k
+    this.gradeFlicker += (this.gradeFlickerTarget - this.gradeFlicker) * k
+    this.lampDrop += (this.lampDropTarget - this.lampDrop) * k
+    this.lampRig.position.y = this.lampBaseY - this.lampDrop
+    if (this.doorSlitMat) {
+      this.doorSlitOpacity += (this.doorSlitTarget - this.doorSlitOpacity) * k
+      this.doorSlitMat.opacity = this.doorSlitOpacity
+    }
+    const fog = this.scene.fog
+    if (fog instanceof THREE.FogExp2) fog.density = this.gradeFog
+    this.vignettePass.uniforms.darkness!.value = this.gradeVignette
+    this.grainPass.uniforms.amount!.value = this.gradeGrain
+    this.grainPass.uniforms.time!.value = this.elapsed
+  }
+
   private pushExecutionCamera(target: number, duration: number, delay = 0): void {
     this.executionPushGeneration += 1
     const generation = this.executionPushGeneration
@@ -805,12 +1045,54 @@ export class SceneManager {
           lookAt: new THREE.Vector3(0, 1.5, -2.2),
           fov: 44,
         }
+      case 'introWake':
+        return {
+          position: new THREE.Vector3(0.55, 1.35, 2.1),
+          lookAt: new THREE.Vector3(-0.15, 4.6, -0.3),
+          fov: 58,
+        }
+      case 'introStain':
+        return {
+          position: new THREE.Vector3(0.25, 2.2, 1.6),
+          lookAt: new THREE.Vector3(0.35, TABLE_TOP, 0.75),
+          fov: 40,
+        }
+      case 'introPaper':
+        return {
+          position: new THREE.Vector3(-0.75, 1.9, 1.9),
+          lookAt: new THREE.Vector3(-1.35, TABLE_TOP, 1.15),
+          fov: 34,
+        }
+      case 'introDoor':
+        return {
+          position: new THREE.Vector3(0, 1.5, 1.6),
+          lookAt: new THREE.Vector3(0, 1.3, 9.9),
+          fov: 55,
+        }
+      case 'introTowel':
+        return {
+          position: new THREE.Vector3(-0.95, 1.62, 2.35),
+          lookAt: new THREE.Vector3(-0.72, 1.1, 1.42),
+          fov: 36,
+        }
+      case 'endingReach':
+        return {
+          position: new THREE.Vector3(0, 1.55, 2.3),
+          lookAt: new THREE.Vector3(0, 1.9, -3),
+          fov: 50,
+        }
+      case 'tally':
+        return {
+          position: new THREE.Vector3(-0.8, 2.2, -2.2),
+          lookAt: new THREE.Vector3(-1.55, 2.45, -4.35),
+          fov: 40,
+        }
       case 'table':
       default:
         return {
           position: new THREE.Vector3(0, 3.62, 4.92),
           lookAt: new THREE.Vector3(0, 1.02, -0.62),
-          fov: 48,
+          fov: CHAPTER_MOOD[this.chapterIndex]!.fov,
         }
     }
   }
@@ -1305,6 +1587,7 @@ export class SceneManager {
       }
       lampPivot.position.y = -CEILING_Y
       this.lampRig.position.set(0, CEILING_Y, 0)
+      this.lampBaseY = CEILING_Y
       this.lampRig.add(lampPivot)
 
       // 聚光灯必须挂在灯罩下沿：置于罩体内会被罩壁完全遮挡，桌面出现一大片黑斑
@@ -1349,6 +1632,123 @@ export class SceneManager {
     }
   }
 
+  /** 叙事陈设：纸片 / 手印 / 毛巾 / 门缝光 / 椅扶手；跨章持久，不随 swapRoom 清除 */
+  private buildNarrativeProps(): void {
+    const flat = (
+      key: string,
+      w: number,
+      h: number,
+      x: number,
+      z: number,
+      rotZ: number,
+      tint = 0xffffff,
+    ): void => {
+      const geo = new THREE.PlaneGeometry(w, h)
+      this.disposableGeometries.add(geo)
+      const mat = new THREE.MeshStandardMaterial({
+        map: this.textures.get(key),
+        // 纸片压暗：亮度留在 bloom 阈值下，否则光晕把「满」字veil成白片
+        color: tint,
+        transparent: true,
+        roughness: 0.9,
+        metalness: 0,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+      })
+      this.disposableMaterials.add(mat)
+      const mesh = new THREE.Mesh(geo, mat)
+      mesh.rotation.x = -Math.PI / 2
+      mesh.rotation.z = rotZ
+      mesh.position.set(x, TABLE_TOP + 0.006, z)
+      this.narrativeGroup.add(mesh)
+    }
+    flat('paper-scrap', 0.3, 0.3, -1.35, 1.15, 0.35, 0x808080)
+    flat('handprint', 0.55, 0.55, 0.35, 0.75, -0.2)
+
+    const towelGeo = new THREE.PlaneGeometry(0.3, 0.36)
+    this.disposableGeometries.add(towelGeo)
+    const towelMat = new THREE.MeshStandardMaterial({
+      map: this.textures.get('towel-blurry'),
+      roughness: 0.95,
+      metalness: 0,
+      side: THREE.DoubleSide,
+    })
+    this.disposableMaterials.add(towelMat)
+    const towel = new THREE.Mesh(towelGeo, towelMat)
+    towel.position.set(-0.72, 1.12, 1.42)
+    towel.rotation.y = -0.35
+    towel.rotation.x = 0.06
+    this.narrativeGroup.add(towel)
+    this.towelMesh = towel
+
+    // 玩家身后的门：暗门板 + 一条冷白门缝光；第三章由导演层熄灭
+    const doorGeo = new THREE.BoxGeometry(1.15, 2.3, 0.08)
+    this.disposableGeometries.add(doorGeo)
+    const doorMat = makeStandardMaterial(0x120d0a, 0.4, 0.9)
+    this.disposableMaterials.add(doorMat)
+    const door = new THREE.Mesh(doorGeo, doorMat)
+    door.position.set(0, 1.15, 9.92)
+    this.narrativeGroup.add(door)
+    const slitGeo = new THREE.PlaneGeometry(0.035, 2.1)
+    this.disposableGeometries.add(slitGeo)
+    const slitMat = new THREE.MeshBasicMaterial({
+      color: 0xbfd8e8,
+      transparent: true,
+      opacity: 0.5,
+      toneMapped: false,
+    })
+    this.disposableMaterials.add(slitMat)
+    this.doorSlitMat = slitMat
+    const slit = new THREE.Mesh(slitGeo, slitMat)
+    slit.position.set(0.5, 1.15, 9.87)
+    slit.rotation.y = Math.PI
+    this.narrativeGroup.add(slit)
+
+    const armGeo = new THREE.BoxGeometry(0.14, 0.4, 1.15)
+    this.disposableGeometries.add(armGeo)
+    const armMat = makeStandardMaterial(0x241a12, 0.35, 0.8)
+    this.disposableMaterials.add(armMat)
+    for (const x of [-0.55, 0.55]) {
+      const arm = new THREE.Mesh(armGeo, armMat)
+      arm.position.set(x, 1.0, 2.05)
+      arm.castShadow = true
+      this.narrativeGroup.add(arm)
+    }
+
+    // 刑台刻痕名单：吊轨 + 双链 + 铁板，第三章才挂出来
+    const tally = new THREE.Group()
+    tally.position.set(-1.55, 2.45, -4.35)
+    tally.rotation.y = 0.3
+    const boardGeo = new THREE.PlaneGeometry(0.5, 0.75)
+    this.disposableGeometries.add(boardGeo)
+    const boardMat = new THREE.MeshStandardMaterial({
+      map: this.textures.get('tally-list'),
+      roughness: 0.85,
+      metalness: 0.2,
+      side: THREE.DoubleSide,
+    })
+    this.disposableMaterials.add(boardMat)
+    const board = new THREE.Mesh(boardGeo, boardMat)
+    tally.add(board)
+    const railGeo = new THREE.BoxGeometry(0.72, 0.045, 0.045)
+    this.disposableGeometries.add(railGeo)
+    const railMat = makeStandardMaterial(0x3a332c, 0.7, 0.6)
+    this.disposableMaterials.add(railMat)
+    const rail = new THREE.Mesh(railGeo, railMat)
+    rail.position.y = 0.48
+    tally.add(rail)
+    const chainGeo = new THREE.BoxGeometry(0.018, 0.7, 0.018)
+    this.disposableGeometries.add(chainGeo)
+    for (const x of [-0.26, 0.26]) {
+      const link = new THREE.Mesh(chainGeo, railMat)
+      link.position.set(x, 0.82, 0)
+      tally.add(link)
+    }
+    tally.visible = false
+    this.narrativeGroup.add(tally)
+    this.tallyGroup = tally
+  }
+
   /** 第一关面具到货即换掉程序化面具贴图 */
   private tick(): void {
     if (this.disposed) return
@@ -1363,6 +1763,7 @@ export class SceneManager {
     this.updateBlood(dt)
     this.updateSparks(dt)
     this.updateHourglass(dt)
+    this.updateNarrativeGrade(dt)
     this.updateChains(dt)
     this.updateGunAim(dt)
     this.updateItems(dt)
@@ -1527,8 +1928,11 @@ export class SceneManager {
 
   private updateLighting(): void {
     // 老式钨丝灯的轻微抖动：两个不同频率的正弦叠加，模拟灯丝/电压不稳
-    const fade = 0.94 + Math.sin(this.elapsed * 7.1) * 0.028 + Math.sin(this.elapsed * 17.3) * 0.018
-    this.spot.intensity = 70 * fade
+    const flicker = Math.sin(this.elapsed * 7.1) * 0.028 + Math.sin(this.elapsed * 17.3) * 0.018
+    const fade = 0.94 + flicker * this.gradeFlicker
+    this.spot.intensity = 70 * fade * this.gradeLamp
+    if (this.lampBulbMat) this.lampBulbMat.emissiveIntensity = 5 * fade * this.gradeLamp
+    if (this.lampConeMat) this.lampConeMat.opacity = 0.016 * this.gradeLamp
     // 只做极小幅摆动，避免光斑在桌面上乱甩
     this.spot.position.x = Math.sin(this.elapsed * 0.42) * 0.035
     this.spot.position.z = -0.05 + Math.cos(this.elapsed * 0.33) * 0.025
@@ -1558,8 +1962,15 @@ export class SceneManager {
     // 盯视：大部分时间缓慢扫视，偶尔停顿后猛转向玩家
     const sweep = Math.sin(t * 0.37) * 0.55 + Math.sin(t * 0.19 + 2.3) * 0.45
     const glance = Math.max(0, Math.sin(t * 0.165 - 0.6)) ** 6
-    const yaw = sweep * (1 - glance) * 0.20 + Math.sin(t * 0.83) * 0.012
-    const pitch = Math.cos(t * 0.29) * 0.045 - glance * 0.05
+    let yaw = sweep * (1 - glance) * 0.20 + Math.sin(t * 0.83) * 0.012
+    let pitch = Math.cos(t * 0.29) * 0.045 - glance * 0.05
+    if (this.headSnapLife > 0) {
+      this.headSnapLife = Math.max(0, this.headSnapLife - dt)
+      const p = 1 - this.headSnapLife / HEAD_SNAP_LIFE
+      const env = p < 0.12 ? p / 0.12 : 1 - (p - 0.12) / 0.88
+      yaw *= 1 - env
+      pitch = pitch * (1 - env) - 0.03 * env
+    }
 
     if (this.bossHeadNode) {
       this.bossHeadNode.rotation.y = yaw
@@ -1873,6 +2284,7 @@ export class SceneManager {
     const lamp = this.buildLamp()
     this.lampRig.add(lamp)
     this.lampRig.position.set(0, 5.4, -0.2)
+    this.lampBaseY = 5.4
   }
 
   private buildLamp(): THREE.Group {
@@ -1912,6 +2324,7 @@ export class SceneManager {
     const bulb = new THREE.Mesh(bulbGeo, bulbMat)
     bulb.position.y = -0.16
     group.add(bulb)
+    this.lampBulbMat = bulbMat
     return group
   }
 
@@ -1949,6 +2362,7 @@ export class SceneManager {
     const cone = new THREE.Mesh(coneGeo, coneMat)
     cone.position.set(0, 2.9, -0.05)
     this.roomGroup.add(cone)
+    this.lampConeMat = coneMat
 
     // ===== ② 冷色轮廓背光：Boss 身后上方，勾出双肩/头角/铁链剪影 =====
     // 强度必须低：高于 ~10 就会把整个躯干照成一块蓝板，失去剪影感

@@ -2,7 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { SoundEngine } from './audio/SoundEngine'
 import { GameCanvas, ItemTooltip } from './components/GameCanvas'
 import { RulesModal, type ModalTab } from './components/RulesModal'
+import { NarrativeDirector, type NarrativeMode, type NarrativeVisual } from './narrative/NarrativeDirector'
+import { DevBridge } from './game/DevBridge'
+import { DevPanel } from './components/DevPanel'
+import { CorridorIntro } from './components/CorridorIntro'
+import { NarrativeOverlay } from './narrative/NarrativeOverlay'
 import type { ItemHoverPayload } from './scene/SceneManager'
+import type { SceneManager } from './scene/SceneManager'
 import type { ActorId, ActorView, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
 import {
   GameEngine,
@@ -82,6 +88,15 @@ export default function App() {
   const [bloodFlash, setBloodFlash] = useState(0)
   const [bloodSplatter, setBloodSplatter] = useState(0)
   const [visionBlur, setVisionBlur] = useState(0)
+  const [narrative, setNarrative] = useState<NarrativeVisual | null>(null)
+  const [clueLine, setClueLine] = useState<string | null>(null)
+  const [devOpen, setDevOpen] = useState(false)
+  const [corridorState, setCorridorState] = useState<'idle' | 'playing' | 'done'>('idle')
+  const pendingIntroRef = useRef(false)
+  const devEPresses = useRef<number[]>([])
+  const narrativeRef = useRef<NarrativeVisual | null>(null)
+  const sceneRef = useRef<SceneManager | null>(null)
+  const directorRef = useRef<NarrativeDirector | null>(null)
   const noticeTimer = useRef<number | null>(null)
   const relayTimer = useRef<number | null>(null)
   const lootTimer = useRef<number | null>(null)
@@ -185,18 +200,40 @@ export default function App() {
     soundHandlerRef.current = handleEventSound
   }, [handleEventSound])
 
+  const narrativeHandlerRef = useRef(handleEventNarrative)
+  useEffect(() => {
+    narrativeHandlerRef.current = handleEventNarrative
+  })
+
   useEffect(() => {
     return game.subscribe((event, snap) => {
       setSnapshot(snap)
-      if (event.type !== 'state') soundHandlerRef.current(event)
+      if (event.type !== 'state') {
+        soundHandlerRef.current(event)
+        narrativeHandlerRef.current(event)
+      }
     })
   }, [game])
+
+  // 入场未播完时排队的线索句，等导演层交出控制权再显示
+  useEffect(() => {
+    if (narrative || !pendingClueRef.current) return
+    const line = pendingClueRef.current
+    pendingClueRef.current = null
+    showClueLine(line)
+  }, [narrative])
 
   useEffect(() => {
     sound.setMasterVolume(muted ? 0 : volume)
   }, [muted, volume, sound])
 
   useEffect(() => () => sound.dispose(), [sound])
+
+  useEffect(() => {
+    narrativeRef.current = narrative
+  }, [narrative])
+
+  useEffect(() => () => directorRef.current?.stop(), [])
 
   // 快捷键只是键位映射到同一批引擎动作，所有阶段/输入锁校验仍由 canAct 与引擎负责
   useEffect(() => {
@@ -213,7 +250,18 @@ export default function App() {
         return
       }
       const snap = snapshotRef.current
+      // 开发者面板：1.6s 内连按 4 次 E 打开，关闭后需再次连按；E 不与任何游戏键位冲突
+      if (event.key.toLowerCase() === 'e') {
+        const presses = devEPresses.current
+        presses.push(Date.now())
+        if (presses.length > 4) presses.shift()
+        if (presses.length === 4 && presses[3]! - presses[0]! <= 1600) {
+          setDevOpen(true)
+          devEPresses.current = []
+        }
+      }
       if (!snap) return
+      if (narrativeRef.current) return
       if (snap.phase === 'execution') {
         if (event.code === 'Space' || event.key === ' ') {
           event.preventDefault()
@@ -280,6 +328,8 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [sound])
 
+  const devBridge = useMemo(() => new DevBridge(game), [game])
+
   const unlocked = useMemo(
     () => new Set<ItemId>(snapshot?.unlockedItems ?? []),
     [snapshot?.unlockedItems],
@@ -289,7 +339,85 @@ export default function App() {
     await sound.unlock()
     sound.setMasterVolume(muted ? 0 : volume)
     if (!sound.isAmbientPlaying) sound.startAmbient()
-    game.start()
+    void sound.startRoomTone(`${import.meta.env.BASE_URL}audio/room-tone.ogg`)
+    // 走廊里的「开始」：解锁音频后人开始往前走，右门黑场结束才进入入场导演层
+    setCorridorState('playing')
+  }
+
+  function handleCorridorComplete() {
+    pendingIntroRef.current = true
+    setCorridorState('done')
+  }
+
+  const pendingClueRef = useRef<string | null>(null)
+  const clueTimer = useRef<number | null>(null)
+
+  function showClueLine(text: string) {
+    setClueLine(text)
+    if (clueTimer.current !== null) window.clearTimeout(clueTimer.current)
+    clueTimer.current = window.setTimeout(() => setClueLine(null), 6000)
+  }
+
+  function handleEventNarrative(event: GameEvent) {
+    // directorRef 在 beginNarrative 里同步赋值；narrativeRef 要等一次渲染才同步。
+    // 同一帧内「开叙事 + 来事件」时只看 narrativeRef 会误判成空闲
+    const narrativeBusy = narrativeRef.current !== null || directorRef.current !== null
+    // 结局 B：赢下第三章 → 团聚·吞噬即重逢；结算屏等导演层播完再出现
+    if (event.type === 'gameOver' && event.winner === 'player' && !narrativeBusy) {
+      beginNarrative('endingB')
+      return
+    }
+    if (event.type === 'levelClear' && !narrativeBusy) {
+      if (event.level === 1) beginNarrative('t2')
+      else if (event.level === 2) beginNarrative('t3')
+      return
+    }
+    if (event.type !== 'roundStart') return
+    // ch1 第一次 roundStart：入场 Boss 半句的后半句；入场没播完就排队
+    if (event.level === 1 && event.round === 1) {
+      const line = '她也说，赢了就能往下走。'
+      if (narrativeBusy) pendingClueRef.current = line
+      else showClueLine(line)
+    }
+    // ch3 第一次 roundStart：刻痕名单扫镜再回桌面；延半拍让 GameCanvas 的 resetShot 先落
+    if (event.level === 3 && event.round === 1) {
+      const scene = sceneRef.current
+      window.setTimeout(() => scene?.setShot('tally', 1.2), 150)
+      window.setTimeout(() => scene?.setShot('table', 1.2), 2900)
+    }
+  }
+
+  /** 入场 / restart 迷你入场 / 章节过渡：导演层接管，播完才把控制权交给引擎 */
+  function beginNarrative(mode: NarrativeMode) {
+    const scene = sceneRef.current
+    if (!scene) return
+    directorRef.current?.stop()
+    const director = new NarrativeDirector({
+      scene,
+      sound,
+      onVisual: setNarrative,
+      onGameStart: () => {
+        if (mode === 'intro') game.start()
+        else game.restart()
+      },
+      onFinish: () => {
+        setNarrative(null)
+        directorRef.current = null
+      },
+    })
+    directorRef.current = director
+    director.start(mode)
+  }
+
+  const narrativeActive = narrative !== null
+
+  // DEV 专用验证口：生产构建被 import.meta.env.DEV 摇掉，不随游戏发布
+  if (import.meta.env.DEV) {
+    ;(window as unknown as { __narrativeDebug?: unknown }).__narrativeDebug = {
+      play: (mode: NarrativeMode) => beginNarrative(mode),
+      scene: () => sceneRef.current,
+      game,
+    }
   }
 
   function handleItemUse(actor: ActorId, item: ItemId) {
@@ -325,12 +453,25 @@ export default function App() {
   return (
     <main className="relative h-full w-full overflow-hidden bg-abyss-950">
       <div className="absolute inset-0">
-        <GameCanvas
-          engine={game}
-          snapshot={snapshot}
-          onItemUse={handleItemUse}
-          onHoverChange={setHover}
-        />
+        {corridorState === 'done' ? (
+          <GameCanvas
+            engine={game}
+            snapshot={snapshot}
+            onItemUse={handleItemUse}
+            onHoverChange={setHover}
+            onSceneReady={(scene) => {
+              sceneRef.current = scene
+              // 走廊黑场后 GameCanvas 重新挂载：SceneManager 就位即开始入场
+              if (pendingIntroRef.current && corridorState === 'done') {
+                pendingIntroRef.current = false
+                beginNarrative('intro')
+              }
+            }}
+          />
+        ) : null}
+        {corridorState !== 'done' ? (
+          <CorridorIntro sound={sound} onStart={startGame} onIntroComplete={handleCorridorComplete} />
+        ) : null}
       </div>
 
       {/* Blood vignette flash on a live hit. */}
@@ -361,7 +502,9 @@ export default function App() {
       />
 
       {/* Minimal corner chrome. */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-4">
+      <div
+        className={`pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-4 transition-opacity duration-700 ${narrativeActive ? 'opacity-0' : 'opacity-100'}`}
+      >
         <div className="flex items-center gap-3">
           <span className="h-[1px] w-8 bg-rust-500/50 max-[420px]:hidden" />
           <p className="text-[9px] tracking-[0.42em] text-bone-200/35 uppercase">
@@ -377,21 +520,19 @@ export default function App() {
 
       {/* Hand totals live on the felt itself (SceneManager score plates); panels keep vitals/status. */}
       {snapshot && started ? (
-        <>
+        <div
+          className={`transition-opacity duration-1000 ${narrativeActive ? 'opacity-0' : 'opacity-100'}`}
+        >
           <ActorPanel className="top-14 left-4" label="你" actor={snapshot.player} accent />
           <ActorPanel className="top-14 right-4" label="它" actor={snapshot.boss} />
           <LogPanel snapshot={snapshot} />
           <CylinderPanel snapshot={snapshot} />
-        </>
+        </div>
       ) : null}
 
       {/* Bottom control rail. */}
       <div className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 px-4 pb-5">
-        {!started ? (
-          <MetalButton tone="primary" onClick={() => void startGame()}>
-            坐下，开始交易
-          </MetalButton>
-        ) : phase === 'targeting' ? (
+        {narrativeActive ? null : !started ? null : phase === 'targeting' ? (
           <div className="flex flex-col items-center gap-2">
             <p className="text-[9px] tracking-[0.4em] text-rust-400/80 uppercase">
               {snapshot?.pendingShot === 'player' ? '这一轮你赢了 · 选择枪口' : '它在决定枪口'}
@@ -458,7 +599,9 @@ export default function App() {
 
       {/* Corner utilities: volume + codex.
           窄屏改成横排抬到操作栏上方，否则会和底部按钮叠在一起 */}
-      <div className="absolute right-4 bottom-4 flex flex-col items-end gap-2 max-[420px]:right-3 max-[420px]:bottom-[6.25rem] max-[420px]:flex-row max-[420px]:items-center">
+      <div
+        className={`absolute right-4 bottom-4 flex flex-col items-end gap-2 transition-opacity duration-700 max-[420px]:right-3 max-[420px]:bottom-[6.25rem] max-[420px]:flex-row max-[420px]:items-center ${narrativeActive ? 'pointer-events-none opacity-0' : 'opacity-100'}`}
+      >
         <button
           type="button"
           onClick={() => setModal(modal === 'items' ? null : 'items')}
@@ -583,7 +726,7 @@ export default function App() {
       ) : null}
 
       {/* Death / victory end screens. */}
-      {finished ? (
+      {finished && !narrativeActive ? (
         <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-6 overflow-y-auto bg-black/78 px-6 py-8 text-center backdrop-blur-sm">
           {phase === 'victory' ? (
             <>
@@ -612,7 +755,7 @@ export default function App() {
                 </div>
               </dl>
               <div className="mt-2 flex gap-3">
-                <MetalButton tone="primary" onClick={() => game.restart()}>
+                <MetalButton tone="primary" onClick={() => beginNarrative('restart')}>
                   再次走进深渊
                 </MetalButton>
                 <MetalButton tone="ghost" onClick={() => setModal('rules')}>
@@ -646,7 +789,7 @@ export default function App() {
                 </div>
               </dl>
               <div className="mt-2 flex gap-3">
-                <MetalButton tone="primary" onClick={() => game.restart()}>
+                <MetalButton tone="primary" onClick={() => beginNarrative('restart')}>
                   重新成为实验品
                 </MetalButton>
                 <MetalButton tone="ghost" onClick={() => setModal('rules')}>
@@ -715,6 +858,29 @@ export default function App() {
       ) : null}
 
       {modal ? <RulesModal initialTab={modal} onClose={() => setModal(null)} /> : null}
+
+      {clueLine && !narrativeActive ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-[16vh] z-20 flex justify-center px-6">
+          <p className="clue-line narrative-subtitle max-w-xl text-center font-display text-base tracking-[0.18em] text-bone-200/85">
+            {clueLine}
+          </p>
+        </div>
+      ) : null}
+
+      {narrative && directorRef.current ? (
+        <NarrativeOverlay director={directorRef.current} sound={sound} visual={narrative} />
+      ) : null}
+
+      {devOpen ? (
+        <DevPanel
+          snapshot={snapshot}
+          onWinLevel={() => devBridge.winLevel()}
+          onSetPlayerTotal={(total) => devBridge.setPlayerTotal(total)}
+          onForceChamber={(chamber) => devBridge.forceChamber(chamber)}
+          onGrantItem={(item) => devBridge.grantItem(item)}
+          onClose={() => setDevOpen(false)}
+        />
+      ) : null}
 
       <ItemTooltip payload={hover} />
     </main>

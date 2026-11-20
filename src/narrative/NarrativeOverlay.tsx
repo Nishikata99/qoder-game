@@ -54,7 +54,7 @@ export function NarrativeOverlay({
         style={{ opacity: visual.black }}
       />
       <div
-        className="pointer-events-none absolute inset-0"
+        className="narrative-focus pointer-events-none absolute inset-0"
         style={{
           backdropFilter: `blur(${visual.focus}px)`,
           WebkitBackdropFilter: `blur(${visual.focus}px)`,

@@ -31,7 +31,7 @@ test('入场不可跳过：黑边字幕逐拍出现，结束后 overlay 移除�
   await expect(black).toHaveCSS('opacity', '0', { timeout: 15_000 })
 
   // 40s 时钟在 fps≈10 时真实约 80s，留一倍余量
-  await expect(overlay).toHaveCount(0, { timeout: 180_000 })
+  await expect(overlay).toHaveCount(0, { timeout: 300_000 })
   await expect(page.getByRole('button', { name: /要牌/ })).toBeEnabled({ timeout: 30_000 })
   await expect(page.getByRole('button', { name: /跳过|skip/i })).toHaveCount(0)
 })

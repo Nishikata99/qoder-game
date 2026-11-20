@@ -56,7 +56,7 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
     page.evaluate(() => Boolean((window as unknown as { __fired?: boolean }).__fired))
 
   // CI 软件渲染比本地慢数倍，轮询预算要留到接近用例总超时
-  const deadline = Date.now() + 180_000
+  const deadline = Date.now() + 300_000
   while (Date.now() < deadline) {
     if (await fired()) break
     if (await fireAtBoss.isVisible().catch(() => false)) {

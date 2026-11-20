@@ -117,11 +117,11 @@ for (const vp of VIEWPORTS) {
       await rightDoor.waitFor({ timeout: 60_000 })
       await rightDoor.evaluate((el) => (el as HTMLElement).click())
 
-      // 等引擎发完牌进入玩家回合。入场分镜 40s 时钟，软件渲染 fps≈10 时
-      // dt clamp 0.05 让时钟半速 → 真实约 80s，加发牌余量给到 150s
+      // 等引擎发完牌进入玩家回合。CI 的 SwiftShader 比本地更慢，
+      // dt clamp 0.05 会进一步拖长分镜，超时按最坏渲染档位留余量
       const hit = page.getByRole('button', { name: /要牌/ })
       const stand = page.getByRole('button', { name: /停牌/ })
-      await expect(hit).toBeEnabled({ timeout: 150_000 })
+      await expect(hit).toBeEnabled({ timeout: 300_000 })
 
       for (const locator of [hit, stand]) {
         await expectInsideViewport(page, locator, 'xy')

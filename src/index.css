@@ -234,6 +234,12 @@ body {
   transition: height 900ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .narrative-focus {
+    backdrop-filter: none !important;
+  }
+}
+
 .narrative-subtitle,
 .corridor-subtitle {
   text-shadow:

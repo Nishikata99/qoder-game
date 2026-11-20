@@ -235,6 +235,18 @@ export default function App() {
 
   useEffect(() => () => directorRef.current?.stop(), [])
 
+  // 入场导演层要等 GameCanvas 的 effect 全部落地再取场景：StrictMode 下首挂的
+  // SceneManager 会被立刻销毁重建，在 onSceneReady 里同步开演会绑到死实例上
+  useEffect(() => {
+    if (corridorState !== 'done' || !pendingIntroRef.current) return
+    const timer = window.setTimeout(() => {
+      if (!pendingIntroRef.current) return
+      pendingIntroRef.current = false
+      beginNarrative('intro')
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [corridorState])
+
   // 快捷键只是键位映射到同一批引擎动作，所有阶段/输入锁校验仍由 canAct 与引擎负责
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -466,11 +478,6 @@ export default function App() {
             onHoverChange={setHover}
             onSceneReady={(scene) => {
               sceneRef.current = scene
-              // 走廊黑场后 GameCanvas 重新挂载：SceneManager 就位即开始入场
-              if (pendingIntroRef.current && corridorState === 'done') {
-                pendingIntroRef.current = false
-                beginNarrative('intro')
-              }
             }}
           />
         ) : null}

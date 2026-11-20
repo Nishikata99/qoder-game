@@ -1084,7 +1084,7 @@ export class SceneManager {
     }
     // 带贴图的模型没有顶点色，走 albedo 压暗那一支，必须单独给值
     const albedoDimFor = (key: ModelKey): number => {
-      if (key === 'boss_2') return 0.85
+      if (key === 'boss_2' || key === 'boss_3') return 0.85
       return key === 'gothic_statue' || key === 'marble_bust_01' ? 0.62 : GLB_ALBEDO_DIM
     }
     for (const key of keys) {

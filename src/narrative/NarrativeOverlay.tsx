@@ -54,6 +54,14 @@ export function NarrativeOverlay({
         style={{ opacity: visual.black }}
       />
       <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          backdropFilter: `blur(${visual.focus}px)`,
+          WebkitBackdropFilter: `blur(${visual.focus}px)`,
+          transition: 'backdrop-filter 1.6s ease-out, -webkit-backdrop-filter 1.6s ease-out',
+        }}
+      />
+      <div
         className="narrative-bar absolute inset-x-0 top-0 bg-black"
         style={{ height: visual.letterbox ? '9vh' : '0vh' }}
       />
@@ -61,7 +69,7 @@ export function NarrativeOverlay({
         className="narrative-bar absolute inset-x-0 bottom-0 bg-black"
         style={{ height: visual.letterbox ? '9vh' : '0vh' }}
       />
-      {/* T3 账页：右侧滑入停两拍，「小满。已收。」即字幕，不另加旁白 */}
+      {/* T3 账页：右侧滑入停两拍，销账记录即字幕，不另加旁白 */}
       <div
         className="pointer-events-none absolute top-1/2 right-[7vw] w-56 p-5 font-display shadow-2xl transition-transform duration-700"
         style={{
@@ -70,12 +78,25 @@ export function NarrativeOverlay({
           color: '#2c2016',
         }}
       >
-        <p className="text-[0.6rem] tracking-[0.3em] opacity-60">账房 · 欠收登记</p>
+        <p className="text-[0.6rem] tracking-[0.3em] opacity-60">账房 · 血契销账</p>
         <div className="mt-3 space-y-2 border-t border-[#5a4632]/40 pt-3">
           <div className="h-px bg-[#5a4632]/25" />
           <div className="h-px bg-[#5a4632]/25" />
           <div className="h-px bg-[#5a4632]/25" />
-          <p className="pt-2 text-lg tracking-[0.2em]">小满。已收。</p>
+          <dl className="space-y-1.5 pt-2 text-[0.8rem] leading-relaxed tracking-[0.08em]">
+            <div className="flex justify-between gap-2">
+              <dt className="opacity-55">契主</dt>
+              <dd>小棠</dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt className="opacity-55">欠血</dt>
+              <dd>已抵</dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt className="opacity-55">去向</dt>
+              <dd className="text-right">转三楼补针 · 已收</dd>
+            </div>
+          </dl>
         </div>
       </div>
       {subtitle ? (

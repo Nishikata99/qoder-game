@@ -74,7 +74,7 @@ async function expectInsideViewport(page: Page, locator: Locator, axes: 'x' | 'x
 async function dismissGuide(page: Page) {
   const guide = page.getByRole('dialog', { name: '开局说明' })
   if ((await guide.count()) === 0) return
-  await page.getByRole('button', { name: '我知道了' }).click()
+  await page.getByRole('button', { name: '坐上牌桌' }).click()
   await expect(guide).toBeHidden()
 }
 
@@ -90,10 +90,10 @@ for (const vp of VIEWPORTS) {
       expect(report.docScrollWidth).toBeLessThanOrEqual(report.viewportWidth)
       expect(report.mainOverflow).toBeLessThanOrEqual(0)
       expect(report.offenders).toEqual([])
-      await expectInsideViewport(page, page.getByRole('button', { name: '我知道了' }))
-      await expectInsideViewport(page, page.getByRole('button', { name: '看完整规则' }))
+      await expectInsideViewport(page, page.getByRole('button', { name: '坐上牌桌' }))
+      await expectInsideViewport(page, page.getByRole('button', { name: '查看完整血契' }))
 
-      await page.getByRole('button', { name: '看完整规则' }).click()
+      await page.getByRole('button', { name: '查看完整血契' }).click()
       const rules = page.getByRole('dialog', { name: '规则与图鉴' })
       await expect(rules).toBeVisible()
       report = await probeHorizontalOverflow(page)
@@ -107,7 +107,7 @@ for (const vp of VIEWPORTS) {
     test('牌桌操作栏与角落工具不越界也不重叠', async ({ page }) => {
       await page.goto('./')
 
-      const start = page.getByRole('button', { name: '开始', exact: true })
+      const start = page.getByRole('button', { name: '走进走廊', exact: true })
       await expect(start).toBeVisible({ timeout: 30_000 })
       await expectInsideViewport(page, start, 'xy')
       await dismissGuide(page)

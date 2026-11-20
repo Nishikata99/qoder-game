@@ -25,7 +25,7 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
   await page.goto('./')
 
   // 首次进入的引导卡片可能先遮住开始按钮：出现就关掉，没出现直接开始
-  const start = page.getByRole('button', { name: '坐下，开始交易' })
+  const start = page.getByRole('button', { name: '开始', exact: true })
   // 引导卡片和开始按钮在同一次渲染里出现，按钮始终在 DOM 中（被遮住也算 visible），
   // 不能用 .or() 断言二者之一——strict mode 会因为同时命中两个元素而报错
   await expect(start).toBeVisible({ timeout: 30_000 })
@@ -37,6 +37,10 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
   }
 
   await start.click()
+
+  const rightDoor = page.getByRole('button', { name: '右门' })
+  await rightDoor.waitFor({ timeout: 60_000 })
+  await rightDoor.evaluate((el) => (el as HTMLElement).click())
 
   // 一直推进到枪响。生产构建不能传 ?seed，每轮结果随机：
   // 平局会重发牌回到「你的行动」，对手赢下回合会自动开枪，

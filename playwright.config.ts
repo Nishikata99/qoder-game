@@ -8,6 +8,9 @@ export default defineConfig({
   // 无头环境是软件渲染，引擎定时器会比真机慢一个数量级，超时给足
   timeout: 240_000,
   fullyParallel: false,
+  // 软件渲染下两个 WebGL 页面互抢 CPU：导演时钟随 fps 降速，并行时入场真实时长翻倍，
+  // intro/smoke 的超时会被误判成回归。串行让每个用例独占渲染资源
+  workers: 1,
   reporter: process.env.CI ? 'line' : 'list',
   use: {
     baseURL: 'http://127.0.0.1:4173',

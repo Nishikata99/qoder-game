@@ -596,6 +596,398 @@ function drawDust(canvas: HTMLCanvasElement): void {
   ctx.fillRect(0, 0, w, h)
 }
 
+/** 入场纸片：撕去左半的旧纸，只剩一个「满」字 */
+function drawCorridorWall(canvas: HTMLCanvasElement): void {
+  const ctx = getContext(canvas)
+  const w = canvas.width
+  const h = canvas.height
+  const rnd = mulberry32(307)
+  ctx.fillStyle = '#3a4038'
+  ctx.fillRect(0, 0, w, h)
+  noise(ctx, w, h, rnd, 2600)
+  // 大面积水渍竖痕：上深下浅的脏水挂流
+  for (let i = 0; i < 26; i += 1) {
+    const x = rnd() * w
+    const sw = 6 + rnd() * 30
+    const y0 = rnd() * h * 0.5
+    const len = h * (0.3 + rnd() * 0.7)
+    const grad = ctx.createLinearGradient(x, y0, x, y0 + len)
+    grad.addColorStop(0, `rgba(18,22,16,${0.25 + rnd() * 0.3})`)
+    grad.addColorStop(1, 'rgba(18,22,16,0)')
+    ctx.fillStyle = grad
+    ctx.fillRect(x - sw / 2, y0, sw, len)
+  }
+  // 霉斑群
+  for (let i = 0; i < 40; i += 1) {
+    const x = rnd() * w
+    const y = h * 0.55 + rnd() * h * 0.45
+    ctx.fillStyle = `rgba(16,24,14,${0.2 + rnd() * 0.3})`
+    ctx.beginPath()
+    ctx.ellipse(x, y, 2 + rnd() * 14, 2 + rnd() * 9, rnd() * 3, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  // 裂缝：折线带分叉
+  for (let i = 0; i < 7; i += 1) {
+    let x = rnd() * w
+    let y = rnd() * h * 0.4
+    ctx.strokeStyle = 'rgba(12,14,10,0.55)'
+    ctx.lineWidth = 0.8 + rnd()
+    ctx.beginPath()
+    ctx.moveTo(x, y)
+    for (let k = 0; k < 9; k += 1) {
+      x += (rnd() - 0.5) * 26
+      y += 8 + rnd() * 22
+      ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+  }
+  // 剥漆片：边缘翘起亮边的不规则斑
+  for (let i = 0; i < 12; i += 1) {
+    const x = rnd() * w
+    const y = rnd() * h
+    const rw = 8 + rnd() * 26
+    const rh = 6 + rnd() * 20
+    ctx.fillStyle = 'rgba(52,56,46,0.85)'
+    ctx.beginPath()
+    for (let k = 0; k < 7; k += 1) {
+      const a = (k / 7) * Math.PI * 2
+      const px = x + Math.cos(a) * rw * (0.6 + rnd() * 0.6)
+      const py = y + Math.sin(a) * rh * (0.6 + rnd() * 0.6)
+      if (k === 0) ctx.moveTo(px, py)
+      else ctx.lineTo(px, py)
+    }
+    ctx.closePath()
+    ctx.fill()
+    ctx.strokeStyle = 'rgba(14,16,12,0.6)'
+    ctx.lineWidth = 1.2
+    ctx.stroke()
+  }
+}
+
+function drawCorridorFloor(canvas: HTMLCanvasElement): void {
+  const ctx = getContext(canvas)
+  const w = canvas.width
+  const h = canvas.height
+  const rnd = mulberry32(409)
+  ctx.fillStyle = '#26282a'
+  ctx.fillRect(0, 0, w, h)
+  noise(ctx, w, h, rnd, 2400)
+  // 砖缝
+  ctx.strokeStyle = 'rgba(8,10,10,0.85)'
+  ctx.lineWidth = 3
+  for (const p of [0, 0.5, 1]) {
+    ctx.beginPath()
+    ctx.moveTo(w * p, 0)
+    ctx.lineTo(w * p, h)
+    ctx.moveTo(0, h * p)
+    ctx.lineTo(w, h * p)
+    ctx.stroke()
+  }
+  // 砖面边缘磨亮
+  ctx.strokeStyle = 'rgba(70,74,70,0.25)'
+  ctx.lineWidth = 1
+  for (const x of [0.25, 0.75]) {
+    for (const y of [0.25, 0.75]) {
+      ctx.strokeRect(w * (x - 0.24), h * (y - 0.24), w * 0.48, h * 0.48)
+    }
+  }
+  for (let i = 0; i < 30; i += 1) {
+    const x = rnd() * w
+    const y = rnd() * h
+    ctx.fillStyle = `rgba(10,14,12,${0.15 + rnd() * 0.25})`
+    ctx.beginPath()
+    ctx.ellipse(x, y, 4 + rnd() * 30, 3 + rnd() * 16, rnd() * 3, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  bloodSplatter(ctx, rnd, w * 0.7, h * 0.6, w * 0.25, 0.12)
+}
+
+function drawCorridorDoor(canvas: HTMLCanvasElement): void {
+  const ctx = getContext(canvas)
+  const w = canvas.width
+  const h = canvas.height
+  const rnd = mulberry32(503)
+  ctx.fillStyle = '#2e2118'
+  ctx.fillRect(0, 0, w, h)
+  // 纵向木纹
+  for (let x = 0; x < w; x += 3) {
+    const shade = rnd()
+    ctx.fillStyle = `rgba(${18 + shade * 30},${12 + shade * 20},${8 + shade * 12},0.5)`
+    ctx.fillRect(x, 0, 2, h)
+  }
+  for (let i = 0; i < 40; i += 1) {
+    const x = rnd() * w
+    ctx.strokeStyle = `rgba(12,8,5,${0.2 + rnd() * 0.3})`
+    ctx.lineWidth = 0.6 + rnd()
+    ctx.beginPath()
+    ctx.moveTo(x, 0)
+    ctx.bezierCurveTo(x + 6, h * 0.3, x - 6, h * 0.6, x + 2, h)
+    ctx.stroke()
+  }
+  noise(ctx, w, h, rnd, 1500)
+  // 剥漆块与底部水浸
+  for (let i = 0; i < 16; i += 1) {
+    const x = rnd() * w
+    const y = rnd() * h
+    ctx.fillStyle = `rgba(20,14,10,${0.3 + rnd() * 0.3})`
+    ctx.fillRect(x, y, 3 + rnd() * 14, 2 + rnd() * 8)
+  }
+  const grad = ctx.createLinearGradient(0, h * 0.7, 0, h)
+  grad.addColorStop(0, 'rgba(8,10,8,0)')
+  grad.addColorStop(1, 'rgba(8,10,8,0.75)')
+  ctx.fillStyle = grad
+  ctx.fillRect(0, h * 0.7, w, h * 0.3)
+}
+
+function drawCorridorRust(canvas: HTMLCanvasElement): void {
+  const ctx = getContext(canvas)
+  const w = canvas.width
+  const h = canvas.height
+  const rnd = mulberry32(607)
+  ctx.fillStyle = '#3a2417'
+  ctx.fillRect(0, 0, w, h)
+  noise(ctx, w, h, rnd, 1800)
+  for (let i = 0; i < 60; i += 1) {
+    const x = rnd() * w
+    const y = rnd() * h
+    ctx.fillStyle = `rgba(${90 + rnd() * 60},${40 + rnd() * 26},${16 + rnd() * 12},${0.2 + rnd() * 0.35})`
+    ctx.beginPath()
+    ctx.ellipse(x, y, 2 + rnd() * 9, 2 + rnd() * 6, rnd() * 3, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  // 残存漆皮与金属划痕
+  for (let i = 0; i < 20; i += 1) {
+    const x = rnd() * w
+    const y = rnd() * h
+    ctx.fillStyle = 'rgba(40,46,40,0.7)'
+    ctx.fillRect(x, y, 3 + rnd() * 10, 2 + rnd() * 7)
+  }
+  for (let i = 0; i < 24; i += 1) {
+    const x = rnd() * w
+    const y = rnd() * h
+    ctx.strokeStyle = 'rgba(120,110,96,0.35)'
+    ctx.lineWidth = 0.7
+    ctx.beginPath()
+    ctx.moveTo(x, y)
+    ctx.lineTo(x + (rnd() - 0.5) * 30, y + rnd() * 8)
+    ctx.stroke()
+  }
+}
+
+function drawHandSilhouette(canvas: HTMLCanvasElement): void {
+  const ctx = getContext(canvas)
+  const w = canvas.width
+  const h = canvas.height
+  ctx.clearRect(0, 0, w, h)
+  ctx.fillStyle = 'rgba(9,5,4,0.96)'
+  // 手掌
+  ctx.beginPath()
+  ctx.ellipse(w * 0.5, h * 0.66, w * 0.21, h * 0.26, -0.12, 0, Math.PI * 2)
+  ctx.fill()
+  // 四指：根部分开、指尖略张
+  const fingers: Array<[number, number, number, number, number]> = [
+    [0.34, 0.47, 0.055, 0.3, -0.22],
+    [0.46, 0.4, 0.058, 0.36, -0.07],
+    [0.58, 0.42, 0.055, 0.33, 0.08],
+    [0.69, 0.5, 0.048, 0.24, 0.2],
+  ]
+  for (const [cx, cy, rw, rh, rot] of fingers) {
+    ctx.beginPath()
+    ctx.ellipse(w * cx, h * cy, w * rw, h * rh, rot, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  // 拇指
+  ctx.beginPath()
+  ctx.ellipse(w * 0.27, h * 0.68, w * 0.06, h * 0.16, 0.65, 0, Math.PI * 2)
+  ctx.fill()
+  // 手腕延伸到画面下缘
+  ctx.beginPath()
+  ctx.moveTo(w * 0.36, h * 0.82)
+  ctx.lineTo(w * 0.64, h * 0.82)
+  ctx.lineTo(w * 0.7, h)
+  ctx.lineTo(w * 0.3, h)
+  ctx.closePath()
+  ctx.fill()
+}
+
+function drawTallyList(canvas: HTMLCanvasElement): void {
+  const ctx = getContext(canvas)
+  const w = canvas.width
+  const h = canvas.height
+  const rnd = mulberry32(913)
+  ctx.fillStyle = '#241f1a'
+  ctx.fillRect(0, 0, w, h)
+  noise(ctx, w, h, rnd, 700)
+  // 四角铆钉
+  ctx.fillStyle = 'rgba(120,110,96,0.6)'
+  for (const [x, y] of [
+    [0.08, 0.05],
+    [0.92, 0.05],
+    [0.08, 0.95],
+    [0.92, 0.95],
+  ]) {
+    ctx.beginPath()
+    ctx.arc(w * x, h * y, 4, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  // 前几行：划花的名字（不可读）+ 正字计数，整行再斜划一道勾销
+  for (let row = 0; row < 5; row += 1) {
+    const y = h * (0.16 + row * 0.1)
+    ctx.strokeStyle = 'rgba(160,150,130,0.3)'
+    ctx.lineWidth = 1.6
+    for (let i = 0; i < 6; i += 1) {
+      const x = w * (0.14 + i * 0.055)
+      ctx.beginPath()
+      ctx.moveTo(x, y - 6 + rnd() * 4)
+      ctx.lineTo(x + 3 + rnd() * 5, y + 5 - rnd() * 4)
+      ctx.stroke()
+    }
+    for (let i = 0; i < 4; i += 1) {
+      const x = w * (0.62 + i * 0.05)
+      ctx.beginPath()
+      ctx.moveTo(x, y - 7)
+      ctx.lineTo(x + 2, y + 6)
+      ctx.stroke()
+    }
+    ctx.strokeStyle = 'rgba(150,138,120,0.4)'
+    ctx.beginPath()
+    ctx.moveTo(w * 0.1, y + 4)
+    ctx.lineTo(w * 0.86, y - 6)
+    ctx.stroke()
+  }
+  // 末位：小满——唯一清晰可读的名字
+  ctx.fillStyle = 'rgba(217,207,190,0.92)'
+  ctx.font = `${Math.floor(h * 0.085)}px Georgia, serif`
+  ctx.textBaseline = 'middle'
+  ctx.fillText('小满', w * 0.14, h * 0.7)
+  // 下一行：空白新刻痕——只有一道新鲜亮刻，名字的位置空着
+  ctx.strokeStyle = 'rgba(236,226,205,0.85)'
+  ctx.lineWidth = 3
+  ctx.beginPath()
+  ctx.moveTo(w * 0.16, h * 0.79)
+  ctx.lineTo(w * 0.19, h * 0.86)
+  ctx.stroke()
+  ctx.strokeStyle = 'rgba(160,150,130,0.25)'
+  ctx.lineWidth = 1
+  ctx.strokeRect(w * 0.12, h * 0.76, w * 0.5, h * 0.13)
+}
+
+function drawPaperScrap(canvas: HTMLCanvasElement): void {
+  const ctx = getContext(canvas)
+  const w = canvas.width
+  const h = canvas.height
+  const rnd = mulberry32(77)
+  ctx.clearRect(0, 0, w, h)
+  // 撕边：左侧锯齿状透明缺口
+  ctx.save()
+  ctx.beginPath()
+  ctx.moveTo(w * 0.3, 0)
+  for (let y = 0; y <= h; y += 12) {
+    ctx.lineTo(w * (0.24 + rnd() * 0.14), y)
+  }
+  ctx.lineTo(w, h)
+  ctx.lineTo(w, 0)
+  ctx.closePath()
+  ctx.clip()
+  ctx.fillStyle = '#c9b998'
+  ctx.fillRect(0, 0, w, h)
+  noise(ctx, w, h, rnd, 900)
+  bloodSplatter(ctx, rnd, w * 0.82, h * 0.9, w * 0.2, 0.22)
+  ctx.strokeStyle = 'rgba(90,70,50,0.35)'
+  ctx.lineWidth = 2
+  for (let i = 1; i < 4; i += 1) {
+    ctx.beginPath()
+    ctx.moveTo(w * 0.34, h * (0.2 + i * 0.18))
+    ctx.lineTo(w * 0.92, h * (0.2 + i * 0.18))
+    ctx.stroke()
+  }
+  ctx.fillStyle = 'rgba(38,26,20,0.88)'
+  ctx.font = `${Math.floor(h * 0.34)}px Georgia, serif`
+  ctx.textBaseline = 'middle'
+  ctx.fillText('满', w * 0.56, h * 0.47)
+  // 撕边纤维
+  ctx.strokeStyle = 'rgba(220,205,175,0.5)'
+  ctx.lineWidth = 1
+  for (let i = 0; i < 26; i += 1) {
+    const y = rnd() * h
+    ctx.beginPath()
+    ctx.moveTo(w * (0.24 + rnd() * 0.1), y)
+    ctx.lineTo(w * (0.2 + rnd() * 0.08), y + (rnd() - 0.5) * 8)
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+
+/** 毛巾：绣着「满」字；readable=false 时绣字模糊不可读（第一章） */
+function drawTowel(canvas: HTMLCanvasElement, readable: boolean): void {
+  const ctx = getContext(canvas)
+  const w = canvas.width
+  const h = canvas.height
+  const rnd = mulberry32(131)
+  ctx.fillStyle = '#b7ab97'
+  ctx.fillRect(0, 0, w, h)
+  // 织物纹 + 褶皱明暗
+  for (let y = 0; y < h; y += 3) {
+    ctx.fillStyle = `rgba(0,0,0,${0.03 + rnd() * 0.04})`
+    ctx.fillRect(0, y, w, 1)
+  }
+  for (let i = 0; i < 5; i += 1) {
+    const x = (i + 0.5) * (w / 5)
+    const grad = ctx.createLinearGradient(x - w * 0.09, 0, x + w * 0.09, 0)
+    grad.addColorStop(0, 'rgba(0,0,0,0)')
+    grad.addColorStop(0.5, `rgba(40,32,24,${0.16 + rnd() * 0.1})`)
+    grad.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.fillStyle = grad
+    ctx.fillRect(x - w * 0.09, 0, w * 0.18, h)
+  }
+  noise(ctx, w, h, rnd, 700)
+  bloodSplatter(ctx, rnd, w * 0.2, h * 0.86, w * 0.16, 0.3)
+  ctx.save()
+  if (!readable) ctx.filter = 'blur(5px)'
+  ctx.fillStyle = readable ? 'rgba(122,42,30,0.85)' : 'rgba(122,42,30,0.4)'
+  ctx.font = `${Math.floor(h * 0.3)}px Georgia, serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('满', w * 0.5, h * 0.42)
+  ctx.restore()
+}
+
+/** 桌面上的手印形污渍：掌印 + 五指拖痕 */
+function drawHandprint(canvas: HTMLCanvasElement): void {
+  const ctx = getContext(canvas)
+  const w = canvas.width
+  const h = canvas.height
+  const rnd = mulberry32(219)
+  ctx.clearRect(0, 0, w, h)
+  const smudge = (cx: number, cy: number, rx: number, ry: number, rot: number, a: number) => {
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(rx, ry))
+    grad.addColorStop(0, `rgba(78,14,12,${a})`)
+    grad.addColorStop(0.7, `rgba(60,10,10,${a * 0.55})`)
+    grad.addColorStop(1, 'rgba(50,8,8,0)')
+    ctx.fillStyle = grad
+    ctx.beginPath()
+    ctx.ellipse(cx, cy, rx, ry, rot, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  smudge(w * 0.5, h * 0.62, w * 0.2, h * 0.24, 0.1, 0.5)
+  const fingers: ReadonlyArray<readonly [number, number, number]> = [
+    [0.3, 0.3, -0.35], [0.42, 0.22, -0.15], [0.55, 0.18, 0], [0.68, 0.22, 0.15], [0.78, 0.34, 0.4],
+  ]
+  for (const [fx, fy, rot] of fingers) {
+    smudge(w * fx, h * fy, w * 0.055, h * 0.13, rot, 0.42)
+  }
+  // 拖拽抹痕
+  ctx.strokeStyle = 'rgba(70,12,10,0.28)'
+  ctx.lineCap = 'round'
+  for (let i = 0; i < 7; i += 1) {
+    ctx.lineWidth = 2 + rnd() * 5
+    ctx.beginPath()
+    ctx.moveTo(w * (0.3 + rnd() * 0.4), h * (0.5 + rnd() * 0.3))
+    ctx.lineTo(w * (0.2 + rnd() * 0.6), h * (0.75 + rnd() * 0.2))
+    ctx.stroke()
+  }
+}
+
 export class TextureFactory {
   private readonly cache = new Map<string, THREE.Texture>()
   private readonly listeners = new Set<(key: string, texture: THREE.Texture) => void>()
@@ -660,6 +1052,16 @@ export class TextureFactory {
     if (key === 'table') return this.buildCanvasTexture(1024, 1024, (canvas) => drawTable(canvas))
     if (key === 'card-back') return this.buildCanvasTexture(CARD_W, CARD_H, (canvas) => drawCardBack(canvas))
     if (key === 'dust') return this.buildCanvasTexture(64, 64, (canvas) => drawDust(canvas))
+    if (key === 'paper-scrap') return this.buildCanvasTexture(256, 256, (canvas) => drawPaperScrap(canvas))
+    if (key === 'towel-blurry') return this.buildCanvasTexture(256, 256, (canvas) => drawTowel(canvas, false))
+    if (key === 'towel-readable') return this.buildCanvasTexture(256, 256, (canvas) => drawTowel(canvas, true))
+    if (key === 'handprint') return this.buildCanvasTexture(256, 256, (canvas) => drawHandprint(canvas))
+    if (key === 'tally-list') return this.buildCanvasTexture(256, 384, (canvas) => drawTallyList(canvas))
+    if (key === 'hand-silhouette') return this.buildCanvasTexture(256, 256, (canvas) => drawHandSilhouette(canvas))
+    if (key === 'corridor-wall') return this.buildCanvasTexture(512, 512, (canvas) => drawCorridorWall(canvas))
+    if (key === 'corridor-floor') return this.buildCanvasTexture(512, 512, (canvas) => drawCorridorFloor(canvas))
+    if (key === 'corridor-door') return this.buildCanvasTexture(256, 512, (canvas) => drawCorridorDoor(canvas))
+    if (key === 'corridor-rust') return this.buildCanvasTexture(256, 256, (canvas) => drawCorridorRust(canvas))
     if (key.startsWith('mask-')) {
       const index = Number(key.slice(5))
       return this.buildCanvasTexture(384, 384, (canvas) => {

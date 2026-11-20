@@ -2,20 +2,23 @@ import { useEffect, useRef, useState } from 'react'
 import type { SoundEngine } from '../audio/SoundEngine'
 import { CorridorScene } from '../intro/CorridorScene'
 
-/** 梦核走廊序章：首次点击「坐下」后触发；右门 → CRT 故障 → 黑场 → onIntroComplete */
+/** 梦核走廊序章：首次点击「坐下」后触发；右门 → CRT 故障 → 黑场 → onIntroComplete；左门 → 蔓延子游戏 */
 export function CorridorIntro({
   sound,
   onStart,
   onIntroComplete,
+  onEnterMoyan,
 }: {
   readonly sound: SoundEngine
   readonly onStart: () => void | Promise<void>
   readonly onIntroComplete: () => void
+  readonly onEnterMoyan: () => void
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const sceneRef = useRef<CorridorScene | null>(null)
   const completeRef = useRef(onIntroComplete)
   const startRef = useRef(onStart)
+  const enterMoyanRef = useRef(onEnterMoyan)
   const doneRef = useRef(false)
   const [ready, setReady] = useState(false)
   const [started, setStarted] = useState(false)
@@ -24,7 +27,8 @@ export function CorridorIntro({
   useEffect(() => {
     completeRef.current = onIntroComplete
     startRef.current = onStart
-  }, [onIntroComplete, onStart])
+    enterMoyanRef.current = onEnterMoyan
+  }, [onIntroComplete, onStart, onEnterMoyan])
 
   useEffect(() => {
     const scene = new CorridorScene(canvasRef.current!, sound, {
@@ -35,6 +39,7 @@ export function CorridorIntro({
         doneRef.current = true
         completeRef.current()
       },
+      onEnterMoyan: () => enterMoyanRef.current(),
     })
     sceneRef.current = scene
     scene.start()

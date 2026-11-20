@@ -18,7 +18,7 @@ import {
   type GameSnapshot,
   type ItemId,
 } from '../game/GameEngine'
-import { TextureFactory } from './TextureFactory'
+import { TextureFactory, type CrtData } from './TextureFactory'
 
 export interface ItemHoverPayload {
   readonly actor: ActorId
@@ -296,6 +296,7 @@ const CHAPTER_MOOD: ReadonlyArray<{
 /** Blender 导出的模型，键名与 public/models/*.glb 对应 */
 type ModelKey =
   | 'shotgun'
+  | 'crt_monitor'
   | 'boss_1'
   | 'boss_2'
   | 'boss_3'
@@ -323,6 +324,18 @@ const ITEM_MODEL: Readonly<Partial<Record<ItemId, ModelKey>>> = {
 }
 
 const MODEL_BASE = './models'
+
+const PHASE_LABEL: Readonly<Record<string, string>> = {
+  idle: '待机',
+  dealing: '发牌中',
+  playerTurn: '你的回合',
+  bossTurn: '对手回合',
+  resolving: '结算中',
+  roundEnd: '回合结束',
+  levelClear: '层间休整',
+  gameOver: '你已阵亡',
+  victory: '深渊沉寂',
+}
 
 // 爬行 Boss 按低矮轮廓定高，不能沿用直立半身像的缩放。
 const BOSS_BUST_HEIGHTS = [2.15, 1.7, 3.0] as const
@@ -436,6 +449,9 @@ export class SceneManager {
   private readonly camera: THREE.PerspectiveCamera
   private readonly timer = new THREE.Timer()
   private readonly textures = new TextureFactory()
+  private readonly crtScreen: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>
+  private readonly crtLight: THREE.PointLight
+  private lastCrtKey = ''
   private readonly tweens: Tween[] = []
   private readonly cards = new Map<string, CardEntry>()
   private readonly items = new Map<string, ItemEntry>()
@@ -662,6 +678,10 @@ export class SceneManager {
     this.bloodBurst = this.buildBloodBurst()
     this.sparkBurst = this.buildSparkBurst()
 
+    const crt = this.buildCrt()
+    this.crtScreen = crt.screen
+    this.crtLight = crt.light
+
     const lighting = this.buildLighting()
     this.spot = lighting.spot
     this.rimLight = lighting.rim
@@ -717,6 +737,7 @@ export class SceneManager {
     this.syncBlood(snapshot)
     this.syncChains(snapshot)
     this.hourglassTarget = snapshot.hourglassActive ? 1 : 0
+    this.paintCrt(snapshot)
   }
 
   /** Blends the camera to a named shot; `hold` keeps it there until another shot is set. */
@@ -1341,6 +1362,7 @@ export class SceneManager {
   private preloadModels(): void {
     const keys: ModelKey[] = [
       'shotgun',
+      'crt_monitor',
       'boss_1',
       'boss_2',
       'boss_3',
@@ -1439,6 +1461,10 @@ export class SceneManager {
         this.swapShotgun(root)
         break
       }
+      case 'crt_monitor': {
+        this.swapCrt(root)
+        break
+      }
       case 'boss_1':
       case 'boss_2':
       case 'boss_3': {
@@ -1528,6 +1554,30 @@ export class SceneManager {
    * 用 Blender 重型钢板赌桌替换程序化桌体。
    * 模型台呢面在 glTF 的 y=0，这里整体抬到 TABLE_TOP，卡牌/道具/枪无需改坐标即可贴合。
    */
+  /** 用 GLB CRT 外壳替换程序化机身，实时数据屏仍由 TextureFactory 驱动 */
+  private swapCrt(root: THREE.Object3D): void {
+    const existing = this.tableGroup.getObjectByName('CrtPlaceholder')
+    if (!existing) return
+
+    const wrapper = this.placeModel(root, 0.62, existing.position.clone(), existing.rotation.y)
+    wrapper.name = 'CrtGLB'
+    this.tableGroup.add(wrapper)
+
+    // 屏幕板贴到外壳正面：新机身比旧盒子深，按世界坐标迁移会落进内部被遮黑
+    const screen = this.crtScreen
+    existing.remove(screen)
+    wrapper.add(screen)
+    const shell = wrapper.children[0]
+    const box = shell ? new THREE.Box3().setFromObject(shell) : null
+    const frontZ = box ? box.max.z + 0.004 : 0.19
+    const height = box ? box.max.y - box.min.y : 0.6
+    screen.position.set(0, height * 0.60, frontZ)
+    screen.scale.setScalar(0.9)
+
+    this.tableGroup.remove(existing)
+    this.disposeObject(existing)
+  }
+
   private swapTable(root: THREE.Object3D): void {
     const stale: THREE.Object3D[] = []
     for (const child of this.tableGroup.children) {
@@ -1544,6 +1594,10 @@ export class SceneManager {
     clone.position.set(0, TABLE_TOP, 0)
     clone.name = 'GamingTableGLB'
     this.tableGroup.add(clone)
+
+    // CRT 需要重新落到新桌面上
+    const crt = this.tableGroup.getObjectByName('CrtGLB') ?? this.tableGroup.getObjectByName('CrtPlaceholder')
+    if (crt) crt.position.y = TABLE_TOP + 0.005
   }
 
   /** 用 Blender 密室替换程序化立方体房间；吊灯并入 lampRig 以保留摆动动画 */
@@ -1769,6 +1823,7 @@ export class SceneManager {
     this.updateItems(dt)
     this.updateCards(dt)
     this.updateCamera(dt)
+    this.textures.crt.needsUpdate = false
     this.composer.render(dt)
     this.sampleStats(dt)
     if (devStatsEnabled) this.renderer.info.reset()
@@ -1938,6 +1993,10 @@ export class SceneManager {
     this.spot.position.z = -0.05 + Math.cos(this.elapsed * 0.33) * 0.025
     this.lampRig.rotation.z = Math.sin(this.elapsed * 0.9) * 0.035
     this.lampRig.rotation.x = Math.cos(this.elapsed * 0.72) * 0.025
+    // CRT 屏幕自身的荧光闪烁，作为桌面的氛围点光
+    const crtPulse = 0.85 + Math.sin(this.elapsed * 11) * 0.06 + Math.random() * 0.05
+    this.crtLight.intensity = 0.55 * crtPulse
+    this.crtScreen.material.opacity = 0.72 + Math.sin(this.elapsed * 23) * 0.03
   }
 
   private updateBoss(dt: number): void {
@@ -2757,6 +2816,93 @@ export class SceneManager {
     root.add(flash)
 
     return { root, drum, muzzleLight, flash }
+  }
+
+  private buildCrt(): { screen: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>; light: THREE.PointLight } {
+    const group = new THREE.Group()
+    group.name = 'CrtPlaceholder'
+    group.position.set(-0.96, TABLE_TOP + 0.005, 1.24)
+    // 屏幕朝向玩家相机，保证 CRT 内容可读
+    group.rotation.y = 0.52
+    group.scale.setScalar(0.9)
+    this.tableGroup.add(group)
+
+    const caseMat = new THREE.MeshStandardMaterial({
+      color: 0x35302a,
+      metalness: 0.35,
+      roughness: 0.68,
+    })
+    this.disposableMaterials.add(caseMat)
+    const caseGeo = new THREE.BoxGeometry(0.72, 0.56, 0.5)
+    this.disposableGeometries.add(caseGeo)
+    const body = new THREE.Mesh(caseGeo, caseMat)
+    body.position.y = 0.28
+    body.castShadow = true
+    body.receiveShadow = true
+    group.add(body)
+    group.rotation.x = -0.06
+
+    const frontMat = new THREE.MeshStandardMaterial({
+      color: 0x2a251f,
+      metalness: 0.2,
+      roughness: 0.8,
+    })
+    this.disposableMaterials.add(frontMat)
+    const bezelGeo = new THREE.BoxGeometry(0.66, 0.5, 0.03)
+    this.disposableGeometries.add(bezelGeo)
+    const bezel = new THREE.Mesh(bezelGeo, frontMat)
+    bezel.position.set(0, 0.3, 0.255)
+    group.add(bezel)
+
+    const screenMat = new THREE.MeshBasicMaterial({
+      map: this.textures.crt,
+      transparent: true,
+      opacity: 1,
+      // 台面整体压暗后再乘 0.55 会让文字不可读，这里保持接近本色
+      color: 0xcfe6d6,
+    })
+    this.disposableMaterials.add(screenMat)
+    const screenGeo = new THREE.PlaneGeometry(0.5, 0.375)
+    this.disposableGeometries.add(screenGeo)
+    const screen = new THREE.Mesh(screenGeo, screenMat)
+    screen.position.set(0, 0.315, 0.272)
+    group.add(screen)
+
+    const glassMat = new THREE.MeshPhysicalMaterial({
+      color: 0x90ffb8,
+      transparent: true,
+      opacity: 0.05,
+      roughness: 0.08,
+      metalness: 0.1,
+      emissiveIntensity: 0.15,
+    })
+    this.disposableMaterials.add(glassMat)
+    const glass = new THREE.Mesh(screenGeo, glassMat)
+    glass.position.set(0, 0.315, 0.279)
+    group.add(glass)
+
+    const knobGeo = new THREE.CylinderGeometry(0.028, 0.028, 0.03, 12)
+    this.disposableGeometries.add(knobGeo)
+    for (const x of [-0.24, -0.17]) {
+      const knob = new THREE.Mesh(knobGeo, brassMaterial(this.disposableMaterials))
+      knob.rotation.x = Math.PI / 2
+      knob.position.set(x, 0.095, 0.27)
+      group.add(knob)
+    }
+
+    const ledGeo = new THREE.SphereGeometry(0.011, 8, 6)
+    this.disposableGeometries.add(ledGeo)
+    const ledMat = new THREE.MeshBasicMaterial({ color: 0x6cff9a })
+    this.disposableMaterials.add(ledMat)
+    const led = new THREE.Mesh(ledGeo, ledMat)
+    led.position.set(0.265, 0.095, 0.27)
+    group.add(led)
+
+    const light = new THREE.PointLight(0x4dff8f, 3.4, 3.2, 2)
+    light.position.set(0, 0.33, 0.55)
+    group.add(light)
+
+    return { screen, light }
   }
 
   private buildDust(): THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial> {
@@ -4157,6 +4303,27 @@ export class SceneManager {
     this.scene.add(extra)
 
     return { group, extra, bags, maxHp }
+  }
+
+  private paintCrt(snapshot: GameSnapshot): void {
+    const data: CrtData = {
+      level: snapshot.levelIndex + 1,
+      levelName: snapshot.level.name,
+      playerHp: snapshot.player.hp,
+      playerMax: snapshot.player.maxHp,
+      bossHp: snapshot.boss.hp,
+      bossMax: snapshot.boss.maxHp,
+      live: snapshot.cylinder.live,
+      blank: snapshot.cylinder.blank,
+      multiplier: 1 + snapshot.damageBonus,
+      phase: PHASE_LABEL[snapshot.phase] ?? snapshot.phase,
+      turn: snapshot.turn === 'player' ? '你' : snapshot.turn === 'boss' ? '它' : '—',
+      hourglass: snapshot.hourglassActive,
+    }
+    const key = JSON.stringify(data)
+    if (key === this.lastCrtKey) return
+    this.lastCrtKey = key
+    this.textures.paintCrt(data)
   }
 
   private applyOverride(key: string, texture: THREE.Texture): void {

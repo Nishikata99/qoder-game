@@ -349,6 +349,11 @@ export default function App() {
     setCorridorState('done')
   }
 
+  /** 左门：整页切到蔓延子游戏的独立入口 */
+  function enterMoyan() {
+    window.location.assign(`${import.meta.env.BASE_URL}moyan.html`)
+  }
+
   const pendingClueRef = useRef<string | null>(null)
   const clueTimer = useRef<number | null>(null)
 
@@ -470,7 +475,12 @@ export default function App() {
           />
         ) : null}
         {corridorState !== 'done' ? (
-          <CorridorIntro sound={sound} onStart={startGame} onIntroComplete={handleCorridorComplete} />
+          <CorridorIntro
+            sound={sound}
+            onStart={startGame}
+            onIntroComplete={handleCorridorComplete}
+            onEnterMoyan={enterMoyan}
+          />
         ) : null}
       </div>
 

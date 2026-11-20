@@ -63,6 +63,8 @@ interface CorridorCallbacks {
   readonly onReady: () => void
   readonly onDoorPhase: () => void
   readonly onComplete: () => void
+  /** 左门开到位：离开主游戏，进入蔓延子游戏 */
+  readonly onEnterMoyan: () => void
 }
 
 function easeInOutCubic(t: number): number {
@@ -100,6 +102,7 @@ export class CorridorScene {
   private gazeY = 1.5
   private openFrom = 0
   private openFromL = 0
+  private leftExited = false
 
   constructor(canvas: HTMLCanvasElement, sound: SoundEngine, callbacks: CorridorCallbacks) {
     this.canvas = canvas
@@ -225,6 +228,10 @@ export class CorridorScene {
       if (this.phase === 'openingL' && this.doorPivotL) {
         const t = Math.min(1, this.phaseTime / OPEN_SECONDS)
         this.doorPivotL.rotation.y = this.openFromL + easeInOutCubic(t) * 1.85
+        if (t >= 1 && !this.leftExited) {
+          this.leftExited = true
+          this.callbacks.onEnterMoyan()
+        }
       }
     } else if (this.phase === 'glitch') {
       const t = Math.min(1, this.phaseTime / GLITCH_SECONDS)

@@ -152,13 +152,13 @@ src/
 ```text
 moyan.html → src/moyan/main.tsx → MoyanApp
 src/moyan/engine.ts   纯逻辑 7×7 翻牌引擎（不 import React / Three）
-src/moyan/scene.ts    3D 棋盘表现（自带 CRT 器官屏）
-src/scene/PixelArt.ts 器官像素画，同时被主游戏牌面复用
+src/moyan/scene.ts    3D 棋盘表现（CRT 器官屏只在蔓延页保留）
+src/scene/PixelArt.ts 器官像素画，仅蔓延页使用
 ```
 
 - 入口链路：走廊序章点「左门」→ `CorridorScene.chooseDoor('L')` 开门动画结束 → `onEnterMoyan` → `window.location.assign('./moyan.html')`；蔓延页「返回走廊」回 `./`。
 - `vite.config.ts` 的 `rollupOptions.input` 必须同时保留 `main` 与 `moyan` 两个入口，`manualChunks` 不要删。
-- 主游戏牌面花色=器官：黑桃肺 / 梅花肝 / 方块肾 / 红桃心（`TextureFactory` 的 `SUIT_ORGAN`）。
+- 主游戏牌面保持花色字形（♠♥♦♣），右门场景无 CRT；器官像素画与 CRT 数据屏只属于蔓延页。
 - 规则文档：`docs/游戏规则.md`。
 
 ## 七、部署

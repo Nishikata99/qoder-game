@@ -600,3 +600,183 @@ describe('层间补给数量', () => {
     expect(probe.rollSupplyOptions()).toHaveLength(3)
   })
 })
+
+describe('暂停与恢复', () => {
+  it('暂停时 Boss 回合不推进，恢复后继续', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    probe.player.hand = hand(10, 7)
+    probe.player.standing = true
+    probe.phase = 'bossTurn'
+    void probe.runBossTurn(probe.generation)
+    await vi.advanceTimersByTimeAsync(100)
+    engine.pause()
+    expect(engine.getSnapshot().paused).toBe(true)
+    // 暂停期间推进 30 秒：不应进入下一阶段
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(engine.getSnapshot().paused).toBe(true)
+    expect(engine.getSnapshot().phase).toBe('bossTurn')
+    engine.resume()
+    expect(engine.getSnapshot().paused).toBe(false)
+    // 恢复后剩余思考时间走完，回合继续推进
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(engine.getSnapshot().phase).not.toBe('bossTurn')
+  })
+
+  it('暂停时输入锁不会到期，恢复后按剩余时间解锁', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 1000 })
+    await toPlayerTurn(engine)
+    // 直接施加输入锁，避免 hit() 因 21 点/爆牌直接跳过锁
+    probe.player.items = ['saw']
+    engine.useItem('saw')
+    expect(engine.getSnapshot().inputLocked).toBe(true)
+    engine.pause()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(engine.getSnapshot().inputLocked).toBe(true)
+    engine.resume()
+    await vi.advanceTimersByTimeAsync(1200)
+    expect(engine.getSnapshot().inputLocked).toBe(false)
+  })
+
+  it('重复 pause/resume 是幂等的', async () => {
+    const { engine } = newEngine()
+    await toPlayerTurn(engine)
+    engine.pause()
+    engine.pause()
+    expect(engine.getSnapshot().paused).toBe(true)
+    engine.resume()
+    engine.resume()
+    expect(engine.getSnapshot().paused).toBe(false)
+  })
+})
+
+describe('runRounds 与检查点', () => {
+  it('runRounds 跨回合累加', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    expect(engine.getSnapshot().runRounds).toBe(1)
+    void probe.startRound(probe.generation)
+    await settleUntil(() => engine.getSnapshot().phase === 'playerTurn')
+    expect(engine.getSnapshot().runRounds).toBe(2)
+    expect(engine.getSnapshot().round).toBe(2)
+  })
+
+  it('进入新层会派发 checkpoint 事件', async () => {
+    const { engine } = newEngine()
+    const events: string[] = []
+    engine.subscribe((event) => {
+      if (event.type === 'checkpoint') events.push(`${event.levelIndex}:${event.runRounds}`)
+    })
+    engine.start()
+    for (let i = 0; i < 40; i += 1) {
+      await vi.advanceTimersByTimeAsync(500)
+      if (events.length > 0) break
+    }
+    expect(events[0]).toMatch(/^0:/)
+  })
+})
+
+describe('从层首重来', () => {
+  it('startAtLevel 从指定层开始，血袋按该层重置', async () => {
+    const { engine, probe } = newEngine()
+    engine.startAtLevel(1)
+    await settleUntil(() => engine.getSnapshot().phase === 'playerTurn')
+    const snapshot = engine.getSnapshot()
+    expect(snapshot.levelIndex).toBe(1)
+    expect(snapshot.player.hp).toBe(snapshot.player.maxHp)
+    // 第 1 层 Boss 6 血、第 2 层 8 血；用 Boss 生命确认确实从第 2 层开始
+    expect(snapshot.boss.maxHp).toBe(8)
+    expect(probe.round).toBe(1)
+  })
+
+  it('retryLevel 只在 gameOver 阶段可用，并保持当前层', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    probe.levelIndex = 1
+    expect(engine.retryLevel()).toBe(false)
+    probe.phase = 'gameOver'
+    expect(engine.retryLevel()).toBe(true)
+    await settleUntil(() => engine.getSnapshot().phase === 'playerTurn')
+    expect(engine.getSnapshot().levelIndex).toBe(1)
+  })
+})
+
+describe('第 3 层牌靴', () => {
+  it('L3 连续两局不重洗，牌数递减', async () => {
+    const { engine, probe } = newEngine()
+    engine.startAtLevel(2)
+    await settleUntil(() => engine.getSnapshot().phase === 'playerTurn')
+    const first = engine.getSnapshot().deckRemaining
+    expect(first).not.toBeNull()
+    const before = first as number
+    void probe.startRound(probe.generation)
+    await settleUntil(() => engine.getSnapshot().phase === 'playerTurn')
+    const after = engine.getSnapshot().deckRemaining as number
+    // 新一局至少又发了 4 张牌，牌靴应明显减少而不是重置回 40
+    expect(after).toBeLessThan(before)
+    expect(after).toBeGreaterThan(0)
+  })
+
+  it('L1/L2 每局重洗，deckRemaining 为 null', async () => {
+    const { engine } = newEngine()
+    await toPlayerTurn(engine)
+    expect(engine.getSnapshot().deckRemaining).toBeNull()
+  })
+})
+
+describe('Boss 人格停牌线', () => {
+  const profileOf = (personality: 'cautious' | 'gambler' | 'executioner') =>
+    ({ label: personality, personality, standAt: personality === 'cautious' ? 15 : personality === 'gambler' ? 17 : 19, itemBudget: 1, thinkingMs: 0 })
+
+  function bossTargetFor(
+    probe: Probe,
+    personality: 'cautious' | 'gambler' | 'executioner',
+    bossTotal: number[],
+    playerTotal: number[],
+    playerStanding: boolean,
+  ): number {
+    probe.boss.hand = hand(...bossTotal)
+    probe.player.hand = hand(...playerTotal)
+    probe.player.standing = playerStanding
+    probe.boss.standing = false
+    probe.hourglassActive = false
+    return probe.bossTarget(profileOf(personality), personality)
+  }
+
+  it('谨慎：玩家停牌 18+ 时保持 15，不硬追', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    expect(bossTargetFor(probe, 'cautious', [10, 5], [10, 9], true)).toBe(15)
+  })
+
+  it('谨慎：玩家停牌 ≤17 时追到 +1', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    expect(bossTargetFor(probe, 'cautious', [10, 5], [10, 6], true)).toBe(17)
+  })
+
+  it('赌徒：玩家 18+ 且自己 ≤16 时真赌 21', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    expect(bossTargetFor(probe, 'gambler', [10, 5], [10, 9], true)).toBe(21)
+  })
+
+  it('赌徒：自己 17+ 而玩家低时停牌，不贪', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    expect(bossTargetFor(probe, 'gambler', [10, 8], [10, 5], true)).toBe(18)
+  })
+
+  it('算牌：牌靴爆牌风险高时允许把目标压到当前点数以下', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    probe.boss.hand = hand(10, 6)
+    probe.player.hand = hand(10, 5)
+    probe.player.standing = true
+    probe.hourglassActive = false
+    // 剩余牌全是高牌 → 爆牌风险为 1
+    probe.deck = [card(10), card(9), card(8)]
+    const target = probe.bossTarget(profileOf('executioner'), 'executioner')
+    expect(target).toBeLessThanOrEqual(16)
+  })
+})

@@ -142,6 +142,8 @@ export interface LevelConfig {
   readonly playerHp: number
   readonly supply: number
   readonly personality: BossPersonality
+  /** persistent：整层共用一副牌，不逐局重洗（第 3 层算牌人格） */
+  readonly deckPolicy?: 'fresh' | 'persistent'
 }
 
 export const LEVELS: readonly LevelConfig[] = [
@@ -171,6 +173,7 @@ export const LEVELS: readonly LevelConfig[] = [
     playerHp: 7,
     supply: 4,
     personality: 'executioner',
+    deckPolicy: 'persistent',
   },
 ]
 
@@ -224,6 +227,13 @@ export interface GameSnapshot {
   /** supply 阶段的三选一候选；其他阶段为空数组 */
   readonly supplyOptions: readonly ItemId[]
   readonly inputLocked: boolean
+  readonly paused: boolean
+  /** 本场跨层累计回合数；round 仍是每层回合 */
+  readonly runRounds: number
+  /** 补给阶段剩余毫秒；非补给或暂停时为 null */
+  readonly supplyDeadline: number | null
+  /** 第 3 层牌靴剩余张数；其他层为 null */
+  readonly deckRemaining: number | null
   readonly log: readonly string[]
 }
 
@@ -275,6 +285,12 @@ export type GameEvent =
       readonly items: readonly ItemId[]
     }
   | { readonly type: 'supplyOffer'; readonly options: readonly ItemId[] }
+  | {
+      readonly type: 'checkpoint'
+      readonly levelIndex: number
+      readonly carryOver: readonly ItemId[]
+      readonly runRounds: number
+    }
   | { readonly type: 'gameOver'; readonly winner: ActorId }
 
 export type GameEventListener = (event: GameEvent, snapshot: GameSnapshot) => void
@@ -501,6 +517,63 @@ class Cylinder {
   }
 }
 
+/**
+ * 可暂停的定时器：暂停时保留剩余毫秒，恢复后继续计时，不会重复触发。
+ * wait / 处决停顿 / 补给倒计时 / 输入锁统一走这里，避免各自处理暂停。
+ */
+class PausableDelay {
+  private remaining: number
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private startedAt = 0
+  private resolved = false
+  private readonly done: () => void
+
+  constructor(ms: number, done: () => void) {
+    this.remaining = Math.max(0, ms)
+    this.done = done
+  }
+
+  start(): void {
+    if (this.resolved || this.timer !== null) return
+    this.startedAt = Date.now()
+    this.timer = setTimeout(() => this.fire(), this.remaining)
+  }
+
+  pause(): void {
+    if (this.timer === null || this.resolved) return
+    clearTimeout(this.timer)
+    this.timer = null
+    this.remaining = Math.max(0, this.remaining - (Date.now() - this.startedAt))
+  }
+
+  resume(): void {
+    if (this.resolved || this.timer !== null) return
+    this.start()
+  }
+
+  /** 取消并放行挂起的 Promise，避免暂停/销毁后协程永久悬空 */
+  cancel(): void {
+    if (this.timer !== null) {
+      clearTimeout(this.timer)
+      this.timer = null
+    }
+    this.fire()
+  }
+
+  get leftover(): number {
+    if (this.resolved) return 0
+    if (this.timer === null) return this.remaining
+    return Math.max(0, this.remaining - (Date.now() - this.startedAt))
+  }
+
+  private fire(): void {
+    if (this.resolved) return
+    this.resolved = true
+    this.remaining = 0
+    this.done()
+  }
+}
+
 function actorLabel(id: ActorId): string {
   return id === 'player' ? '你' : '它'
 }
@@ -516,22 +589,26 @@ export class GameEngine {
   private readonly thinkOverride: number | null
   private readonly dealLockMs: number
   private readonly itemLockMs: number
-  private inputUnlockTimer: ReturnType<typeof setTimeout> | null = null
-  private executionTimer: ReturnType<typeof setTimeout> | null = null
+  private inputDelay: PausableDelay | null = null
+  private executionDelay: PausableDelay | null = null
   private executionSkip: (() => void) | null = null
-  private supplyTimer: ReturnType<typeof setTimeout> | null = null
+  private supplyDelay: PausableDelay | null = null
+  private supplyRemainingMs = 0
+  private supplyDeadline: number | null = null
   private supplyOptions: ItemId[] = []
   private supplyChoice: ItemId | null = null
   private supplyResolver: (() => void) | null = null
   /** 层间三选一选中的道具：beginLevel 会重建 Actor，必须先寄存再注入 */
   private carryOver: ItemId[] = []
   private readonly listeners = new Set<GameEventListener>()
-  private readonly timers = new Set<ReturnType<typeof setTimeout>>()
+  private readonly delays = new Set<PausableDelay>()
   private readonly cylinder: Cylinder
 
   private generation = 0
   private destroyed = false
   private started = false
+  private paused = false
+  private runRounds = 0
   private phase: Phase = 'idle'
   private levelIndex = 0
   private round = 0
@@ -562,9 +639,34 @@ export class GameEngine {
     if (this.destroyed || this.started) return
     this.started = true
     this.generation += 1
+    this.runRounds = 0
     this.logLines = []
     this.log('你坐下，牌桌另一端的影子抬起头。')
     void this.beginLevel(0, this.generation)
+  }
+
+  /** 从层首检查点继续：血袋与补给重置，不保留局内手牌 */
+  startAtLevel(levelIndex: number, carryOver: readonly ItemId[] = []): void {
+    if (this.destroyed) return
+    const index = Math.max(0, Math.min(this.levelList.length - 1, Math.floor(levelIndex)))
+    if (this.started) this.cancelTimers()
+    this.generation += 1
+    this.started = true
+    this.runRounds = 0
+    this.paused = false
+    this.carryOver = [...carryOver]
+    this.logLines = []
+    this.log('你从门缝里退回上一层，血袋重新注满。')
+    void this.beginLevel(index, this.generation)
+  }
+
+  /** 死亡后从本层重来；不保留旧手牌与旧补给 */
+  retryLevel(): boolean {
+    if (this.phase !== 'gameOver') {
+      return this.reject('现在还不能重来。')
+    }
+    this.startAtLevel(this.levelIndex)
+    return true
   }
 
   restart(): void {
@@ -572,6 +674,8 @@ export class GameEngine {
     this.generation += 1
     this.cancelTimers()
     this.started = false
+    this.paused = false
+    this.runRounds = 0
     this.phase = 'idle'
     this.levelIndex = 0
     this.round = 0
@@ -715,6 +819,11 @@ export class GameEngine {
       unlockedItems: this.unlockedItems(),
       supplyOptions: this.phase === 'supply' ? [...this.supplyOptions] : [],
       inputLocked: this.inputLocked,
+      paused: this.paused,
+      runRounds: this.runRounds,
+      supplyDeadline: this.phase === 'supply' ? this.supplyDeadline : null,
+      deckRemaining:
+        this.currentLevel().deckPolicy === 'persistent' ? this.deck.length : null,
       log: [...this.logLines],
     }
   }
@@ -755,6 +864,13 @@ export class GameEngine {
     const chambers = this.cylinder.reload()
     this.log(`—— 第 ${index + 1} 层 · ${level.title} ——`)
     this.log(`「${level.name}」把一枚生锈的转轮推到你面前。`)
+    // 进入新层即是一个可继续的检查点：血袋与补给已按本层重置
+    this.dispatch({
+      type: 'checkpoint',
+      levelIndex: index,
+      carryOver: [...this.player.items],
+      runRounds: this.runRounds,
+    })
     this.dispatch({
       type: 'reload',
       live: chambers.filter((chamber) => chamber === 'live').length,
@@ -769,6 +885,7 @@ export class GameEngine {
   private async startRound(token: number): Promise<void> {
     if (!this.alive(token)) return
     this.round += 1
+    this.runRounds += 1
     this.phase = 'dealing'
     this.clearReveals()
     this.pendingShot = 'player'
@@ -782,7 +899,15 @@ export class GameEngine {
     this.boss.hand = evaluateHand([])
     this.boss.standing = false
     this.ensureCylinder()
-    this.deck = shuffle(createDeck(), this.rng)
+    // 第 3 层整层共用一副牌靴：牌数不足 8 张才重洗，让「算牌」真正跨局成立
+    if (this.currentLevel().deckPolicy === 'persistent') {
+      if (this.deck.length < 8) {
+        this.deck = shuffle(createDeck(), this.rng)
+        this.log('牌靴见底，发牌人重新洗牌。')
+      }
+    } else {
+      this.deck = shuffle(createDeck(), this.rng)
+    }
     this.log(`—— 第 ${this.round} 回合 ——`)
     if (this.damageBonus > 0) {
       this.log(`走火遗恨未散：本回合实弹伤害 +${this.damageBonus}。`)
@@ -1161,18 +1286,24 @@ export class GameEngine {
   private waitSupplyPick(): Promise<void> {
     return new Promise<void>((resolve) => {
       const finish = () => {
-        if (this.supplyTimer !== null) {
-          clearTimeout(this.supplyTimer)
-          this.timers.delete(this.supplyTimer)
-          this.supplyTimer = null
+        if (this.supplyDelay !== null) {
+          this.delays.delete(this.supplyDelay)
+          this.supplyDelay = null
         }
+        this.supplyDeadline = null
         this.supplyResolver = null
         resolve()
       }
+      const delay = this.track(
+        new PausableDelay(SUPPLY_PICK_MS, () => {
+          this.supplyDelay = null
+          finish()
+        }),
+      )
+      this.supplyDelay = delay
       this.supplyResolver = finish
-      const id = setTimeout(finish, SUPPLY_PICK_MS)
-      this.supplyTimer = id
-      this.timers.add(id)
+      this.supplyDeadline = this.paused ? null : Date.now() + SUPPLY_PICK_MS
+      if (!this.paused) delay.start()
     })
   }
 
@@ -1377,27 +1508,37 @@ export class GameEngine {
 
   private bossTarget(profile: BossProfile, personality: BossPersonality): number {
     if (this.player.hand.busted) return 0
+    const mine = this.boss.hand.total
+    const theirs = this.player.hand.total
+    const visible = this.playerVisibleTotal()
     let target = profile.standAt
 
-    // 狂热老千：点数低于玩家明牌时，即使 17 点也继续要牌
-    if (personality === 'gambler' && !this.player.standing) {
-      const playerVisible = this.playerVisibleTotal()
-      if (this.boss.hand.total < playerVisible) {
-        target = Math.max(target, Math.min(21, playerVisible + 1))
+    if (personality === 'cautious') {
+      // 谨慎：玩家停牌后，只要玩家 ≤17 就追到 +1；玩家 ≥18 保持 15 认输
+      if (this.player.standing) {
+        const tooGreedy = theirs > 17
+        if (!tooGreedy) target = Math.max(target, Math.min(21, theirs + 1))
       }
-    }
-    // 机械典狱长：按剩余牌堆的爆牌概率粗调停牌线（±1~3），不是逐张精算
-    if (personality === 'executioner') {
+    } else if (personality === 'gambler') {
+      // 赌徒：玩家高牌时真赌 21；自己已是高牌而玩家低时停牌；其余追 +1
+      if (this.player.standing) {
+        if (theirs >= 18 && mine <= 16) target = 21
+        else if (theirs <= 16 && mine >= 17) target = mine
+        else target = Math.max(target, Math.min(21, theirs + 1))
+      } else if (mine < visible) {
+        target = Math.max(target, Math.min(21, visible + 1))
+      }
+    } else {
+      // 算牌：先按牌靴爆牌概率修正，再决定追分或止损
+      const risk = this.bustRisk()
       target += this.executionerAdjustment()
-    }
-    if (this.player.standing) {
-      // 谨慎的看守者不敢追高分：玩家停牌在 18 点以上时它直接认输，不硬摸
-      const tooGreedy = personality === 'cautious' && this.player.hand.total + 1 > 18
-      if (!tooGreedy) target = Math.max(target, Math.min(21, this.player.hand.total + 1))
+      if (risk > 0.62) target = Math.min(target, mine)
+      else if (risk < 0.25) target = Math.max(target, 21)
+      else if (this.player.standing) target = Math.max(target, Math.min(21, theirs + 1))
     }
     // 沙漏生效时点数小者胜：再摸一张只会把自己推高，立即停牌才是最优
     if (this.hourglassActive && !this.player.hand.busted) return 0
-    return target
+    return Math.max(0, Math.min(21, target))
   }
 
   /** 玩家明牌点数（不含扣住的底牌） */
@@ -1408,8 +1549,16 @@ export class GameEngine {
 
   /** 估计剩余牌堆里「再摸一张会爆」的概率，换算成停牌线的微调 */
   private executionerAdjustment(): number {
+    const risk = this.bustRisk()
+    if (risk > 0.62) return -3
+    if (risk > 0.45) return -1
+    if (risk < 0.25) return 1
+    return 0
+  }
+
+  private bustRisk(): number {
     const total = 21 - this.boss.hand.total
-    if (total <= 0) return 0
+    if (total <= 0) return 1
     let bust = 0
     let count = 0
     for (const card of this.deck) {
@@ -1417,11 +1566,7 @@ export class GameEngine {
       if (card.rank > total) bust += 1
     }
     if (count === 0) return 0
-    const risk = bust / count
-    if (risk > 0.62) return -3
-    if (risk > 0.45) return -1
-    if (risk < 0.25) return 1
-    return 0
+    return bust / count
   }
 
   private dealTo(actor: ActorRuntime): void {
@@ -1570,13 +1715,15 @@ export class GameEngine {
 
   private lockInput(ms: number): void {
     if (ms <= 0) return
-    this.clearInputLockTimer()
+    this.clearInputDelay()
     this.inputLocked = true
     this.publish()
-    this.inputUnlockTimer = setTimeout(() => {
-      this.inputUnlockTimer = null
+    const delay = this.track(new PausableDelay(ms, () => {
+      this.inputDelay = null
       this.unlockInput()
-    }, ms)
+    }))
+    this.inputDelay = delay
+    if (!this.paused) delay.start()
   }
 
   private unlockInput(): void {
@@ -1585,10 +1732,34 @@ export class GameEngine {
     this.publish()
   }
 
-  private clearInputLockTimer(): void {
-    if (this.inputUnlockTimer === null) return
-    clearTimeout(this.inputUnlockTimer)
-    this.inputUnlockTimer = null
+  private clearInputDelay(): void {
+    if (this.inputDelay === null) return
+    this.delays.delete(this.inputDelay)
+    this.inputDelay.cancel()
+    this.inputDelay = null
+  }
+
+  pause(): void {
+    if (this.paused || this.destroyed) return
+    this.paused = true
+    for (const delay of this.delays) delay.pause()
+    if (this.supplyDelay !== null) this.supplyRemainingMs = this.supplyDelay.leftover
+    this.supplyDeadline = null
+    this.publish()
+  }
+
+  resume(): void {
+    if (!this.paused || this.destroyed) return
+    this.paused = false
+    for (const delay of this.delays) delay.resume()
+    if (this.supplyDelay !== null) {
+      this.supplyDeadline = Date.now() + this.supplyRemainingMs
+    }
+    this.publish()
+  }
+
+  get isPaused(): boolean {
+    return this.paused
   }
 
   private reject(message: string): false {
@@ -1600,13 +1771,20 @@ export class GameEngine {
     return !this.destroyed && token === this.generation
   }
 
+  private track(delay: PausableDelay): PausableDelay {
+    this.delays.add(delay)
+    return delay
+  }
+
   private wait(ms: number): Promise<void> {
     return new Promise<void>((resolve) => {
-      const id = setTimeout(() => {
-        this.timers.delete(id)
-        resolve()
-      }, Math.max(0, ms))
-      this.timers.add(id)
+      const delay = this.track(
+        new PausableDelay(ms, () => {
+          this.delays.delete(delay)
+          resolve()
+        }),
+      )
+      if (!this.paused) delay.start()
     })
   }
 
@@ -1614,30 +1792,35 @@ export class GameEngine {
   private waitExecution(ms: number): Promise<void> {
     return new Promise<void>((resolve) => {
       const finish = () => {
-        if (this.executionTimer !== null) {
-          clearTimeout(this.executionTimer)
-          this.timers.delete(this.executionTimer)
-          this.executionTimer = null
+        if (this.executionDelay !== null) {
+          this.delays.delete(this.executionDelay)
+          this.executionDelay = null
         }
         this.executionSkip = null
         resolve()
       }
+      const delay = this.track(
+        new PausableDelay(ms, () => {
+          this.executionDelay = null
+          finish()
+        }),
+      )
+      this.executionDelay = delay
       this.executionSkip = finish
-      const id = setTimeout(finish, Math.max(0, ms))
-      this.executionTimer = id
-      this.timers.add(id)
+      if (!this.paused) delay.start()
     })
   }
 
   private cancelTimers(): void {
-    for (const id of this.timers) clearTimeout(id)
-    this.timers.clear()
-    this.executionTimer = null
+    for (const delay of [...this.delays]) delay.cancel()
+    this.delays.clear()
+    this.inputDelay = null
+    this.executionDelay = null
     this.executionSkip = null
-    this.clearInputLockTimer()
     this.inputLocked = false
     // 取消 supply 等待时也要放行挂起的 offerSupply，否则 Promise 永久悬空
-    this.supplyTimer = null
+    this.supplyDelay = null
+    this.supplyDeadline = null
     const supplyFinish = this.supplyResolver
     this.supplyResolver = null
     supplyFinish?.()

@@ -47,8 +47,11 @@ export const ITEM_IDS = [
   'aegis',
   'hourglass',
   'dagger',
-  'decoy',
   'hammer',
+  'cutter',
+  'iou',
+  'seal',
+  'monocle',
 ] as const
 
 export type ItemId = (typeof ITEM_IDS)[number]
@@ -109,25 +112,43 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
     summary: '自损 1 点生命，立刻清空手牌、重洗牌库并重新装填弹仓。',
     glyph: '†',
   },
-  decoy: {
-    id: 'decoy',
-    name: '诱饵',
-    summary: '在身前放一个替身：对手下一次对你开枪时子弹会落空，不造成伤害。',
-    glyph: '✧',
-  },
   hammer: {
     id: 'hammer',
     name: '重锤',
     summary: '把膛内当前一发空膛砸成实弹；若这一发本来就是实弹，则无法使用。',
     glyph: '⚒',
   },
+  cutter: {
+    id: 'cutter',
+    name: '裁纸刀',
+    summary: '裁掉你手里点数最高的一张牌，立刻从牌裤补发一张。每回合限一次，爆牌时不可用。',
+    glyph: '✂',
+  },
+  iou: {
+    id: 'iou',
+    name: '借据',
+    summary: '本局押上血债：你赢下的实弹伤害 +2，输掉时打向你的实弹也 +2。每局只能签一张。',
+    glyph: '▤',
+  },
+  seal: {
+    id: 'seal',
+    name: '封条',
+    summary: '贴住对手点数最高的一张明牌，本局该牌不计点数；封牌时对手底牌一并亮出。每局限一次。',
+    glyph: '⊘',
+  },
+  monocle: {
+    id: 'monocle',
+    name: '单片眼镜',
+    summary: '看清牌靴顶部三张牌的顺序，只有你知道，不会改变牌序。',
+    glyph: '◍',
+  },
 }
 
 /** Items unlocked at the start of each level, in level order. */
 export const LEVEL_UNLOCKS: readonly (readonly ItemId[])[] = [
   ['magnifier', 'sedative', 'saw'],
-  ['magnet', 'handcuffs', 'aegis'],
-  ['hourglass', 'dagger', 'decoy', 'hammer'],
+  ['magnet', 'handcuffs', 'aegis', 'cutter', 'iou'],
+  ['hourglass', 'dagger', 'hammer', 'seal', 'monocle'],
 ]
 
 export type BossPersonality = 'cautious' | 'gambler' | 'executioner'
@@ -191,8 +212,8 @@ export interface ActorView {
   readonly sawBoost: number
   /** 护心镜层数：>0 时下一次实弹伤害被完全吸收 */
   readonly shield: number
-  /** 诱饵：>0 时对手下一次对你开枪会落空 */
-  readonly decoy: number
+  /** 本局已签下的借据：赢下时实弹 +2，输掉时承受的实弹 +2 */
+  readonly iou: number
   /** 本回合已经使用的道具数；玩家达到上限后拒绝继续使用 */
   readonly itemsUsedThisTurn: number
 }
@@ -258,6 +279,14 @@ export type GameEvent =
   | { readonly type: 'chamberRecovered'; readonly actor: ActorId; readonly item: ItemId }
   | { readonly type: 'hourglass'; readonly actor: ActorId }
   | { readonly type: 'daggerReshuffle'; readonly actor: ActorId; readonly live: number; readonly blank: number }
+  | { readonly type: 'cardCuttered'; readonly actor: ActorId; readonly old: Card; readonly next: Card }
+  | { readonly type: 'iouSigned'; readonly actor: ActorId }
+  | { readonly type: 'cardSealed'; readonly actor: ActorId; readonly card: Card }
+  | {
+      readonly type: 'deckPeeked'
+      readonly actor: ActorId
+      readonly cards: readonly Card[]
+    }
   | {
       readonly type: 'execution'
       readonly by: ActorId
@@ -273,8 +302,8 @@ export type GameEvent =
       readonly damage: number
       readonly sawed: boolean
       readonly blackjack: boolean
-      /** 实弹被护心镜挡下或诱饵引开时为对应来源，否则 null */
-      readonly blocked: 'shield' | 'decoy' | null
+      /** 实弹被护心镜挡下时为对应来源，否则 null */
+      readonly blocked: 'shield' | null
     }
   | { readonly type: 'tie'; readonly player: number; readonly boss: number }
   | { readonly type: 'reload'; readonly live: number; readonly blank: number }
@@ -324,12 +353,12 @@ const BOSS_PROFILES: Readonly<Record<BossPersonality, BossProfile>> = {
 export const BOSS_ITEM_POOLS: Readonly<Record<BossPersonality, readonly ItemId[]>> = {
   cautious: ['magnifier', 'sedative', 'saw'],
   gambler: ['magnifier', 'saw', 'sedative', 'magnet', 'handcuffs'],
-  executioner: ['magnifier', 'saw', 'sedative', 'magnet', 'handcuffs', 'aegis', 'dagger', 'decoy', 'hammer'],
+  executioner: ['magnifier', 'saw', 'sedative', 'magnet', 'handcuffs', 'aegis', 'dagger', 'hammer'],
 }
 
 const MAX_ITEMS = 8
-/** 玩家每回合最多使用 2 件道具；Boss 仍受人格 itemBudget 限制 */
-export const PLAYER_ITEM_CAP = 2
+/** 玩家每回合最多使用 3 件道具；Boss 仍受人格 itemBudget 限制 */
+export const PLAYER_ITEM_CAP = 3
 const LOG_LIMIT = 80
 const SUPPLY_OPTION_COUNT = 3
 /** 门前补给停留时长；超时自动抓取第一件，避免玩家离开后整局卡死 */
@@ -437,7 +466,9 @@ class ActorRuntime {
   skipTurn = false
   sawBoost = 0
   shield = 0
-  decoy = 0
+  iou = 0
+  cutterUsedThisRound = false
+  sealedThisRound = false
   itemsUsedThisTurn = 0
 
   constructor(id: ActorId, hp: number) {
@@ -894,6 +925,10 @@ export class GameEngine {
     this.holeRevealed = false
     this.player.itemsUsedThisTurn = 0
     this.boss.itemsUsedThisTurn = 0
+    this.player.cutterUsedThisRound = false
+    this.boss.cutterUsedThisRound = false
+    this.player.sealedThisRound = false
+    this.boss.sealedThisRound = false
     this.player.hand = evaluateHand([])
     this.player.standing = false
     this.boss.hand = evaluateHand([])
@@ -1127,26 +1162,25 @@ export class GameEngine {
 
     this.cylinder.fire()
     this.clearReveals()
-    // 基础 2 点；黑杰克 +1；碾压（手牌 ≥20）+1；走火遗恨 +N；锯子整体翻倍
+    // 基础 2 点；黑杰克 +1；碾压（手牌 ≥20）+1；走火遗恨 +N；借据押注 +2；锯子整体翻倍
     const stacks = this.damageBonus
-    const base = 2 + (blackjack ? 1 : 0) + (overwhelmed ? 1 : 0) + stacks
+    const iouBonus =
+      !selfShot && chamber === 'live'
+        ? (attacker.iou > 0 ? 2 : 0) + (target.iou > 0 ? 2 : 0)
+        : 0
+    const base = 2 + (blackjack ? 1 : 0) + (overwhelmed ? 1 : 0) + stacks + iouBonus
     const rawDamage = chamber === 'live' ? (sawed ? base * 2 : base) : 0
-    // 诱饵只挡「别人打你」，护心镜挡任何来源的实弹；两者都只挡一发
-    let blocked: 'shield' | 'decoy' | null = null
-    if (rawDamage > 0) {
-      if (!selfShot && target.decoy > 0) {
-        target.decoy = 0
-        blocked = 'decoy'
-      } else if (target.shield > 0) {
-        target.shield = 0
-        blocked = 'shield'
-      }
+    // 护心镜挡任何来源的实弹，只挡一发
+    let blocked: 'shield' | null = null
+    if (rawDamage > 0 && target.shield > 0) {
+      target.shield = 0
+      blocked = 'shield'
     }
     const damage = blocked === null ? rawDamage : 0
     let reward: ItemId | null = null
     if (chamber === 'live') {
       target.hp = Math.max(0, target.hp - damage)
-      // 只有真的扣到血，走火遗恨与锯子加成才会耗尽；被护心镜/诱饵完全挡下时保留
+      // 只有真的扣到血，走火遗恨与锯子加成才会耗尽；被护心镜完全挡下时保留
       if (damage > 0) {
         this.damageBonus = 0
         attacker.sawBoost = 0
@@ -1160,14 +1194,13 @@ export class GameEngine {
     const victim = selfShot ? '自己' : actorLabel(target.id)
     if (chamber === 'live' && blocked === 'shield') {
       this.log(`${who}扣下扳机：实弹。${victim}的护心镜应声碎裂，伤害被完全挡下。`)
-    } else if (chamber === 'live' && blocked === 'decoy') {
-      this.log(`${who}扣下扳机：实弹。${victim}身前的替身被击中，本尊毫发无伤。`)
     } else if (chamber === 'live') {
       const tags: string[] = []
       if (blackjack) tags.push('黑杰克')
       if (overwhelmed) tags.push('碾压')
       if (sawed) tags.push('锯短枪管')
       if (stacks > 0) tags.push(`走火遗恨 +${stacks}`)
+      if (iouBonus > 0) tags.push('借据 +2')
       const tag = tags.length > 0 ? `（${tags.join(' · ')}）` : ''
       this.log(`${who}扣下扳机：实弹${tag}。${victim}承受 ${damage} 点伤害。`)
     } else if (reward) {
@@ -1378,10 +1411,80 @@ export class GameEngine {
         detail = '护心镜展开：下一次实弹伤害将被完全挡下。'
         break
       }
-      case 'decoy': {
-        if (actor.decoy > 0) return this.reject('诱饵已经放好了。')
-        actor.decoy = 1
-        detail = '替身就位：对手下一次对你开枪会落空。'
+      case 'cutter': {
+        if (actor.hand.busted) return this.reject('已经爆牌，裁牌也救不回来。')
+        if (actor.cutterUsedThisRound) return this.reject('这一手已经裁过牌了。')
+        if (actor.hand.cards.length === 0) return this.reject('手里没有可以裁掉的牌。')
+        // 裁掉点数最高的一张（A 按当前最优值比较），再从牌靴补一张
+        let cutIndex = 0
+        let cutRank = -1
+        actor.hand.cards.forEach((cardValue, i) => {
+          const rank = cardValue.rank === 1 ? 11 : cardValue.rank
+          if (rank > cutRank) {
+            cutRank = rank
+            cutIndex = i
+          }
+        })
+        const old = actor.hand.cards[cutIndex]
+        if (!old) return this.reject('手里没有可以裁掉的牌。')
+        const rest = actor.hand.cards.filter((_, i) => i !== cutIndex)
+        actor.hand = evaluateHand(rest)
+        if (actor.id === 'boss') actor.hand = withHoleCard(actor.hand, !this.holeRevealed)
+        const next = this.drawCard()
+        actor.hand = evaluateHand([...rest, next])
+        if (actor.id === 'boss') actor.hand = withHoleCard(actor.hand, !this.holeRevealed)
+        actor.cutterUsedThisRound = true
+        detail = `裁掉 ${formatCard(old)}，补到 ${formatCard(next)}，现为 ${actor.hand.total} 点。`
+        this.dispatch({ type: 'cardCuttered', actor: actor.id, old, next })
+        break
+      }
+      case 'iou': {
+        if (actor.iou > 0) return this.reject('借据已经签过了。')
+        actor.iou = 1
+        detail = '借据落印：本局你赢下的实弹 +2，输掉时打向你的实弹也 +2。'
+        this.dispatch({ type: 'iouSigned', actor: actor.id })
+        break
+      }
+      case 'seal': {
+        if (actor.sealedThisRound) return this.reject('这一手已经贴过封条了。')
+        if (this.boss.hand.cards.length === 0) return this.reject('桌上还没有可以封的牌。')
+        // 封牌先亮底牌，再封对手点数最高的一张明牌；封住的牌本局不计点数
+        const wasHidden = !this.holeRevealed
+        this.holeRevealed = true
+        this.boss.hand = withHoleCard(this.boss.hand, false)
+        if (wasHidden) {
+          const hole = this.boss.hand.cards[1]
+          if (hole) this.log(`它亮出底牌 ${formatCard(hole)}。`)
+        }
+        const visible = this.boss.hand.visible
+          .map((cardValue, i) => ({ cardValue, i }))
+          .filter((entry): entry is { cardValue: Card; i: number } => entry.cardValue !== null)
+        let sealed: Card | null = null
+        let sealedRank = -1
+        for (const entry of visible) {
+          const rank = entry.cardValue.rank === 1 ? 11 : entry.cardValue.rank
+          if (rank > sealedRank) {
+            sealedRank = rank
+            sealed = entry.cardValue
+          }
+        }
+        if (!sealed) return this.reject('对手没有可以封的明牌。')
+        const remaining = this.boss.hand.cards.filter((cardValue) => cardValue !== sealed)
+        this.boss.hand = withHoleCard(evaluateHand(remaining), false)
+        actor.sealedThisRound = true
+        detail = `封条贴上 ${formatCard(sealed)}，对手现为 ${this.boss.hand.total} 点。`
+        this.dispatch({ type: 'cardSealed', actor: actor.id, card: sealed })
+        break
+      }
+      case 'monocle': {
+        if (this.deck.length === 0) return this.reject('牌靴里没有可以窥看的牌。')
+        const peek = this.deck.slice(-3).reverse()
+        if (actor.id === 'player') {
+          detail = `牌靴顶部依次是 ${peek.map((cardValue) => formatCard(cardValue)).join('、')}。`
+        } else {
+          detail = '它扶了一下单片眼镜，记下了牌序。'
+        }
+        this.dispatch({ type: 'deckPeeked', actor: actor.id, cards: peek })
         break
       }
       case 'hammer': {
@@ -1477,7 +1580,6 @@ export class GameEngine {
     if (has('aegis') && me.shield === 0 && this.cylinder.current === 'live' && loses) {
       return 'aegis'
     }
-    if (has('decoy') && me.decoy === 0 && loses) return 'decoy'
     if (has('handcuffs') && !foe.skipTurn && !foe.hand.busted && foe.hand.total >= 16) {
       return 'handcuffs'
     }
@@ -1673,7 +1775,7 @@ export class GameEngine {
       skipTurn: actor.skipTurn,
       sawBoost: actor.sawBoost,
       shield: actor.shield,
-      decoy: actor.decoy,
+      iou: actor.iou,
       itemsUsedThisTurn: actor.itemsUsedThisTurn,
     }
   }

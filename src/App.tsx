@@ -291,10 +291,8 @@ export default function App() {
             // 自己中弹才保留完整耳鸣长尾，打向对手时缩短以避免拖沓
             sound.playGunshot({ selfShot: event.target === 'player' })
             if (event.blocked !== null) {
-              showNotice(event.blocked === 'shield' ? '护心镜碎裂：伤害被完全挡下' : '替身被击中：子弹落空')
-              setSpokenLine(
-                event.blocked === 'shield' ? '实弹被护心镜完全挡下。' : '实弹被替身引开。',
-              )
+              showNotice('护心镜碎裂：伤害被完全挡下')
+              setSpokenLine('实弹被护心镜完全挡下。')
               break
             }
             setSpokenLine(
@@ -342,6 +340,29 @@ export default function App() {
           sound.playItemUse()
           sound.playReload()
           showNotice(`匕首献祭：重装 ${event.live} 实 ${event.blank} 空`)
+          break
+        case 'cardCuttered':
+          sound.playItemUse()
+          if (event.actor === 'player') {
+            showNotice(`裁纸刀：${formatCardLabel(event.old)} → ${formatCardLabel(event.next)}`)
+          }
+          break
+        case 'iouSigned':
+          sound.playItemUse()
+          if (event.actor === 'player') {
+            showNotice('借据落印：本局赢下的实弹 +2，输掉时挨的实弹也 +2')
+          }
+          break
+        case 'cardSealed':
+          sound.playItemUse()
+          if (event.actor === 'player') {
+            showNotice(`封条贴住 ${formatCardLabel(event.card)}，本局不计点`)
+          }
+          break
+        case 'deckPeeked':
+          if (event.actor === 'player') {
+            showNotice(`单片眼镜：牌靴顶部 ${event.cards.map((card) => formatCardLabel(card)).join('、')}`)
+          }
           break
         case 'notice':
           showNotice(event.message)
@@ -1370,7 +1391,7 @@ function ActorPanel({
         </span>
         {actor.sawBoost > 0 ? <span className="text-amber-300/80">锯</span> : null}
         {actor.shield > 0 ? <span className="text-sky-300/80">盾</span> : null}
-        {actor.decoy > 0 ? <span className="text-fuchsia-300/70">饵</span> : null}
+        {actor.iou > 0 ? <span className="text-rose-300/80">债</span> : null}
       </p>
     </div>
   )

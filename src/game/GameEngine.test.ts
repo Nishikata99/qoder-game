@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { GameEngine, ITEM_IDS, evaluateHand, type Card, type CardSuit, type GameEngineOptions, type ItemId, type LevelConfig } from './GameEngine'
+import { BOSS_ITEM_POOLS, GameEngine, ITEM_IDS, evaluateHand, type Card, type CardSuit, type GameEngineOptions, type ItemId, type LevelConfig } from './GameEngine'
 
 const card = (rank: number, suit: CardSuit = 'spade'): Card => ({
   id: `${suit}-${rank}`,
@@ -324,12 +324,13 @@ describe('层间补给三选一', () => {
     await settleUntil(() => engine.getSnapshot().phase === 'supply')
   }
 
-  it('清层后给出三件候选，选中道具带进下一层', async () => {
+  it('清层后给出候选，选中道具带进下一层', async () => {
     const { engine, probe } = newEngine({ levels })
     await toSupplyOffer(engine, probe)
     const options = engine.getSnapshot().supplyOptions
-    expect(options).toHaveLength(3)
-    expect(new Set(options).size).toBe(3)
+    // 第 1 层门前只摆两件
+    expect(options).toHaveLength(2)
+    expect(new Set(options).size).toBe(2)
 
     const picked = options[1] as ItemId
     expect(engine.chooseSupply(picked)).toBe(true)
@@ -412,7 +413,7 @@ describe('道具效果', () => {
     probe.player.items = ['hammer']
     probe.cylinder.chambers = ['blank', 'blank']
     probe.cylinder.cursor = 0
-    probe.revealed = null
+    probe.revealedBy.player = null
     expect(engine.useItem('hammer')).toBe(true)
     expect(engine.getSnapshot().cylinder.live).toBe(1)
     expect(engine.getSnapshot().cylinder.blank).toBe(1)
@@ -429,7 +430,7 @@ describe('道具效果', () => {
     probe.player.items = ['magnifier', 'hammer']
     probe.cylinder.chambers = ['blank']
     probe.cylinder.cursor = 0
-    probe.revealed = null
+    probe.revealedBy.player = null
     expect(engine.useItem('magnifier')).toBe(true)
     expect(engine.getSnapshot().cylinder.revealed).toBe('blank')
     expect(engine.useItem('hammer')).toBe(true)
@@ -465,5 +466,137 @@ describe('道具效果', () => {
     probe.player.items = ['sedative']
     probe.player.hp = probe.player.maxHp
     expect(engine.useItem('sedative')).toBe(false)
+  })
+})
+
+describe('每回合道具上限', () => {
+  it('一回合最多使用两件，第三件被拒绝', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.player.items = ['saw', 'aegis', 'decoy']
+    expect(engine.useItem('saw')).toBe(true)
+    expect(engine.useItem('aegis')).toBe(true)
+    expect(engine.getSnapshot().player.itemsUsedThisTurn).toBe(2)
+    expect(engine.useItem('decoy')).toBe(false)
+    // 被拒绝的道具仍在背包里
+    expect(engine.getSnapshot().player.items).toContain('decoy')
+  })
+
+  it('新一回合重置计数', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.player.items = ['saw', 'aegis', 'decoy']
+    engine.useItem('saw')
+    engine.useItem('aegis')
+    expect(engine.getSnapshot().player.itemsUsedThisTurn).toBe(2)
+    void probe.startRound(probe.generation)
+    await settleUntil(() => engine.getSnapshot().phase === 'playerTurn')
+    expect(engine.getSnapshot().player.itemsUsedThisTurn).toBe(0)
+  })
+})
+
+describe('窥视按角色私有', () => {
+  it('Boss 的窥视不会出现在玩家快照里', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.boss.items = ['magnifier']
+    probe.cylinder.chambers = ['live', 'blank']
+    probe.cylinder.cursor = 0
+    expect(probe.applyItem(probe.boss, 'magnifier')).toBe(true)
+    expect(probe.revealedBy.boss).toBe('live')
+    expect(engine.getSnapshot().cylinder.revealed).toBeNull()
+  })
+
+  it('Boss 窥视日志不泄露膛内读数', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.boss.items = ['magnifier']
+    probe.cylinder.chambers = ['blank', 'live']
+    probe.cylinder.cursor = 0
+    probe.applyItem(probe.boss, 'magnifier')
+    const log = engine.getSnapshot().log.join(' ')
+    expect(log).toContain('窥视了枪膛')
+    expect(log).not.toContain('窥见空膛')
+    expect(log).not.toContain('窥见实弹')
+  })
+
+  it('玩家自己的窥视仍然可见', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.player.items = ['magnifier']
+    probe.cylinder.chambers = ['blank', 'live']
+    probe.cylinder.cursor = 0
+    expect(engine.useItem('magnifier')).toBe(true)
+    expect(engine.getSnapshot().cylinder.revealed).toBe('blank')
+    expect(probe.revealedBy.boss).toBeNull()
+  })
+})
+
+describe('格挡不清零遗恨与锯子', () => {
+  it('护心镜完全挡下实弹后，遗恨和锯子保留', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    setTargeting(probe, [10, 9], [10, 5], 'live')
+    probe.damageBonus = 2
+    probe.player.sawBoost = 1
+    probe.boss.shield = 1
+    engine.chooseTarget('boss')
+    await settleUntil(() => engine.getSnapshot().boss.shield === 0)
+    const snapshot = engine.getSnapshot()
+    expect(snapshot.boss.hp).toBe(6)
+    expect(snapshot.damageBonus).toBe(2)
+    expect(snapshot.player.sawBoost).toBe(1)
+  })
+
+  it('诱饵引开实弹后，遗恨和锯子保留', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    setTargeting(probe, [10, 9], [10, 5], 'live')
+    probe.damageBonus = 1
+    probe.player.sawBoost = 1
+    probe.boss.decoy = 1
+    engine.chooseTarget('boss')
+    await settleUntil(() => engine.getSnapshot().boss.decoy === 0)
+    const snapshot = engine.getSnapshot()
+    expect(snapshot.boss.hp).toBe(6)
+    expect(snapshot.damageBonus).toBe(1)
+    expect(snapshot.player.sawBoost).toBe(1)
+  })
+})
+
+describe('Boss 补给池', () => {
+  it('Boss 补给只从自己人格的池子里取', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    probe.boss.items = []
+    probe.giveSupply(probe.boss, 4)
+    const items = engine.getSnapshot().boss.items
+    expect(items.length).toBeGreaterThan(0)
+    for (const item of items) {
+      expect(BOSS_ITEM_POOLS.cautious).toContain(item)
+    }
+  })
+
+  it('沙漏永不进入 Boss 手中', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    probe.levelIndex = 2
+    probe.boss.items = []
+    for (let i = 0; i < 40; i += 1) {
+      probe.boss.items = []
+      probe.giveRandomItem(probe.boss)
+      expect(engine.getSnapshot().boss.items).not.toContain('hourglass')
+    }
+  })
+})
+
+describe('层间补给数量', () => {
+  it('第 1 层两件候选，第 2 层三件候选', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    probe.levelIndex = 0
+    expect(probe.rollSupplyOptions()).toHaveLength(2)
+    probe.levelIndex = 1
+    expect(probe.rollSupplyOptions()).toHaveLength(3)
   })
 })

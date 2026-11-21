@@ -14,6 +14,7 @@ import {
   GameEngine,
   ITEM_CATALOG,
   LEVELS,
+  PLAYER_ITEM_CAP,
   createSeededRandom,
   evaluateHand,
   formatCard as formatCardLabel,
@@ -452,6 +453,10 @@ export default function App() {
       showNotice(`【${ITEM_CATALOG[item].name}】尚未解锁。`)
       return
     }
+    if (snapshot.player.itemsUsedThisTurn >= PLAYER_ITEM_CAP) {
+      showNotice('本回合的道具已经用尽。')
+      return
+    }
     game.useItem(item)
   }
 
@@ -706,7 +711,9 @@ export default function App() {
           >
             <p className="text-[9px] tracking-[0.45em] text-rust-400/75 uppercase">before the next door</p>
             <h2 className="mt-2 font-display text-2xl text-bone-200">门前的补给</h2>
-            <p className="mt-1 text-[11px] text-bone-200/45">只能带走一件。选中的道具会跟到下一层。</p>
+            <p className="mt-1 text-[11px] text-bone-200/45">
+              只能带走一件。第 1 层摆两件，之后三件；选中的道具会跟到下一层。
+            </p>
             <div className="mt-4 grid gap-2 sm:grid-cols-3">
               {snapshot.supplyOptions.map((item, index) => (
                 <button
@@ -938,6 +945,7 @@ function ActorPanel({
       <p className="mt-1 flex items-center gap-2 text-[9px] tracking-[0.15em] text-bone-200/30">
         <span>
           {shown.busted ? '爆牌' : actor.standing ? '已停牌' : '在局中'} · 道具 {actor.items.length}
+          {actor.id === 'player' ? ` · 用 ${actor.itemsUsedThisTurn}/${PLAYER_ITEM_CAP}` : ''}
         </span>
         {actor.sawBoost > 0 ? <span className="text-amber-300/80">锯</span> : null}
         {actor.shield > 0 ? <span className="text-sky-300/80">盾</span> : null}

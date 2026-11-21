@@ -365,6 +365,13 @@ const LAMP_SHADE_BOT_Y = 4.02
 
 /** 枪口瞄准的旋转中心：枪座落在桌面上的位置 */
 const GUN_PIVOT = new THREE.Vector3(0, TABLE_TOP + 0.075, 0.08)
+const GUN_SHAKE = {
+  delay: 0.045,
+  offsetMin: -0.006,
+  offsetMax: 0.002,
+} as const
+/** 枪口对准玩家的误差容限（弧度，约 0.86°） */
+const GUN_AIMED_EPSILON = 0.015
 /** 一次血雾爆发的粒子数 */
 const BLOOD_PARTICLE_COUNT = 80
 /** 护心镜 / 诱饵挡下实弹时的碎屑粒子数 */
@@ -471,11 +478,15 @@ export class SceneManager {
     typeof window.matchMedia === 'function'
       ? window.matchMedia('(prefers-reduced-motion: reduce)')
       : null
-  /** 系统级「减少动态效果」：只抑制震屏与镜头漂移，保留运镜与发牌演出 */
+  /** 系统级「减少动态效果」：抑制震屏、枪械抖动与镜头漂移，保留运镜与发牌演出 */
   private reducedMotion = false
   private readonly onMotionPreferenceChange = (event: MediaQueryListEvent): void => {
     this.reducedMotion = event.matches
-    if (event.matches) this.shakeTime = 0
+    if (event.matches) {
+      this.shakeTime = 0
+      this.gunShakeAfterAim = false
+      this.stopGunShake()
+    }
   }
   private statFrames = 0
   private statElapsed = 0
@@ -544,6 +555,7 @@ export class SceneManager {
   private readonly gunGroup = new THREE.Group()
   /** 瞄准枢轴：挂在枪座位置，yaw/pitch 绕它旋转，枪口才能真的对准目标 */
   private readonly gunAim = new THREE.Group()
+  private readonly gunShake = new THREE.Group()
   private readonly deckGroup = new THREE.Group()
   private readonly cardGroup = new THREE.Group()
   private readonly itemRoot = new THREE.Group()
@@ -589,6 +601,14 @@ export class SceneManager {
   private executionPush = 0
   private executionPushGeneration = 0
   private gunRestYaw = 1.02
+  private gunShakeAfterAim = false
+  private gunShakeActive = false
+  private readonly gunShakeBase = new THREE.Vector3()
+  private gunShakeAccum = 0
+  private gunShakeLastPhase = -1
+  private readonly gunShakeRight = new THREE.Vector3()
+  private readonly gunShakeUp = new THREE.Vector3()
+  private readonly gunShakeQuaternion = new THREE.Quaternion()
   private readonly aimScratch = new THREE.Vector3()
   private readonly aimScratchTarget = new THREE.Vector3()
   private readonly bloodBurst: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial>
@@ -688,7 +708,9 @@ export class SceneManager {
     this.gunAim.position.copy(GUN_PIVOT)
     this.gunAim.rotation.order = 'YXZ'
     this.gunAim.rotation.y = this.gunRestYaw
-    this.gunAim.add(gun.root)
+    this.gunShake.name = 'GunShake'
+    this.gunAim.add(this.gunShake)
+    this.gunShake.add(gun.root)
     this.gunGroup.add(this.gunAim)
     this.drum = gun.drum
     this.muzzleLight = gun.muzzleLight
@@ -756,6 +778,10 @@ export class SceneManager {
   /** Blends the camera to a named shot; `hold` keeps it there until another shot is set. */
   setShot(shot: CameraShot, duration = 0.9): void {
     if (this.disposed) return
+    if (shot !== 'execute') {
+      this.gunShakeAfterAim = false
+      if (this.gunShakeActive) this.stopGunShake()
+    }
     const realtimeBlend = shot === 'bloodPlayer' || shot === 'bloodBoss' || (shot === 'table' && this.isCloseupShot())
     if (shot !== 'bloodPlayer' && shot !== 'bloodBoss') this.cancelBloodCloseup()
     this.shot = shot
@@ -801,11 +827,11 @@ export class SceneManager {
       const halo = new THREE.Mesh(geometry, material)
       halo.renderOrder = 20
       halo.visible = false
-      this.gunAim.add(halo)
+      this.gunShake.add(halo)
       this.revealGlow = halo
     }
     const glow = this.revealGlow
-    // 位置改用瞄准枢轴的局部坐标：转轮中心正上方
+    // 位置使用枪身抖动层的局部坐标：转轮中心正上方
     const cylinderY = 0.075
     glow.visible = true
     glow.position.set(0, cylinderY, -0.09)
@@ -815,7 +841,7 @@ export class SceneManager {
     if (!this.revealLight) {
       const light = new THREE.PointLight(0xff2a18, 0, 1.6, 2)
       light.position.set(0, cylinderY + 0.06, -0.09)
-      this.gunAim.add(light)
+      this.gunShake.add(light)
       this.revealLight = light
     }
     const light = this.revealLight
@@ -848,6 +874,8 @@ export class SceneManager {
     const deathShot = payload.lethal && payload.target === 'player'
     this.setShot('execute', 0.85)
     this.aimTarget = payload.target
+    this.stopGunShake()
+    this.gunShakeAfterAim = payload.by === 'player' && payload.target === 'player'
     // 推进被跳过演出时新旧两段 tween 会并存，用 generation 只让最新的一段写值
     // 玩家中枪那一镜本身有 fov 收窄，再叠推近会顶进玩家模型，这里只留 fov
     if (this.reducedMotion || deathShot) {
@@ -1248,7 +1276,7 @@ export class SceneManager {
 
   private async runBloodCloseup(actor: ActorId, hpAfter: number, generation: number): Promise<void> {
     const shot: CameraShot = actor === 'player' ? 'bloodPlayer' : 'bloodBoss'
-    if (!await this.waitBloodCloseup(actor === 'player' ? 1400 : 250, generation)) return
+    if (!await this.waitBloodCloseup(actor === 'player' ? 1600 : 250, generation)) return
     this.setShot(shot, 0.55)
     if (!await this.waitBloodCloseup(750, generation)) return
     this.bloodCloseupDrain = true
@@ -1279,16 +1307,18 @@ export class SceneManager {
 
   playShot(payload: ShotPayload): void {
     if (this.disposed) return
+    this.gunShakeAfterAim = false
+    this.stopGunShake()
     const live = payload.chamber === 'live'
     this.flash.visible = true
     this.flash.material.opacity = live ? 1 : 0.35
     this.flash.material.color.setHex(live ? 0xffc060 : 0x9fb8c8)
     this.flash.scale.setScalar(live ? 0.42 : 0.22)
     this.tween({
-      duration: 0.14,
+      duration: 0.1,
       onUpdate: (t) => {
         this.flash.scale.setScalar((live ? 0.42 : 0.22) * (0.75 + t * 0.9))
-        this.flash.material.opacity = (1 - t) * (live ? 1 : 0.4)
+        this.flash.material.opacity = (1 - t) ** 2 * (live ? 1 : 0.4)
       },
       onComplete: () => {
         this.flash.visible = false
@@ -1296,11 +1326,11 @@ export class SceneManager {
       },
     })
     this.muzzleLight.color.setHex(live ? 0xffb060 : 0x8fb4c8)
-    this.muzzleLight.intensity = live ? 26 : 4
+    this.muzzleLight.intensity = live ? 36 : 4
     this.tween({
-      duration: 0.22,
+      duration: 0.12,
       onUpdate: (t) => {
-        this.muzzleLight.intensity = (live ? 26 : 4) * (1 - t) ** 2
+        this.muzzleLight.intensity = (live ? 36 : 4) * (1 - t) ** 3
       },
     })
 
@@ -1781,21 +1811,21 @@ export class SceneManager {
     clone.position.set(-center.x, -scaled.min.y, -center.z)
     holder.add(clone)
 
-    // 枪口火光与点光原本挂在程序化模型里，换模型前先挪到瞄准枢轴，否则一起被销毁
-    this.gunAim.add(this.flash, this.muzzleLight)
-    this.gunAim.add(holder)
-    // 枪口锚点随模型缩放/居中移动，火光必须贴着真实枪口；先刷矩阵再换算成枢轴局部坐标
-    this.gunAim.updateWorldMatrix(true, true)
+    // 枪口火光与点光原本挂在程序化模型里，换模型前先挪到抖动层，否则一起被销毁
+    this.gunShake.add(this.flash, this.muzzleLight)
+    this.gunShake.add(holder)
+    // 枪口锚点随模型缩放/居中移动，火光必须贴着真实枪口；先刷矩阵再换算成抖动层局部坐标
+    this.gunShake.updateWorldMatrix(true, true)
     const muzzle = clone.getObjectByName('MuzzlePoint')
     if (muzzle) {
       const muzzleLocal = muzzle.getWorldPosition(new THREE.Vector3())
-      this.gunAim.worldToLocal(muzzleLocal)
+      this.gunShake.worldToLocal(muzzleLocal)
       this.flash.position.copy(muzzleLocal)
       this.muzzleLight.position.copy(muzzleLocal)
     }
 
     if (placeholder) {
-      // 占位枪挂在 gunAim 下，必须从真实父节点摘下，否则两把枪叠在一起
+      // 占位枪挂在抖动层下，必须从真实父节点摘下，否则两把枪叠在一起
       placeholder.removeFromParent()
       this.disposeObject(placeholder)
       // 转轮随占位枪一起销毁，不能再让装填动画去转它
@@ -2043,6 +2073,7 @@ export class SceneManager {
     this.updateNarrativeGrade(dt)
     this.updateChains(dt)
     this.updateGunAim(dt)
+    this.updateGunShake(dt)
     this.updateItems(dt)
     this.updateCards(dt)
     this.updateCamera(dt)
@@ -2180,6 +2211,14 @@ export class SceneManager {
       const yaw = Math.atan2(-this.aimScratchTarget.x, -this.aimScratchTarget.z)
       const pitch = Math.atan2(this.aimScratchTarget.y, Math.max(0.0001, horizontal))
       this.turnGun(yaw, pitch, dt)
+      if (this.gunShakeAfterAim) {
+        const yawError = Math.abs(Math.atan2(Math.sin(yaw - this.gunAim.rotation.y), Math.cos(yaw - this.gunAim.rotation.y)))
+        const pitchError = Math.abs(Math.atan2(Math.sin(pitch - this.gunAim.rotation.x), Math.cos(pitch - this.gunAim.rotation.x)))
+        if (yawError < GUN_AIMED_EPSILON && pitchError < GUN_AIMED_EPSILON) {
+          this.gunShakeAfterAim = false
+          this.startGunShake()
+        }
+      }
     } else {
       this.turnGun(this.gunRestYaw, 0, dt)
     }
@@ -2206,6 +2245,40 @@ export class SceneManager {
     const pitchDelta = Math.atan2(Math.sin(pitch - this.gunAim.rotation.x), Math.cos(pitch - this.gunAim.rotation.x))
     this.gunAim.rotation.y += yawDelta * k
     this.gunAim.rotation.x += pitchDelta * k
+  }
+
+  private startGunShake(): void {
+    if (this.reducedMotion) return
+    this.gunShake.position.copy(this.gunShakeBase)
+    this.gunShakeAccum = 0
+    this.gunShakeLastPhase = -1
+    this.gunShakeActive = true
+  }
+
+  private stopGunShake(): void {
+    this.gunShakeActive = false
+    this.gunShake.position.copy(this.gunShakeBase)
+  }
+
+  private updateGunShake(dt: number): void {
+    if (!this.gunShakeActive) return
+    this.gunShakeAccum += dt
+    const period = GUN_SHAKE.delay * 2
+    const phase = this.gunShakeAccum % period
+    if (phase < GUN_SHAKE.delay) {
+      if (this.gunShakeLastPhase < 0 || phase < this.gunShakeLastPhase) {
+        const offset = GUN_SHAKE.offsetMin + Math.random() * (GUN_SHAKE.offsetMax - GUN_SHAKE.offsetMin)
+        this.gunShake.getWorldQuaternion(this.gunShakeQuaternion).invert()
+        this.gunShakeRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion).applyQuaternion(this.gunShakeQuaternion)
+        this.gunShakeUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion).applyQuaternion(this.gunShakeQuaternion)
+        this.gunShake.position.copy(this.gunShakeBase)
+          .addScaledVector(this.gunShakeRight, offset)
+          .addScaledVector(this.gunShakeUp, offset)
+      }
+    } else {
+      this.gunShake.position.copy(this.gunShakeBase)
+    }
+    this.gunShakeLastPhase = phase
   }
 
   private spaceLook(): void {

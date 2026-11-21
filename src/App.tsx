@@ -18,6 +18,7 @@ import {
   evaluateHand,
   formatCard as formatCardLabel,
 } from './game/GameEngine'
+import { bossName, levelTitle, itemFlavor, narrativeLog } from './narrative/copy'
 
 interface RelayBanner {
   readonly id: number
@@ -36,9 +37,9 @@ const FADE_MS = 2400
 const GUIDE_KEY = 'blood-ante.guideSeen'
 
 const GUIDE_LINES = [
-  '谁的点数更接近 21，谁赢下这一轮。',
-  '赢家拿枪：可以射向对面，也可以射向自己。',
-  '射向对面造成伤害；对自己开空膛，白拿一件道具。',
+  '谁更接近 21 点，谁夺枪——赢点数，就赢这一轮的裁决权。',
+  '枪口由你决定——射向对面催血；对自己开空膛，白拿一件前人遗物。',
+  '凑齐三层二十一袋血，才算赎契——输光血袋，你的名字就留在三楼。',
 ] as const
 
 /** 首次进入的三句话规则；localStorage 记住已读，之后只在角落留一个「规则 / 图鉴」入口 */
@@ -97,6 +98,7 @@ export default function App() {
   const narrativeRef = useRef<NarrativeVisual | null>(null)
   const sceneRef = useRef<SceneManager | null>(null)
   const directorRef = useRef<NarrativeDirector | null>(null)
+  const narrativeModeRef = useRef<NarrativeMode | null>(null)
   const noticeTimer = useRef<number | null>(null)
   const relayTimer = useRef<number | null>(null)
   const lootTimer = useRef<number | null>(null)
@@ -235,18 +237,6 @@ export default function App() {
 
   useEffect(() => () => directorRef.current?.stop(), [])
 
-  // 入场导演层要等 GameCanvas 的 effect 全部落地再取场景：StrictMode 下首挂的
-  // SceneManager 会被立刻销毁重建，在 onSceneReady 里同步开演会绑到死实例上
-  useEffect(() => {
-    if (corridorState !== 'done' || !pendingIntroRef.current) return
-    const timer = window.setTimeout(() => {
-      if (!pendingIntroRef.current) return
-      pendingIntroRef.current = false
-      beginNarrative('intro')
-    }, 0)
-    return () => window.clearTimeout(timer)
-  }, [corridorState])
-
   // 快捷键只是键位映射到同一批引擎动作，所有阶段/输入锁校验仍由 canAct 与引擎负责
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -369,10 +359,10 @@ export default function App() {
   const pendingClueRef = useRef<string | null>(null)
   const clueTimer = useRef<number | null>(null)
 
-  function showClueLine(text: string) {
+  function showClueLine(text: string, durationMs = 6000) {
     setClueLine(text)
     if (clueTimer.current !== null) window.clearTimeout(clueTimer.current)
-    clueTimer.current = window.setTimeout(() => setClueLine(null), 6000)
+    clueTimer.current = window.setTimeout(() => setClueLine(null), durationMs)
   }
 
   function handleEventNarrative(event: GameEvent) {
@@ -392,7 +382,7 @@ export default function App() {
     if (event.type !== 'roundStart') return
     // ch1 第一次 roundStart：入场 Boss 半句的后半句；入场没播完就排队
     if (event.level === 1 && event.round === 1) {
-      const line = '她也说，赢了就能往下走。'
+      const line = '你妹妹血很凉，但手很稳——她撑过了这层，去了二楼账房。'
       if (narrativeBusy) pendingClueRef.current = line
       else showClueLine(line)
     }
@@ -401,6 +391,11 @@ export default function App() {
       const scene = sceneRef.current
       window.setTimeout(() => scene?.setShot('tally', 1.2), 150)
       window.setTimeout(() => scene?.setShot('table', 1.2), 2900)
+      sound.playStitch()
+      window.setTimeout(
+        () => showClueLine('末位刻着「小棠」，底下空槽留给你。小心——她最会算牌。', 4000),
+        400,
+      )
     }
   }
 
@@ -409,6 +404,7 @@ export default function App() {
     const scene = sceneRef.current
     if (!scene) return
     directorRef.current?.stop()
+    narrativeModeRef.current = mode
     const director = new NarrativeDirector({
       scene,
       sound,
@@ -420,6 +416,7 @@ export default function App() {
       onFinish: () => {
         setNarrative(null)
         directorRef.current = null
+        narrativeModeRef.current = null
       },
     })
     directorRef.current = director
@@ -478,6 +475,15 @@ export default function App() {
             onHoverChange={setHover}
             onSceneReady={(scene) => {
               sceneRef.current = scene
+              // 走廊黑场后 GameCanvas 重新挂载：SceneManager 就位即开始入场
+              if (pendingIntroRef.current && corridorState === 'done') {
+                pendingIntroRef.current = false
+                beginNarrative('intro')
+                return
+              }
+              // 开发模式 StrictMode 会重建 SceneManager；导演层必须改绑新场景，
+              // 否则字幕继续走，setShot / setNarrativeGrade 却都落在已销毁的场景上
+              if (narrativeModeRef.current) beginNarrative(narrativeModeRef.current)
             }}
           />
         ) : null}
@@ -525,7 +531,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           <span className="h-[1px] w-8 bg-rust-500/50 max-[420px]:hidden" />
           <p className="text-[9px] tracking-[0.42em] text-bone-200/35 uppercase">
-            Abyss XXI · 第 {level.id} 层
+            Blood Ante · 第 {level.id} 层
           </p>
         </div>
         {snapshot && started ? (
@@ -552,7 +558,7 @@ export default function App() {
         {narrativeActive ? null : !started ? null : phase === 'targeting' ? (
           <div className="flex flex-col items-center gap-2">
             <p className="text-[9px] tracking-[0.4em] text-rust-400/80 uppercase">
-              {snapshot?.pendingShot === 'player' ? '这一轮你赢了 · 选择枪口' : '它在决定枪口'}
+              {snapshot?.pendingShot === 'player' ? '这一轮你夺得裁决权 · 选择枪口' : '它在决定枪口'}
             </p>
             {snapshot?.pendingShot === 'player' ? (
               <div className="flex items-center gap-3">
@@ -722,6 +728,9 @@ export default function App() {
                   <span className="text-[10px] leading-relaxed text-bone-200/50">
                     {ITEM_CATALOG[item].summary}
                   </span>
+                  <span className="text-[10px] leading-relaxed text-rust-300/60 italic">
+                    {itemFlavor(item)}
+                  </span>
                 </button>
               ))}
             </div>
@@ -747,11 +756,10 @@ export default function App() {
         <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-6 overflow-y-auto bg-black/78 px-6 py-8 text-center backdrop-blur-sm">
           {phase === 'victory' ? (
             <>
-              <p className="text-[9px] tracking-[0.5em] text-rust-400/80 uppercase">run the gauntlet</p>
-              <h2 className="font-display text-4xl text-bone-200">深渊幸存者</h2>
+              <p className="text-[9px] tracking-[0.5em] text-rust-400/80 uppercase">debt paid in blood</p>
+              <h2 className="font-display text-4xl text-bone-200">血契已赎</h2>
               <p className="max-w-md text-xs leading-relaxed text-bone-200/50">
-                三轮锈蚀的轮盘都已停转。你带着仍然发烫的枪口走出地下室——
-                但走廊尽头的灯，还亮着。
+                三层二十一袋血已清，缝线里的那声回响终于停了。你攥着半张染血的契纸、端着发烫的枪口走出地下室——可走廊尽头的灯，和另一扇铁门后的牌桌，依然亮着。
               </p>
               <dl className="grid grid-cols-3 gap-6 text-[10px] text-bone-200/45">
                 <div>
@@ -773,25 +781,25 @@ export default function App() {
               </dl>
               <div className="mt-2 flex gap-3">
                 <MetalButton tone="primary" onClick={() => beginNarrative('restart')}>
-                  再次走进深渊
+                  再次推开铁门
                 </MetalButton>
                 <MetalButton tone="ghost" onClick={() => setModal('rules')}>
-                  查看规则
+                  查看血契
                 </MetalButton>
               </div>
             </>
           ) : (
             <>
-              <p className="text-[9px] tracking-[0.5em] text-rust-500/70 uppercase">specimen acquired</p>
-              <h2 className="font-display text-4xl text-bone-200/90">你已成为实验品</h2>
+              <p className="text-[9px] tracking-[0.5em] text-rust-500/70 uppercase">stitched into the ledger</p>
+              <h2 className="font-display text-4xl text-bone-200/90">补针完成</h2>
               <p className="max-w-md text-xs leading-relaxed text-bone-200/45">
-                轮盘在你身上完成了它想要的实验。灯没有熄灭，只是换了一位坐下的客人。
+                你的名字填上了「小棠」下方那道新鲜的空槽。血袋空了，针脚合上了，走廊尽头的灯还在等下一位签契的人。
               </p>
               <dl className="grid grid-cols-3 gap-6 text-[10px] text-bone-200/45">
                 <div>
                   <dt className="text-bone-200/25">倒下于</dt>
                   <dd className="mt-1 font-display text-base text-bone-200/80">
-                    第 {(snapshot?.levelIndex ?? 0) + 1} 层
+                    第 {(snapshot?.levelIndex ?? 0) + 1} 层 · {levelTitle(snapshot?.levelIndex ?? 0)}
                   </dd>
                 </div>
                 <div>
@@ -802,15 +810,17 @@ export default function App() {
                 </div>
                 <div>
                   <dt className="text-bone-200/25">对手</dt>
-                  <dd className="mt-1 font-display text-base text-bone-200/80">{level.name}</dd>
+                  <dd className="mt-1 font-display text-base text-bone-200/80">
+                    {bossName(snapshot?.levelIndex ?? 0)}
+                  </dd>
                 </div>
               </dl>
               <div className="mt-2 flex gap-3">
                 <MetalButton tone="primary" onClick={() => beginNarrative('restart')}>
-                  重新成为实验品
+                  重新坐上牌桌
                 </MetalButton>
                 <MetalButton tone="ghost" onClick={() => setModal('rules')}>
-                  查看规则
+                  查看血契
                 </MetalButton>
               </div>
             </>
@@ -835,9 +845,9 @@ export default function App() {
         >
           <div className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto border border-rust-500/35 bg-abyss-900/95 p-6 shadow-2xl shadow-black/80">
             <p className="text-[9px] tracking-[0.45em] text-rust-400/75 uppercase">
-              before you sit down
+              blood ante · 血契须知
             </p>
-            <h2 className="mt-2 font-display text-2xl text-bone-200">三句话，坐上这张桌子</h2>
+            <h2 className="mt-2 font-display text-2xl text-bone-200">三句话，签下这张牌桌</h2>
             <ol className="mt-5 space-y-3">
               {GUIDE_LINES.map((line, index) => (
                 <li key={line} className="flex gap-3">
@@ -858,7 +868,7 @@ export default function App() {
                 }}
                 className="text-[10px] tracking-[0.25em] text-bone-200/35 uppercase hover:text-bone-200/70"
               >
-                看完整规则
+                查看完整血契
               </button>
               <MetalButton
                 tone="primary"
@@ -867,7 +877,7 @@ export default function App() {
                   setGuideOpen(false)
                 }}
               >
-                我知道了
+                坐上牌桌
               </MetalButton>
             </div>
           </div>
@@ -939,7 +949,7 @@ function ActorPanel({
 }
 
 function LogPanel({ snapshot }: { snapshot: GameSnapshot }) {
-  const lines = snapshot.log.slice(-3)
+  const lines = snapshot.log.slice(-3).map((line) => narrativeLog(line, snapshot.levelIndex))
   if (lines.length === 0) return null
   return (
     <div className="pointer-events-none absolute top-36 right-4 w-64 space-y-1 text-right max-[420px]:w-40">
@@ -1023,9 +1033,9 @@ function phaseLabel(phase: string): string {
     case 'supply':
       return '挑选补给'
     case 'gameOver':
-      return '实验结束'
+      return '血契已收'
     case 'victory':
-      return '幸存'
+      return '赎契成功'
     default:
       return '待机'
   }

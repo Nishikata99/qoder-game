@@ -1,13 +1,14 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { ITEM_CATALOG, ITEM_IDS, LEVELS, LEVEL_UNLOCKS } from '../game/GameEngine'
 import type { ItemId } from '../game/GameEngine'
+import { bossName, itemFlavor } from '../narrative/copy'
 
 export type ModalTab = 'rules' | 'items'
 
 const RULES: ReadonlyArray<{ title: string; body: string }> = [
   {
-    title: '走完二十一',
-    body: '双方各持两张牌，你全明牌，对手一张明牌一张暗牌。点数更接近 21 且不爆牌的一方赢下本轮，拿到枪——由持枪者决定枪口朝向。',
+    title: '二十一袋血契',
+    body: '双方各发两张牌，你全明牌，对手一明一暗。点数更接近 21 且不爆牌者赢下本轮、夺得霰弹枪——由持枪者决定枪口朝向。',
   },
   {
     title: 'A 的算法',
@@ -15,39 +16,39 @@ const RULES: ReadonlyArray<{ title: string; body: string }> = [
   },
   {
     title: '爆牌即处决',
-    body: '任一方点数超过 21 点立刻判负，不再比较点数。输家要面对这一枪——但枪膛也可能是空的。',
+    body: '任一方超过 21 点立刻视作违约判负，直接面对这一枪——但弹仓里也可能是空膛。',
   },
   {
     title: '黑杰克暴击',
     body: '起手两张牌恰好 21 点即黑杰克，本枪实弹伤害 +1。',
   },
   {
-    title: '碾压',
-    body: '赢下本轮时你的手牌达到 20 点或以上，本枪实弹伤害再 +1。牌越好，枪越重。',
+    title: '碾压加注',
+    body: '赢下本轮时手牌达到 20 点及以上，本枪实弹伤害再 +1。牌越重，枪越狠。',
   },
   {
-    title: '枪口由你决定',
-    body: '赢下本轮的人持枪，可以把枪口对准对手，也可以对准自己。对自己开空膛可摸一件道具；对自己开实弹则由自己承受伤害。',
+    title: '枪口裁决',
+    body: '持枪者可射向对面，也可对准自己。对自己扣响空膛，牌桌会赏你一件遗物道具；若打出实弹，则由自己流血。',
   },
   {
-    title: '伤害结算',
-    body: '实弹基础 2 点；黑杰克 +1；碾压 +1；走火遗恨 +N；锯子再整体翻倍。空膛不造成伤害。',
+    title: '血契结算',
+    body: '实弹基础 2 血；黑杰克 +1；碾压 +1；走火遗恨 +N；锯子整体翻倍。空膛不扣血。',
   },
   {
-    title: '走火危机',
-    body: '双方同点则无人开枪：各摸一件道具，且走火遗恨 +1（可叠加）。只有有人真的中弹后才会清零。',
+    title: '走火遗恨',
+    body: '双方同点视作僵持罚息：本轮不开枪，各摸一件道具，且走火遗恨 +1（可叠加），直到有人真正中弹才清零。',
   },
   {
     title: '霰弹枪弹仓',
-    body: '每次装填 4~6 发，其中 2~3 发实弹，顺序打乱。每打一发消耗一发、不重洗；打空后才重新装填。',
+    body: '每次装填 4~6 发，含 2~3 发实弹，顺序随机打乱。每扣一次消耗一发、中途不重洗，打空后才重新装填。',
   },
   {
-    title: '层间补给',
-    body: '打倒一层后，门前会摆出三件补给，你只能带走一件进入下一层。12 秒不选则自动拿走第一件。',
+    title: '层间遗物',
+    body: '清空一层后，门前会摆出三件前人留下的遗物，你只能带走一件进入下一层。12 秒未选将自动拿走第一件。',
   },
   {
-    title: '层数与补给',
-    body: '第 1/2/3 层：对手生命 6/8/8，你的生命 7/7/7，开局补给 2/3/4 件道具。第 2 层解锁磁铁、手铐与护心镜，第 3 层解锁沙漏、匕首、诱饵与重锤。',
+    title: '三层赎价',
+    body: '第 1/2/3 层：对手生命 6/8/8，你的血袋 7/7/7（合计 21 袋），开局补给 2/3/4 件。第 2 层解锁磁铁、手铐、护心镜；第 3 层解锁沙漏、匕首、诱饵、重锤。',
   },
   {
     title: '快捷键',
@@ -118,7 +119,7 @@ export function RulesModal({
               <ul className="mt-2 grid gap-1 text-[11px] text-bone-200/55 sm:grid-cols-3">
                 {LEVELS.map((level, index) => (
                   <li key={level.id}>
-                    <span className="text-rust-400/80">第 {index + 1} 层 · {level.name}</span>
+                    <span className="text-rust-400/80">第 {index + 1} 层 · {bossName(index)}</span>
                     <br />
                     你 {level.playerHp} / 它 {level.hp} · 补给 {level.supply}
                   </li>
@@ -171,6 +172,7 @@ function ItemCard({ item }: { item: ItemId }) {
       <div>
         <h3 className="font-display text-sm text-bone-200">{catalog.name}</h3>
         <p className="mt-1 text-[11px] leading-relaxed text-bone-200/55">{catalog.summary}</p>
+        <p className="mt-1 text-[11px] leading-relaxed text-rust-300/60 italic">{itemFlavor(item)}</p>
         <p className="mt-1 text-[10px] tracking-[0.2em] text-bone-200/30 uppercase">
           {unlockLevel <= 0 ? '初始可用' : `第 ${unlockLevel + 1} 层解锁`}
         </p>

@@ -46,6 +46,8 @@ export type CameraShot =
   | 'introPaper'
   | 'introDoor'
   | 'introTowel'
+  | 'introTable'
+  | 'introBoss'
   | 'tally'
   | 'endingReach'
 
@@ -310,6 +312,7 @@ type ModelKey =
   | 'room_environment'
   | 'gothic_statue'
   | 'marble_bust_01'
+  | 'player_hand'
 
 /** 道具 id → 模型键（与 GameEngine 的 ITEM_IDS 一一对应）；暂无 GLB 的道具留空走程序化几何 */
 const ITEM_MODEL: Readonly<Partial<Record<ItemId, ModelKey>>> = {
@@ -491,6 +494,8 @@ export class SceneManager {
   private gradeLampTarget = 1
   private gradeFlicker = 1
   private gradeFlickerTarget = 1
+  private narrativeSway = 0
+  private narrativeSwayTarget = 0
   private lampBulbMat: THREE.MeshStandardMaterial | null = null
   private lampConeMat: THREE.MeshBasicMaterial | null = null
   private headSnapLife = 0
@@ -504,10 +509,11 @@ export class SceneManager {
   private doorSlitTarget = 0.5
   private tallyGroup: THREE.Group | null = null
   private sutureGlow: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> | null = null
-  private reachHand: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> | null = null
+  private reachHand: THREE.Group | null = null
   /** 叙事陈设单独成组：swapRoom / refreshProps 都不会清掉 */
   private readonly narrativeGroup = new THREE.Group()
   private towelMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial> | null = null
+  private introHands: THREE.Group | null = null
   /** 0..1 的倒地量，叠加在呼吸动画上：命中时冲到 1 再缓慢回到 0 */
   private bossKnock = 0
   private knockGeneration = 0
@@ -852,6 +858,7 @@ export class SceneManager {
     grain?: number
     lamp?: number
     flicker?: number
+    sway?: number
   }): void {
     if (this.disposed) return
     if (grade.fog !== undefined) this.gradeFogTarget = grade.fog
@@ -859,6 +866,7 @@ export class SceneManager {
     if (grade.grain !== undefined) this.gradeGrainTarget = grade.grain
     if (grade.lamp !== undefined) this.gradeLampTarget = grade.lamp
     if (grade.flicker !== undefined) this.gradeFlickerTarget = grade.flicker
+    if (grade.sway !== undefined) this.narrativeSwayTarget = grade.sway
   }
 
   resetNarrativeGrade(): void {
@@ -869,6 +877,7 @@ export class SceneManager {
       grain: mood.grain,
       lamp: 1,
       flicker: mood.flicker,
+      sway: 0,
     })
   }
 
@@ -930,23 +939,41 @@ export class SceneManager {
     })
   }
 
-  /** 结局 B：玩家伸手——手部剪影面片挂在相机下，从画面下缘升起 */
+  /** 结局 B：玩家伸手——真实手部 GLB 挂在相机下，从画面下缘升起并伸向缝线 */
   triggerReachHand(): void {
     if (this.disposed) return
     if (!this.reachHand) {
-      const geo = new THREE.PlaneGeometry(0.34, 0.34)
-      this.disposableGeometries.add(geo)
-      const mat = new THREE.MeshBasicMaterial({
-        map: this.textures.get('hand-silhouette'),
-        transparent: true,
-        opacity: 0.94,
-        toneMapped: false,
-        depthTest: false,
-      })
-      this.disposableMaterials.add(mat)
-      const hand = new THREE.Mesh(geo, mat)
-      hand.position.set(0.16, -0.52, -0.5)
-      hand.renderOrder = 30
+      const hand = new THREE.Group()
+      const source = this.models.get('player_hand')
+      if (source) {
+        const model = source.clone(true)
+        model.scale.setScalar(1.15)
+        model.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            child.castShadow = false
+            child.receiveShadow = false
+            child.frustumCulled = false
+          }
+        })
+        hand.add(model)
+      } else {
+        const geo = new THREE.PlaneGeometry(0.34, 0.34)
+        this.disposableGeometries.add(geo)
+        const mat = new THREE.MeshBasicMaterial({
+          map: this.textures.get('hand-silhouette'),
+          transparent: true,
+          opacity: 0.94,
+          toneMapped: false,
+          depthTest: false,
+        })
+        this.disposableMaterials.add(mat)
+        hand.add(new THREE.Mesh(geo, mat))
+      }
+      const light = new THREE.PointLight(0xffc4a3, 0.6, 0.9, 2)
+      light.position.set(0.02, 0.1, 0.05)
+      hand.add(light)
+      hand.position.set(0.1, -0.5, -0.42)
+      hand.rotation.set(0.16, -0.08, -0.08)
       // 相机不挂进 scene 的话，它的子节点不会被渲染
       this.scene.add(this.camera)
       this.camera.add(hand)
@@ -957,7 +984,9 @@ export class SceneManager {
     this.tween({
       duration: 1.5,
       onUpdate: (t) => {
-        hand.position.y = -0.52 + t * 0.26
+        hand.position.y = -0.5 + t * 0.26
+        hand.position.z = -0.42 - t * 0.12
+        hand.rotation.x = 0.16 + t * 0.06
       },
     })
   }
@@ -982,6 +1011,7 @@ export class SceneManager {
     this.gradeGrain += (this.gradeGrainTarget - this.gradeGrain) * k
     this.gradeLamp += (this.gradeLampTarget - this.gradeLamp) * k
     this.gradeFlicker += (this.gradeFlickerTarget - this.gradeFlicker) * k
+    this.narrativeSway += (this.narrativeSwayTarget - this.narrativeSway) * k
     this.lampDrop += (this.lampDropTarget - this.lampDrop) * k
     this.lampRig.position.y = this.lampBaseY - this.lampDrop
     if (this.doorSlitMat) {
@@ -1047,33 +1077,45 @@ export class SceneManager {
         }
       case 'introWake':
         return {
-          position: new THREE.Vector3(0.55, 1.35, 2.1),
+          position: new THREE.Vector3(0.12, 1.32, 2.2),
           lookAt: new THREE.Vector3(-0.15, 4.6, -0.3),
           fov: 58,
         }
       case 'introStain':
         return {
-          position: new THREE.Vector3(0.25, 2.2, 1.6),
+          position: new THREE.Vector3(0.08, 1.45, 2.18),
           lookAt: new THREE.Vector3(0.35, TABLE_TOP, 0.75),
-          fov: 40,
+          fov: 46,
         }
       case 'introPaper':
         return {
-          position: new THREE.Vector3(-0.75, 1.9, 1.9),
+          position: new THREE.Vector3(-0.05, 1.44, 2.16),
           lookAt: new THREE.Vector3(-1.35, TABLE_TOP, 1.15),
-          fov: 34,
+          fov: 42,
         }
       case 'introDoor':
         return {
-          position: new THREE.Vector3(0, 1.5, 1.6),
+          position: new THREE.Vector3(0, 1.5, 2.16),
           lookAt: new THREE.Vector3(0, 1.3, 9.9),
-          fov: 55,
+          fov: 58,
         }
       case 'introTowel':
         return {
-          position: new THREE.Vector3(-0.95, 1.62, 2.35),
+          position: new THREE.Vector3(-0.1, 1.44, 2.18),
           lookAt: new THREE.Vector3(-0.72, 1.1, 1.42),
-          fov: 36,
+          fov: 40,
+        }
+      case 'introTable':
+        return {
+          position: new THREE.Vector3(0, 1.52, 2.2),
+          lookAt: new THREE.Vector3(0, 1.0, -0.2),
+          fov: 52,
+        }
+      case 'introBoss':
+        return {
+          position: new THREE.Vector3(0, 1.55, 2.25),
+          lookAt: new THREE.Vector3(0, 1.6, -3),
+          fov: 46,
         }
       case 'endingReach':
         return {
@@ -1355,6 +1397,7 @@ export class SceneManager {
       'room_environment',
       'gothic_statue',
       'marble_bust_01',
+      'player_hand',
     ]
     // 大件场景模型不必和道具一样压那么暗，否则整个桌面沉进黑里
     const dimFor = (key: ModelKey): number => {
@@ -1369,6 +1412,7 @@ export class SceneManager {
       // 瘟疫医生贴图本身极黑，再压暗会在暗场里全黑，不额外衰减
       if (key === 'boss_1') return 1.0
       if (key === 'boss_2' || key === 'boss_3') return 0.85
+      if (key === 'player_hand') return 0.85
       return key === 'gothic_statue' || key === 'marble_bust_01' ? 0.62 : GLB_ALBEDO_DIM
     }
     for (const key of keys) {
@@ -1461,6 +1505,10 @@ export class SceneManager {
         this.refreshProps()
         break
       }
+      case 'player_hand': {
+        this.buildIntroHands(root)
+        break
+      }
       default: {
         break
       }
@@ -1475,6 +1523,32 @@ export class SceneManager {
         this.replaceItemMesh(entry, root)
       }
     }
+  }
+
+  /** 第一人称前景：右手原模、左手镜像，腕部朝向玩家，指尖自然伸向桌面 */
+  private buildIntroHands(source: THREE.Object3D): void {
+    if (this.introHands || this.disposed) return
+    const group = new THREE.Group()
+    for (const side of [-1, 1]) {
+      const hand = source.clone(true)
+      hand.scale.set(1.15 * side, 1.15, 1.15)
+      hand.position.set(side * 0.43, TABLE_TOP + 0.022, 2.05)
+      hand.rotation.y = side * 0.08
+      hand.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          // 桌沿远景不需要掌纹/静脉曲线：每只手只保留皮肤与 5 枚指甲，
+          // 软件渲染下少 13 个 draw call；结局近景仍使用完整模型
+          if (/^SM_PlayerHand_(Crease|PalmLine|Vein)/.test(child.name)) child.visible = false
+          child.castShadow = true
+          child.receiveShadow = true
+          const materials = Array.isArray(child.material) ? child.material : [child.material]
+          for (const material of materials) material.side = THREE.DoubleSide
+        }
+      })
+      group.add(hand)
+    }
+    this.narrativeGroup.add(group)
+    this.introHands = group
   }
 
   /** 用 GLB 霰弹枪替换程序化占位枪，保留开火动画所需的 group 层级 */
@@ -1704,16 +1778,7 @@ export class SceneManager {
     slit.rotation.y = Math.PI
     this.narrativeGroup.add(slit)
 
-    const armGeo = new THREE.BoxGeometry(0.14, 0.4, 1.15)
-    this.disposableGeometries.add(armGeo)
-    const armMat = makeStandardMaterial(0x241a12, 0.35, 0.8)
-    this.disposableMaterials.add(armMat)
-    for (const x of [-0.55, 0.55]) {
-      const arm = new THREE.Mesh(armGeo, armMat)
-      arm.position.set(x, 1.0, 2.05)
-      arm.castShadow = true
-      this.narrativeGroup.add(arm)
-    }
+    // 玩家双手由 player_hand.glb 到达后放到桌沿，不再用方块椅扶手冒充前景
 
     // 刑台刻痕名单：吊轨 + 双链 + 铁板，第三章才挂出来
     const tally = new THREE.Group()
@@ -1855,7 +1920,7 @@ export class SceneManager {
       sz = (Math.random() - 0.5) * amp
       if (this.shakeTime === 0) this.shakeStrength = 0
     }
-    const drift = this.reducedMotion ? 0 : this.shot === 'table' ? 1 : 0.22
+    const drift = this.reducedMotion ? 0 : (this.shot === 'table' ? 1 : 0.22) + this.narrativeSway
     this.camera.position.set(
       this.cameraBase.x + Math.sin(this.elapsed * 0.21) * 0.035 * drift + sx,
       this.cameraBase.y + breathe * drift + sy,
@@ -1921,9 +1986,11 @@ export class SceneManager {
   private spaceLook(): void {
     const look = this.scratchVector
     look.copy(this.cameraLookAt)
-    look.x += Math.sin(this.elapsed * 0.27) * 0.02
-    look.y += Math.sin(this.elapsed * 0.33) * 0.012
+    const sway = this.reducedMotion ? 0 : this.narrativeSway
+    look.x += Math.sin(this.elapsed * 0.27) * (0.02 + sway * 0.08)
+    look.y += Math.sin(this.elapsed * 0.33) * (0.012 + sway * 0.055)
     this.camera.lookAt(look)
+    if (sway > 0.001) this.camera.rotateZ(Math.sin(this.elapsed * 0.74) * 0.012 * sway)
   }
 
   private updateLighting(): void {

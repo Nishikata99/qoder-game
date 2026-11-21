@@ -28,6 +28,7 @@ export interface NarrativeSubtitle {
 export interface NarrativeVisual {
   readonly active: boolean
   readonly black: number
+  readonly focus: number
   readonly letterbox: boolean
   readonly ledger: boolean
   readonly subtitle: NarrativeSubtitle | null
@@ -53,7 +54,7 @@ export class NarrativeDirector {
   private rafId: number | null = null
   private lastTs: number | null = null
   private running = false
-  private visual: NarrativeVisual = { active: false, black: 0, letterbox: false, ledger: false, subtitle: null }
+  private visual: NarrativeVisual = { active: false, black: 0, focus: 0, letterbox: false, ledger: false, subtitle: null }
 
   constructor(deps: NarrativeDeps) {
     this.deps = deps
@@ -72,7 +73,7 @@ export class NarrativeDirector {
     this.running = true
     // 入场/重开从全黑起；章节过渡骑在胜利远景上，不能先黑一帧
     const dark = mode === 'intro' || mode === 'restart'
-    this.visual = { active: true, black: dark ? 1 : 0, letterbox: dark, ledger: false, subtitle: null }
+    this.visual = { active: true, black: dark ? 1 : 0, focus: 0, letterbox: dark, ledger: false, subtitle: null }
     this.deps.onVisual(this.visual)
     this.rafId = requestAnimationFrame(this.tick)
   }
@@ -139,6 +140,7 @@ export class NarrativeDirector {
     if (beat.mood !== undefined) scene.setChapterMood(beat.mood)
     let next = this.visual
     if (beat.black !== undefined) next = { ...next, black: beat.black }
+    if (beat.focus !== undefined) next = { ...next, focus: beat.focus }
     if (beat.letterbox !== undefined) next = { ...next, letterbox: beat.letterbox }
     if (beat.ledger !== undefined) next = { ...next, ledger: beat.ledger }
     if (beat.line) {

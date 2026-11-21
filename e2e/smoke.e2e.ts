@@ -25,14 +25,14 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
   await page.goto('./')
 
   // 首次进入的引导卡片可能先遮住开始按钮：出现就关掉，没出现直接开始
-  const start = page.getByRole('button', { name: '开始', exact: true })
+  const start = page.getByRole('button', { name: '走进走廊', exact: true })
   // 引导卡片和开始按钮在同一次渲染里出现，按钮始终在 DOM 中（被遮住也算 visible），
   // 不能用 .or() 断言二者之一——strict mode 会因为同时命中两个元素而报错
   await expect(start).toBeVisible({ timeout: 30_000 })
 
   const guide = page.getByRole('dialog', { name: '开局说明' })
   if ((await guide.count()) > 0) {
-    await page.getByRole('button', { name: '我知道了' }).click()
+    await page.getByRole('button', { name: '坐上牌桌' }).click()
     await expect(guide).toBeHidden()
   }
 
@@ -56,7 +56,7 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
     page.evaluate(() => Boolean((window as unknown as { __fired?: boolean }).__fired))
 
   // CI 软件渲染比本地慢数倍，轮询预算要留到接近用例总超时
-  const deadline = Date.now() + 180_000
+  const deadline = Date.now() + 300_000
   while (Date.now() < deadline) {
     if (await fired()) break
     if (await fireAtBoss.isVisible().catch(() => false)) {

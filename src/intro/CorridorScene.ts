@@ -65,7 +65,16 @@ interface CorridorCallbacks {
   readonly onComplete: () => void
   /** 左门开到位：离开主游戏，进入蔓延子游戏 */
   readonly onEnterMoyan: () => void
+  /** 行走途中的独白字幕：text 为 null 表示到点收起 */
+  readonly onWalkLine: (text: string | null) => void
 }
+
+/** 行走字幕时间表（秒，相对 beginWalk）：血契动机 → 21 袋底注 → 临近双门 */
+const WALK_LINES: ReadonlyArray<{ at: number; end: number; text: string; sfx?: 'paperRustle' | 'lowThump' }> = [
+  { at: 1.0, end: 4.3, text: '手里只剩半张血契。另一半，被小棠带进了这底下。', sfx: 'paperRustle' },
+  { at: 5.0, end: 8.2, text: '她替我签了名，进门凑那二十一袋血。' },
+  { at: 8.8, end: 10.8, text: '尽头有两扇铁门。', sfx: 'lowThump' },
+]
 
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
@@ -103,6 +112,8 @@ export class CorridorScene {
   private openFrom = 0
   private openFromL = 0
   private leftExited = false
+  private walkLineIndex = 0
+  private walkLineOpen = false
 
   constructor(canvas: HTMLCanvasElement, sound: SoundEngine, callbacks: CorridorCallbacks) {
     this.canvas = canvas
@@ -160,16 +171,19 @@ export class CorridorScene {
     this.sound.startCorridorDrone()
     this.phase = 'walk'
     this.phaseTime = 0
+    this.walkLineIndex = 0
+    this.walkLineOpen = false
   }
 
   chooseDoor(side: 'L' | 'R'): void {
     if (this.phase !== 'choose' && this.phase !== 'openingL') return
     if (side === 'L') {
-      // 左门只做开门动画，不转场
+      // 左门开到位后整页切到蔓延子游戏（onEnterMoyan 在 tick 里回调）
       this.phase = 'openingL'
       this.phaseTime = 0
       this.openFromL = this.doorPivotL?.rotation.y ?? 0
       this.sound.playDoorCreak()
+      this.sound.playDoorLock()
       return
     }
     this.phase = 'glitch'
@@ -199,6 +213,7 @@ export class CorridorScene {
 
     if (this.phase === 'walk') {
       const t = Math.min(1, this.phaseTime / WALK_SECONDS)
+      this.updateWalkLines()
       this.camera.position.z = WALK_END_Z * easeInOutSine(t)
       // 步态对齐 0.95m/s：约 1.65 步/s 的碎步、左右换重心 + 一点失衡漂移
       this.camera.position.x = Math.sin(this.elapsed * 5.2) * 0.035 + Math.sin(this.elapsed * 1.1) * 0.02
@@ -357,6 +372,29 @@ export class CorridorScene {
       puddle.position.set(x, 0.006, z)
       puddle.receiveShadow = true
       this.scene.add(puddle)
+    }
+  }
+
+  private updateWalkLines(): void {
+    const line = WALK_LINES[this.walkLineIndex]
+    if (!line) {
+      if (this.walkLineOpen) {
+        this.walkLineOpen = false
+        this.callbacks.onWalkLine(null)
+      }
+      return
+    }
+    if (!this.walkLineOpen && this.phaseTime >= line.at) {
+      this.walkLineOpen = true
+      this.callbacks.onWalkLine(line.text)
+      if (line.sfx === 'paperRustle') this.sound.playPaperRustle()
+      else if (line.sfx === 'lowThump') this.sound.playLowThump()
+      return
+    }
+    if (this.walkLineOpen && this.phaseTime >= line.end) {
+      this.walkLineOpen = false
+      this.walkLineIndex += 1
+      this.callbacks.onWalkLine(null)
     }
   }
 

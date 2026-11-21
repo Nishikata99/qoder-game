@@ -74,7 +74,7 @@ async function expectInsideViewport(page: Page, locator: Locator, axes: 'x' | 'x
 async function dismissGuide(page: Page) {
   const guide = page.getByRole('dialog', { name: '开局说明' })
   if ((await guide.count()) === 0) return
-  await page.getByRole('button', { name: '我知道了' }).click()
+  await page.getByRole('button', { name: '坐上牌桌' }).click()
   await expect(guide).toBeHidden()
 }
 
@@ -90,10 +90,10 @@ for (const vp of VIEWPORTS) {
       expect(report.docScrollWidth).toBeLessThanOrEqual(report.viewportWidth)
       expect(report.mainOverflow).toBeLessThanOrEqual(0)
       expect(report.offenders).toEqual([])
-      await expectInsideViewport(page, page.getByRole('button', { name: '我知道了' }))
-      await expectInsideViewport(page, page.getByRole('button', { name: '看完整规则' }))
+      await expectInsideViewport(page, page.getByRole('button', { name: '坐上牌桌' }))
+      await expectInsideViewport(page, page.getByRole('button', { name: '查看完整血契' }))
 
-      await page.getByRole('button', { name: '看完整规则' }).click()
+      await page.getByRole('button', { name: '查看完整血契' }).click()
       const rules = page.getByRole('dialog', { name: '规则与图鉴' })
       await expect(rules).toBeVisible()
       report = await probeHorizontalOverflow(page)
@@ -107,7 +107,7 @@ for (const vp of VIEWPORTS) {
     test('牌桌操作栏与角落工具不越界也不重叠', async ({ page }) => {
       await page.goto('./')
 
-      const start = page.getByRole('button', { name: '开始', exact: true })
+      const start = page.getByRole('button', { name: '走进走廊', exact: true })
       await expect(start).toBeVisible({ timeout: 30_000 })
       await expectInsideViewport(page, start, 'xy')
       await dismissGuide(page)
@@ -117,11 +117,11 @@ for (const vp of VIEWPORTS) {
       await rightDoor.waitFor({ timeout: 60_000 })
       await rightDoor.evaluate((el) => (el as HTMLElement).click())
 
-      // 等引擎发完牌进入玩家回合。入场分镜 40s 时钟，软件渲染 fps≈10 时
-      // dt clamp 0.05 让时钟半速 → 真实约 80s，加发牌余量给到 150s
+      // 等引擎发完牌进入玩家回合。CI 的 SwiftShader 比本地更慢，
+      // dt clamp 0.05 会进一步拖长分镜，超时按最坏渲染档位留余量
       const hit = page.getByRole('button', { name: /要牌/ })
       const stand = page.getByRole('button', { name: /停牌/ })
-      await expect(hit).toBeEnabled({ timeout: 150_000 })
+      await expect(hit).toBeEnabled({ timeout: 300_000 })
 
       for (const locator of [hit, stand]) {
         await expectInsideViewport(page, locator, 'xy')

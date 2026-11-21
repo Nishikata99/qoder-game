@@ -596,7 +596,7 @@ function drawDust(canvas: HTMLCanvasElement): void {
   ctx.fillRect(0, 0, w, h)
 }
 
-/** 入场纸片：撕去左半的旧纸，只剩一个「满」字 */
+/** 入场纸片：撕去左半的血契残页，只剩一个「棠」字 */
 function drawCorridorWall(canvas: HTMLCanvasElement): void {
   const ctx = getContext(canvas)
   const w = canvas.width
@@ -855,11 +855,11 @@ function drawTallyList(canvas: HTMLCanvasElement): void {
     ctx.lineTo(w * 0.86, y - 6)
     ctx.stroke()
   }
-  // 末位：小满——唯一清晰可读的名字
+  // 末位：小棠——唯一清晰可读的名字
   ctx.fillStyle = 'rgba(217,207,190,0.92)'
   ctx.font = `${Math.floor(h * 0.085)}px Georgia, serif`
   ctx.textBaseline = 'middle'
-  ctx.fillText('小满', w * 0.14, h * 0.7)
+  ctx.fillText('小棠', w * 0.14, h * 0.7)
   // 下一行：空白新刻痕——只有一道新鲜亮刻，名字的位置空着
   ctx.strokeStyle = 'rgba(236,226,205,0.85)'
   ctx.lineWidth = 3
@@ -904,7 +904,7 @@ function drawPaperScrap(canvas: HTMLCanvasElement): void {
   ctx.fillStyle = 'rgba(38,26,20,0.88)'
   ctx.font = `${Math.floor(h * 0.34)}px Georgia, serif`
   ctx.textBaseline = 'middle'
-  ctx.fillText('满', w * 0.56, h * 0.47)
+  ctx.fillText('棠', w * 0.56, h * 0.47)
   // 撕边纤维
   ctx.strokeStyle = 'rgba(220,205,175,0.5)'
   ctx.lineWidth = 1
@@ -918,7 +918,7 @@ function drawPaperScrap(canvas: HTMLCanvasElement): void {
   ctx.restore()
 }
 
-/** 毛巾：绣着「满」字；readable=false 时绣字模糊不可读（第一章） */
+/** 毛巾：绣着「棠」字；readable=false 时绣字模糊不可读（第一章） */
 function drawTowel(canvas: HTMLCanvasElement, readable: boolean): void {
   const ctx = getContext(canvas)
   const w = canvas.width
@@ -948,7 +948,7 @@ function drawTowel(canvas: HTMLCanvasElement, readable: boolean): void {
   ctx.font = `${Math.floor(h * 0.3)}px Georgia, serif`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText('满', w * 0.5, h * 0.42)
+  ctx.fillText('棠', w * 0.5, h * 0.42)
   ctx.restore()
 }
 
@@ -985,6 +985,26 @@ function drawHandprint(canvas: HTMLCanvasElement): void {
     ctx.moveTo(w * (0.3 + rnd() * 0.4), h * (0.5 + rnd() * 0.3))
     ctx.lineTo(w * (0.2 + rnd() * 0.6), h * (0.75 + rnd() * 0.2))
     ctx.stroke()
+  }
+  // 五指向桌沿抠扯的深拖痕：从每根指尖向下后方拉出，比掌印拖痕更长更锐
+  for (const [fx, fy] of fingers) {
+    const x = w * fx
+    const y = h * fy
+    for (let pass = 0; pass < 2; pass += 1) {
+      ctx.strokeStyle = pass === 0 ? 'rgba(58,8,8,0.5)' : 'rgba(96,20,16,0.32)'
+      ctx.lineWidth = pass === 0 ? 5 + rnd() * 3 : 2 + rnd() * 2
+      ctx.beginPath()
+      ctx.moveTo(x, y)
+      ctx.bezierCurveTo(
+        x + w * 0.01,
+        y + h * 0.2,
+        x - w * 0.02,
+        y + h * 0.36,
+        x - w * 0.035,
+        y + h * 0.52,
+      )
+      ctx.stroke()
+    }
   }
 }
 

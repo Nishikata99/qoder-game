@@ -104,8 +104,11 @@ export function GameCanvas({
         })
         break
       case 'chamberRevealed':
-        scene.revealChamber(event.chamber)
-        scene.setShot('magnify', 0.75)
+        // 只有玩家自己的窥视才在台面揭晓读数；Boss 的窥视不能泄漏给玩家
+        if (event.actor === 'player') {
+          scene.revealChamber(event.chamber)
+          scene.setShot('magnify', 0.75)
+        }
         break
       case 'itemUsed':
         scene.playItemUse(event.actor, event.item)

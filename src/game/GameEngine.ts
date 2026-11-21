@@ -190,6 +190,8 @@ export interface ActorView {
   readonly shield: number
   /** 诱饵：>0 时对手下一次对你开枪会落空 */
   readonly decoy: number
+  /** 本回合已经使用的道具数；玩家达到上限后拒绝继续使用 */
+  readonly itemsUsedThisTurn: number
 }
 
 export interface CylinderView {
@@ -302,7 +304,16 @@ const BOSS_PROFILES: Readonly<Record<BossPersonality, BossProfile>> = {
   executioner: { label: '算牌', personality: 'executioner', standAt: 19, itemBudget: 4, thinkingMs: 620 },
 }
 
+/** Boss 只携带自己人格会用的道具；沙漏是玩家专属，永不入池 */
+export const BOSS_ITEM_POOLS: Readonly<Record<BossPersonality, readonly ItemId[]>> = {
+  cautious: ['magnifier', 'sedative', 'saw'],
+  gambler: ['magnifier', 'saw', 'sedative', 'magnet', 'handcuffs'],
+  executioner: ['magnifier', 'saw', 'sedative', 'magnet', 'handcuffs', 'aegis', 'dagger', 'decoy', 'hammer'],
+}
+
 const MAX_ITEMS = 8
+/** 玩家每回合最多使用 2 件道具；Boss 仍受人格 itemBudget 限制 */
+export const PLAYER_ITEM_CAP = 2
 const LOG_LIMIT = 80
 const SUPPLY_OPTION_COUNT = 3
 /** 门前补给停留时长；超时自动抓取第一件，避免玩家离开后整局卡死 */
@@ -411,6 +422,7 @@ class ActorRuntime {
   sawBoost = 0
   shield = 0
   decoy = 0
+  itemsUsedThisTurn = 0
 
   constructor(id: ActorId, hp: number) {
     this.id = id
@@ -526,7 +538,7 @@ export class GameEngine {
   private player: ActorRuntime = new ActorRuntime('player', 0)
   private boss: ActorRuntime = new ActorRuntime('boss', 0)
   private deck: Card[] = []
-  private revealed: Chamber | null = null
+  private revealedBy: Record<ActorId, Chamber | null> = { player: null, boss: null }
   private damageBonus = 0
   private pendingShot: ActorId = 'player'
   private hourglassActive = false
@@ -566,7 +578,7 @@ export class GameEngine {
     this.player = new ActorRuntime('player', 0)
     this.boss = new ActorRuntime('boss', 0)
     this.deck = []
-    this.revealed = null
+    this.clearReveals()
     this.damageBonus = 0
     this.pendingShot = 'player'
     this.hourglassActive = false
@@ -628,6 +640,9 @@ export class GameEngine {
     if (this.inputLocked) {
       return this.reject('动作还没结束。')
     }
+    if (this.player.itemsUsedThisTurn >= PLAYER_ITEM_CAP) {
+      return this.reject('本回合的道具已经用尽。')
+    }
     if (!this.applyItem(this.player, item)) return false
     if (this.resolveDeaths()) return true
     this.lockInput(this.itemLockMs)
@@ -685,7 +700,7 @@ export class GameEngine {
         total: this.cylinder.total,
         live: this.cylinder.liveRemaining,
         blank: this.cylinder.blankRemaining,
-        revealed: this.revealed,
+        revealed: this.revealedBy.player,
       },
       turn:
         this.phase === 'playerTurn'
@@ -719,7 +734,7 @@ export class GameEngine {
     this.damageBonus = 0
     this.hourglassActive = false
     this.holeRevealed = false
-    this.revealed = null
+    this.clearReveals()
     this.pendingShot = 'player'
     const level = this.currentLevel()
     this.player = new ActorRuntime('player', level.playerHp)
@@ -755,11 +770,13 @@ export class GameEngine {
     if (!this.alive(token)) return
     this.round += 1
     this.phase = 'dealing'
-    this.revealed = null
+    this.clearReveals()
     this.pendingShot = 'player'
     // 走火遗恨是「永久叠加」的，直到有人真的中弹才清零，因此这里不重置
     this.hourglassActive = false
     this.holeRevealed = false
+    this.player.itemsUsedThisTurn = 0
+    this.boss.itemsUsedThisTurn = 0
     this.player.hand = evaluateHand([])
     this.player.standing = false
     this.boss.hand = evaluateHand([])
@@ -984,7 +1001,7 @@ export class GameEngine {
     if (!this.alive(token)) return
 
     this.cylinder.fire()
-    this.revealed = null
+    this.clearReveals()
     // 基础 2 点；黑杰克 +1；碾压（手牌 ≥20）+1；走火遗恨 +N；锯子整体翻倍
     const stacks = this.damageBonus
     const base = 2 + (blackjack ? 1 : 0) + (overwhelmed ? 1 : 0) + stacks
@@ -1004,9 +1021,11 @@ export class GameEngine {
     let reward: ItemId | null = null
     if (chamber === 'live') {
       target.hp = Math.max(0, target.hp - damage)
-      // 有人真的中弹了，走火遗恨清零；锯子的加成也只在实弹时耗尽
-      this.damageBonus = 0
-      attacker.sawBoost = 0
+      // 只有真的扣到血，走火遗恨与锯子加成才会耗尽；被护心镜/诱饵完全挡下时保留
+      if (damage > 0) {
+        this.damageBonus = 0
+        attacker.sawBoost = 0
+      }
     } else if (selfShot) {
       // 空膛对己：弹壳掉进黑暗，换回一件道具
       reward = this.giveRandomItem(attacker)
@@ -1058,7 +1077,8 @@ export class GameEngine {
 
   /** 对手的枪口选择：已知空膛且道具槽没满就对自己开枪换道具，否则打玩家 */
   private chooseBossTarget(): ActorId {
-    if (this.revealed === 'blank' && this.boss.items.length < MAX_ITEMS) return 'boss'
+    // 自射换道具是对局道具经济的一部分，Boss 同样保留这项赌博
+    if (this.revealedBy.boss === 'blank' && this.boss.items.length < MAX_ITEMS) return 'boss'
     return 'player'
   }
 
@@ -1111,7 +1131,11 @@ export class GameEngine {
     this.supplyOptions = options
     this.supplyChoice = null
     this.phase = 'supply'
-    this.log('门前的桌上摆着三件补给，你只能带走一件。')
+    this.log(
+      options.length >= 3
+        ? '门前的桌上摆着三件补给，你只能带走一件。'
+        : `门前的桌上摆着 ${options.length} 件补给，你只能带走一件。`,
+    )
     this.dispatch({ type: 'supplyOffer', options: [...options] })
     this.publish()
     await this.waitSupplyPick()
@@ -1129,7 +1153,9 @@ export class GameEngine {
   }
 
   private rollSupplyOptions(): ItemId[] {
-    return shuffle(this.unlockedItems(), this.rng).slice(0, SUPPLY_OPTION_COUNT)
+    // 第 1 层只摆两件，避免开局补给堆叠；之后仍三选一
+    const count = this.levelIndex === 0 ? 2 : SUPPLY_OPTION_COUNT
+    return shuffle(this.unlockedItems(), this.rng).slice(0, count)
   }
 
   private waitSupplyPick(): Promise<void> {
@@ -1163,8 +1189,14 @@ export class GameEngine {
         this.ensureCylinder()
         const chamber = this.cylinder.current
         if (!chamber) return this.reject('弹仓里空无一物。')
-        this.revealed = chamber
-        detail = chamber === 'live' ? '窥见实弹。' : '窥见空膛。'
+        this.revealedBy[actor.id] = chamber
+        // Boss 的窥视不能写进日志，否则等于把膛内读数告诉了玩家
+        detail =
+          actor.id === 'player'
+            ? chamber === 'live'
+              ? '窥见实弹。'
+              : '窥见空膛。'
+            : '它窥视了枪膛，指节停了一瞬。'
         this.dispatch({ type: 'chamberRevealed', actor: actor.id, chamber })
         break
       }
@@ -1225,8 +1257,8 @@ export class GameEngine {
         this.ensureCylinder()
         if (this.cylinder.current === null) return this.reject('弹仓里空无一物。')
         if (!this.cylinder.forceLive()) return this.reject('膛内已是实弹，无需再砸。')
-        // 放大镜已经窥见的读数必须跟着改，否则桌面信息自相矛盾
-        if (this.revealed !== null) this.revealed = 'live'
+        // 重锤是公开动作：只有已经窥视过的人，读数需要跟着改成实弹
+        this.markRevealsLive()
         detail = '重锤落下：空膛被砸成了实弹。'
         break
       }
@@ -1253,7 +1285,7 @@ export class GameEngine {
         }
         this.boss.hand = withHoleCard(this.boss.hand, true)
         const chambers = this.cylinder.reload()
-        this.revealed = null
+        this.clearReveals()
         const live = chambers.filter((chamber) => chamber === 'live').length
         const blank = chambers.filter((chamber) => chamber === 'blank').length
         detail = `献出 1 点生命。手牌重发为 ${this.player.hand.total} 对 ${this.boss.hand.total}，弹仓重装 ${live} 实 ${blank} 空。`
@@ -1267,6 +1299,7 @@ export class GameEngine {
 
     if (detail === null) return false
     actor.items.splice(index, 1)
+    actor.itemsUsedThisTurn += 1
     this.log(`${actorLabel(actor.id)}使用了【${ITEM_CATALOG[item].name}】。${detail}`)
     this.dispatch({ type: 'itemUsed', actor: actor.id, item, detail })
     this.publish()
@@ -1287,33 +1320,24 @@ export class GameEngine {
     // ---- 胆小看守者：保守保命 ----
     if (personality === 'cautious') {
       if (has('sedative') && me.hp < me.maxHp) return 'sedative'
-      // 手里捏着实弹又必须开枪时，先举起护心镜最稳
-      if (has('aegis') && me.shield === 0 && this.cylinder.current === 'live' && loses) {
-        return 'aegis'
-      }
       if (canSaw && has('saw') && liveRate > 0.7 && me.hand.total >= 15 && !loses) return 'saw'
-      if (has('magnifier') && this.revealed === null && this.cylinder.remaining <= 2) {
+      if (has('magnifier') && this.revealedBy.boss === null && this.cylinder.remaining <= 2) {
         return 'magnifier'
       }
-      if (has('handcuffs') && !foe.skipTurn && foe.hand.total >= 18) return 'handcuffs'
       return null
     }
 
     // ---- 狂热老千：激进赌徒 ----
     if (personality === 'gambler') {
       if (has('sedative') && me.hp < me.maxHp) return 'sedative'
-      if (has('decoy') && me.decoy === 0 && loses) return 'decoy'
       if (has('handcuffs') && !foe.skipTurn && !foe.hand.busted) return 'handcuffs'
       if (has('magnet') && behind && foe.hand.total >= 8) return 'magnet'
       if (canSaw && has('saw') && me.hand.total >= 16 && liveRate >= 0.4) return 'saw'
-      // 已知空膛 → 砸成实弹，这一枪就落在对手身上
-      if (has('hammer') && this.cylinder.current === 'blank' && !loses) return 'hammer'
-      if (has('magnifier') && this.revealed === null) return 'magnifier'
+      if (has('magnifier') && this.revealedBy.boss === null) return 'magnifier'
       return null
     }
 
     // ---- 机械典狱长：冷酷算牌 ----
-    // 沙漏是玩家专属：Boss 落后时开沙漏再立刻停牌等于一键必胜，玩家无从补救
     // 下一发必为实弹且自己大概率输牌 → 用匕首强行续命
     if (has('dagger') && this.cylinder.remaining > 0 && liveRate >= 1 && loses && me.hp > 1) {
       return 'dagger'
@@ -1329,7 +1353,7 @@ export class GameEngine {
     if (has('magnet') && behind && foe.hand.total >= 9) return 'magnet'
     if (canSaw && has('saw') && me.hand.total >= 17 && !loses && liveRate > 0.5) return 'saw'
     if (has('hammer') && this.cylinder.current === 'blank' && !loses) return 'hammer'
-    if (has('magnifier') && this.revealed === null) return 'magnifier'
+    if (has('magnifier') && this.revealedBy.boss === null) return 'magnifier'
     return null
   }
 
@@ -1427,7 +1451,7 @@ export class GameEngine {
   private ensureCylinder(): void {
     if (this.cylinder.remaining > 0) return
     const chambers = this.cylinder.reload()
-    this.revealed = null
+    this.clearReveals()
     const live = chambers.filter((chamber) => chamber === 'live').length
     const blank = chambers.filter((chamber) => chamber === 'blank').length
     this.log(`弹仓打空，重新装填：${live} 实 ${blank} 空，顺序已打乱。`)
@@ -1447,7 +1471,7 @@ export class GameEngine {
   }
 
   private giveSupply(actor: ActorRuntime, count: number): void {
-    const pool = shuffle(this.unlockedItems(), this.rng)
+    const pool = shuffle([...this.itemPoolFor(actor)], this.rng)
     const drawn: ItemId[] = []
     for (let i = 0; i < count && i < pool.length; i += 1) {
       const item = pool[i]
@@ -1466,12 +1490,27 @@ export class GameEngine {
 
   private giveRandomItem(actor: ActorRuntime): ItemId | null {
     if (actor.items.length >= MAX_ITEMS) return null
-    const pool = this.unlockedItems()
+    const pool = this.itemPoolFor(actor)
     const item = pool[Math.floor(this.rng() * pool.length)]
     if (!item) return null
     actor.items.push(item)
     this.dispatch({ type: 'itemDrawn', actor: actor.id, item })
     return item
+  }
+
+  private itemPoolFor(actor: ActorRuntime): readonly ItemId[] {
+    if (actor.id === 'player') return this.unlockedItems()
+    return BOSS_ITEM_POOLS[this.currentLevel().personality]
+  }
+
+  private clearReveals(): void {
+    this.revealedBy.player = null
+    this.revealedBy.boss = null
+  }
+
+  private markRevealsLive(): void {
+    if (this.revealedBy.player !== null) this.revealedBy.player = 'live'
+    if (this.revealedBy.boss !== null) this.revealedBy.boss = 'live'
   }
 
   private viewOf(actor: ActorRuntime): ActorView {
@@ -1490,6 +1529,7 @@ export class GameEngine {
       sawBoost: actor.sawBoost,
       shield: actor.shield,
       decoy: actor.decoy,
+      itemsUsedThisTurn: actor.itemsUsedThisTurn,
     }
   }
 

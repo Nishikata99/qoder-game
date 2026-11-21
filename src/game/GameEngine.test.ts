@@ -767,19 +767,36 @@ describe('Boss 人格停牌线', () => {
 })
 
 describe('新道具：裁纸刀 / 借据 / 封条 / 单片眼镜', () => {
-  it('裁纸刀裁掉最高牌并从牌靴补一张', async () => {
+  it('裁纸刀进入待选，选中的那张被裁掉且不补牌', async () => {
     const { engine, probe } = newEngine({ itemLockMs: 0 })
     await toPlayerTurn(engine)
     probe.player.hand = hand(10, 5)
     probe.player.items = ['cutter']
-    probe.deck = [card(2)]
-    const before = probe.player.hand.cards.length
     expect(engine.useItem('cutter')).toBe(true)
+    const choice = engine.getSnapshot().cardChoice
+    expect(choice?.kind).toBe('cutter')
+    expect(choice?.cards).toHaveLength(2)
+    // 选第一张（10）裁掉，剩下 5
+    expect(engine.resolveCardChoice(0)).toBe(true)
     const after = engine.getSnapshot().player.hand
-    expect(after.cards).toHaveLength(before)
-    // 10 被裁掉，剩下的 5 + 补到的 2
-    expect(after.total).toBe(7)
-    expect(probe.deck).toHaveLength(0)
+    expect(after.cards).toHaveLength(1)
+    expect(after.total).toBe(5)
+    expect(engine.getSnapshot().cardChoice).toBeNull()
+  })
+
+  it('裁纸刀待选期间不能要牌/停牌/再用道具，可放弃', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.player.hand = hand(10, 5)
+    probe.player.items = ['cutter', 'aegis']
+    expect(engine.useItem('cutter')).toBe(true)
+    expect(engine.hit()).toBe(false)
+    expect(engine.stand()).toBe(false)
+    expect(engine.useItem('aegis')).toBe(false)
+    expect(engine.cancelCardChoice()).toBe(true)
+    expect(engine.getSnapshot().cardChoice).toBeNull()
+    // 放弃后牌与道具都没变
+    expect(engine.getSnapshot().player.hand.total).toBe(15)
   })
 
   it('裁纸刀每回合限一次，且爆牌时不可用', async () => {
@@ -818,6 +835,19 @@ describe('新道具：裁纸刀 / 借据 / 封条 / 单片眼镜', () => {
     expect(shots[0]).toBe(4)
   })
 
+  it('借据在输掉时让挨的实弹 +1', async () => {
+    const { engine, probe } = newEngine()
+    await toPlayerTurn(engine)
+    setTargeting(probe, [10, 5], [10, 9], 'live')
+    // 玩家签了借据，被 Boss 打中时多挨 1 点
+    probe.player.iou = 1
+    probe.pendingShot = 'boss'
+    void probe.resolveShot(probe.boss, probe.player, probe.generation)
+    await settleUntil(() => engine.getSnapshot().player.hp !== 7)
+    // 基础 2 + 玩家借据 1 = 3
+    expect(engine.getSnapshot().player.hp).toBe(4)
+  })
+
   it('借据对自射不加成', async () => {
     const { engine, probe } = newEngine()
     await toPlayerTurn(engine)
@@ -830,18 +860,22 @@ describe('新道具：裁纸刀 / 借据 / 封条 / 单片眼镜', () => {
     expect(engine.getSnapshot().player.hp).toBe(5)
   })
 
-  it('封条亮出底牌并封掉对手最高明牌', async () => {
+  it('封条亮出底牌并让玩家自选封住哪张明牌', async () => {
     const { engine, probe } = newEngine({ itemLockMs: 0 })
     await toPlayerTurn(engine)
-    probe.boss.hand = hand(10, 9)
+    probe.boss.hand = hand(6, 9)
     probe.boss.hand = { ...probe.boss.hand, visible: [probe.boss.hand.cards[0]!, null] }
     probe.holeRevealed = false
     probe.player.items = ['seal']
     expect(engine.useItem('seal')).toBe(true)
-    const snapshot = engine.getSnapshot()
-    // 封掉 10，剩 9；底牌已亮
-    expect(snapshot.boss.hand.total).toBe(9)
-    expect(snapshot.boss.holeCardRevealed).toBe(true)
+    // 底牌已亮，待选是两张明牌
+    expect(engine.getSnapshot().boss.holeCardRevealed).toBe(true)
+    const choice = engine.getSnapshot().cardChoice
+    expect(choice?.kind).toBe('seal')
+    expect(choice?.cards).toHaveLength(2)
+    // 选择封掉 9（第二张），剩 6
+    expect(engine.resolveCardChoice(1)).toBe(true)
+    expect(engine.getSnapshot().boss.hand.total).toBe(6)
     // 同一手不能再封
     probe.player.items = ['seal']
     expect(engine.useItem('seal')).toBe(false)

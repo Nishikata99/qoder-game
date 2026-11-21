@@ -344,13 +344,13 @@ export default function App() {
         case 'cardCuttered':
           sound.playItemUse()
           if (event.actor === 'player') {
-            showNotice(`裁纸刀：${formatCardLabel(event.old)} → ${formatCardLabel(event.next)}`)
+            showNotice(`裁纸刀：裁掉了 ${formatCardLabel(event.old)}`)
           }
           break
         case 'iouSigned':
           sound.playItemUse()
           if (event.actor === 'player') {
-            showNotice('借据落印：本局赢下的实弹 +2，输掉时挨的实弹也 +2')
+            showNotice('借据落印：本局赢下的实弹 +2，输掉时挨的实弹 +1')
           }
           break
         case 'cardSealed':
@@ -729,7 +729,7 @@ export default function App() {
   const playerTurn = phase === 'playerTurn'
   const locked = snapshot?.player.skipTurn ?? false
   const inputLocked = snapshot?.inputLocked ?? false
-  const canAct = playerTurn && !locked && !inputLocked
+  const canAct = playerTurn && !locked && !inputLocked && !snapshot?.cardChoice
   const finished = phase === 'gameOver' || phase === 'victory'
   const level = snapshot?.level ?? (LEVELS[0] as (typeof LEVELS)[number])
   const [, forceTick] = useState(0)
@@ -1327,6 +1327,35 @@ export default function App() {
       ) : null}
 
       {modal ? <RulesModal initialTab={modal} onClose={() => setModal(null)} /> : null}
+
+      {snapshot?.cardChoice && !narrativeActive ? (
+        <div className="absolute inset-x-0 bottom-28 z-30 flex justify-center px-4">
+          <div className="max-w-lg rounded-sm border border-rust-500/40 bg-abyss-900/95 p-3 shadow-2xl shadow-black/70">
+            <p className="text-center text-[11px] tracking-[0.15em] text-rust-300/75">
+              {snapshot.cardChoice.kind === 'cutter' ? '选择要裁掉的一张牌' : '选择要封住的明牌'}
+            </p>
+            <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+              {snapshot.cardChoice.cards.map((card, index) => (
+                <button
+                  key={`${card.id}-${index}`}
+                  type="button"
+                  onClick={() => game.resolveCardChoice(index)}
+                  className="min-w-12 border border-white/12 bg-black/40 px-2 py-1.5 font-display text-sm text-bone-200/85 transition-colors hover:border-rust-500/60 hover:bg-rust-500/15"
+                >
+                  {formatCardLabel(card)}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => game.cancelCardChoice()}
+                className="px-2 py-1.5 text-[10px] tracking-[0.2em] text-bone-200/35 uppercase hover:text-bone-200/70"
+              >
+                放弃
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {clueLine && !narrativeActive ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-[16vh] z-20 flex justify-center px-6">

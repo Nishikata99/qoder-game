@@ -121,19 +121,19 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
   cutter: {
     id: 'cutter',
     name: '裁纸刀',
-    summary: '裁掉你手里点数最高的一张牌，立刻从牌裤补发一张。每回合限一次，爆牌时不可用。',
+    summary: '亮出裁纸刀，自选一张手牌裁掉，不再补牌。每回合限一次，爆牌时不可用。',
     glyph: '✂',
   },
   iou: {
     id: 'iou',
     name: '借据',
-    summary: '本局押上血债：你赢下的实弹伤害 +2，输掉时打向你的实弹也 +2。每局只能签一张。',
+    summary: '本局押上血债：你赢下的实弹伤害 +2，输掉时打向你的实弹 +1。每局只能签一张。',
     glyph: '▤',
   },
   seal: {
     id: 'seal',
     name: '封条',
-    summary: '贴住对手点数最高的一张明牌，本局该牌不计点数；封牌时对手底牌一并亮出。每局限一次。',
+    summary: '先亮出对手底牌，再自选其一张明牌贴住，本局该牌不计点数。每局限一次。',
     glyph: '⊘',
   },
   monocle: {
@@ -226,6 +226,13 @@ export interface CylinderView {
   readonly revealed: Chamber | null
 }
 
+export interface CardChoiceView {
+  /** cutter：从自己手牌里选一张裁掉；seal：从对手明牌里选一张封住 */
+  readonly kind: 'cutter' | 'seal'
+  readonly cards: readonly Card[]
+  readonly labels?: readonly string[]
+}
+
 export interface GameSnapshot {
   readonly phase: Phase
   readonly started: boolean
@@ -255,6 +262,8 @@ export interface GameSnapshot {
   readonly supplyDeadline: number | null
   /** 第 3 层牌靴剩余张数；其他层为 null */
   readonly deckRemaining: number | null
+  /** 裁纸刀/封条使用后等待玩家点选一张牌 */
+  readonly cardChoice: CardChoiceView | null
   readonly log: readonly string[]
 }
 
@@ -279,7 +288,7 @@ export type GameEvent =
   | { readonly type: 'chamberRecovered'; readonly actor: ActorId; readonly item: ItemId }
   | { readonly type: 'hourglass'; readonly actor: ActorId }
   | { readonly type: 'daggerReshuffle'; readonly actor: ActorId; readonly live: number; readonly blank: number }
-  | { readonly type: 'cardCuttered'; readonly actor: ActorId; readonly old: Card; readonly next: Card }
+  | { readonly type: 'cardCuttered'; readonly actor: ActorId; readonly old: Card }
   | { readonly type: 'iouSigned'; readonly actor: ActorId }
   | { readonly type: 'cardSealed'; readonly actor: ActorId; readonly card: Card }
   | {
@@ -629,6 +638,9 @@ export class GameEngine {
   private supplyOptions: ItemId[] = []
   private supplyChoice: ItemId | null = null
   private supplyResolver: (() => void) | null = null
+  /** 裁纸刀/封条等待点选的牌；暂停/换层/销毁时清空 */
+  private cardChoice: { kind: 'cutter' | 'seal'; cards: Card[] } | null = null
+  private cardChoiceResolver: (() => void) | null = null
   /** 层间三选一选中的道具：beginLevel 会重建 Actor，必须先寄存再注入 */
   private carryOver: ItemId[] = []
   private readonly listeners = new Set<GameEventListener>()
@@ -727,6 +739,7 @@ export class GameEngine {
   }
 
   hit(): boolean {
+    if (this.cardChoice) return this.reject('先选好要裁/要封的牌。')
     if (this.phase !== 'playerTurn') {
       return this.reject('现在不是你的回合。')
     }
@@ -754,6 +767,7 @@ export class GameEngine {
   }
 
   stand(): boolean {
+    if (this.cardChoice) return this.reject('先选好要裁/要封的牌。')
     if (this.phase !== 'playerTurn') {
       return this.reject('现在不是你的回合。')
     }
@@ -769,6 +783,7 @@ export class GameEngine {
   }
 
   useItem(item: ItemId): boolean {
+    if (this.cardChoice) return this.reject('先选好要裁/要封的牌。')
     if (this.phase !== 'playerTurn') {
       return this.reject('现在不是使用道具的时机。')
     }
@@ -805,6 +820,47 @@ export class GameEngine {
     if (this.supplyResolver === null) return false
     this.supplyChoice = item
     this.supplyResolver()
+    return true
+  }
+
+  /** 裁纸刀/封条的选牌结算：index 对应快照 cardChoice.cards */
+  resolveCardChoice(index: number): boolean {
+    const choice = this.cardChoice
+    if (!choice) return this.reject('现在没有等待选择的牌。')
+    if (!Number.isInteger(index) || index < 0 || index >= choice.cards.length) {
+      return this.reject('这不是可以选择的牌。')
+    }
+    const card = choice.cards[index]
+    if (!card) return this.reject('这不是可以选择的牌。')
+    this.cardChoice = null
+
+    if (choice.kind === 'cutter') {
+      if (this.player.hand.busted) return this.reject('已经爆牌，裁牌也救不回来。')
+      this.player.hand = evaluateHand(this.player.hand.cards.filter((value) => value !== card))
+      this.player.cutterUsedThisRound = true
+      this.log(`你裁掉了 ${formatCard(card)}，现为 ${this.player.hand.total} 点。`)
+      this.dispatch({ type: 'cardCuttered', actor: 'player', old: card })
+    } else {
+      this.boss.hand = withHoleCard(
+        evaluateHand(this.boss.hand.cards.filter((value) => value !== card)),
+        false,
+      )
+      this.player.sealedThisRound = true
+      this.log(`你把封条贴在 ${formatCard(card)} 上，对手现为 ${this.boss.hand.total} 点。`)
+      this.dispatch({ type: 'cardSealed', actor: 'player', card })
+    }
+    this.cardChoiceResolver?.()
+    this.cardChoiceResolver = null
+    this.publish()
+    return true
+  }
+
+  cancelCardChoice(): boolean {
+    if (!this.cardChoice) return false
+    this.cardChoice = null
+    this.cardChoiceResolver?.()
+    this.cardChoiceResolver = null
+    this.publish()
     return true
   }
 
@@ -855,6 +911,9 @@ export class GameEngine {
       supplyDeadline: this.phase === 'supply' ? this.supplyDeadline : null,
       deckRemaining:
         this.currentLevel().deckPolicy === 'persistent' ? this.deck.length : null,
+      cardChoice: this.cardChoice
+        ? { kind: this.cardChoice.kind, cards: [...this.cardChoice.cards] }
+        : null,
       log: [...this.logLines],
     }
   }
@@ -925,6 +984,8 @@ export class GameEngine {
     this.holeRevealed = false
     this.player.itemsUsedThisTurn = 0
     this.boss.itemsUsedThisTurn = 0
+    this.cardChoice = null
+    this.cardChoiceResolver = null
     this.player.cutterUsedThisRound = false
     this.boss.cutterUsedThisRound = false
     this.player.sealedThisRound = false
@@ -1164,9 +1225,10 @@ export class GameEngine {
     this.clearReveals()
     // 基础 2 点；黑杰克 +1；碾压（手牌 ≥20）+1；走火遗恨 +N；借据押注 +2；锯子整体翻倍
     const stacks = this.damageBonus
+    // 借据：赢下的实弹 +2，输掉时挨的实弹 +1
     const iouBonus =
       !selfShot && chamber === 'live'
-        ? (attacker.iou > 0 ? 2 : 0) + (target.iou > 0 ? 2 : 0)
+        ? (attacker.iou > 0 ? 2 : 0) + (target.iou > 0 ? 1 : 0)
         : 0
     const base = 2 + (blackjack ? 1 : 0) + (overwhelmed ? 1 : 0) + stacks + iouBonus
     const rawDamage = chamber === 'live' ? (sawed ? base * 2 : base) : 0
@@ -1200,7 +1262,7 @@ export class GameEngine {
       if (overwhelmed) tags.push('碾压')
       if (sawed) tags.push('锯短枪管')
       if (stacks > 0) tags.push(`走火遗恨 +${stacks}`)
-      if (iouBonus > 0) tags.push('借据 +2')
+      if (iouBonus > 0) tags.push(`借据 +${iouBonus}`)
       const tag = tags.length > 0 ? `（${tags.join(' · ')}）` : ''
       this.log(`${who}扣下扳机：实弹${tag}。${victim}承受 ${damage} 点伤害。`)
     } else if (reward) {
@@ -1415,7 +1477,13 @@ export class GameEngine {
         if (actor.hand.busted) return this.reject('已经爆牌，裁牌也救不回来。')
         if (actor.cutterUsedThisRound) return this.reject('这一手已经裁过牌了。')
         if (actor.hand.cards.length === 0) return this.reject('手里没有可以裁掉的牌。')
-        // 裁掉点数最高的一张（A 按当前最优值比较），再从牌靴补一张
+        if (actor.id === 'player') {
+          // 玩家自选一张：进入待选状态，resolveCardChoice 结算
+          this.cardChoice = { kind: 'cutter', cards: [...actor.hand.cards] }
+          detail = '亮出裁纸刀，选择要裁掉的一张牌。'
+          break
+        }
+        // Boss 没有交互：裁掉点数最高的一张
         let cutIndex = 0
         let cutRank = -1
         actor.hand.cards.forEach((cardValue, i) => {
@@ -1427,28 +1495,24 @@ export class GameEngine {
         })
         const old = actor.hand.cards[cutIndex]
         if (!old) return this.reject('手里没有可以裁掉的牌。')
-        const rest = actor.hand.cards.filter((_, i) => i !== cutIndex)
-        actor.hand = evaluateHand(rest)
-        if (actor.id === 'boss') actor.hand = withHoleCard(actor.hand, !this.holeRevealed)
-        const next = this.drawCard()
-        actor.hand = evaluateHand([...rest, next])
+        actor.hand = evaluateHand(actor.hand.cards.filter((_, i) => i !== cutIndex))
         if (actor.id === 'boss') actor.hand = withHoleCard(actor.hand, !this.holeRevealed)
         actor.cutterUsedThisRound = true
-        detail = `裁掉 ${formatCard(old)}，补到 ${formatCard(next)}，现为 ${actor.hand.total} 点。`
-        this.dispatch({ type: 'cardCuttered', actor: actor.id, old, next })
+        detail = `裁掉 ${formatCard(old)}，现为 ${actor.hand.total} 点。`
+        this.dispatch({ type: 'cardCuttered', actor: actor.id, old })
         break
       }
       case 'iou': {
         if (actor.iou > 0) return this.reject('借据已经签过了。')
         actor.iou = 1
-        detail = '借据落印：本局你赢下的实弹 +2，输掉时打向你的实弹也 +2。'
+        detail = '借据落印：本局你赢下的实弹 +2，输掉时打向你的实弹 +1。'
         this.dispatch({ type: 'iouSigned', actor: actor.id })
         break
       }
       case 'seal': {
         if (actor.sealedThisRound) return this.reject('这一手已经贴过封条了。')
         if (this.boss.hand.cards.length === 0) return this.reject('桌上还没有可以封的牌。')
-        // 封牌先亮底牌，再封对手点数最高的一张明牌；封住的牌本局不计点数
+        // 封牌是公开动作：先亮出底牌，再让玩家从明牌里任选一张
         const wasHidden = !this.holeRevealed
         this.holeRevealed = true
         this.boss.hand = withHoleCard(this.boss.hand, false)
@@ -1456,18 +1520,14 @@ export class GameEngine {
           const hole = this.boss.hand.cards[1]
           if (hole) this.log(`它亮出底牌 ${formatCard(hole)}。`)
         }
-        const visible = this.boss.hand.visible
-          .map((cardValue, i) => ({ cardValue, i }))
-          .filter((entry): entry is { cardValue: Card; i: number } => entry.cardValue !== null)
-        let sealed: Card | null = null
-        let sealedRank = -1
-        for (const entry of visible) {
-          const rank = entry.cardValue.rank === 1 ? 11 : entry.cardValue.rank
-          if (rank > sealedRank) {
-            sealedRank = rank
-            sealed = entry.cardValue
-          }
+        const visible = this.boss.hand.visible.filter((cardValue): cardValue is Card => cardValue !== null)
+        if (visible.length === 0) return this.reject('对手没有可以封的明牌。')
+        if (actor.id === 'player') {
+          this.cardChoice = { kind: 'seal', cards: visible }
+          detail = '封条已经蘸好朱砂，选择对手的一张明牌。'
+          break
         }
+        const sealed = visible[0]
         if (!sealed) return this.reject('对手没有可以封的明牌。')
         const remaining = this.boss.hand.cards.filter((cardValue) => cardValue !== sealed)
         this.boss.hand = withHoleCard(evaluateHand(remaining), false)
@@ -1920,6 +1980,8 @@ export class GameEngine {
     this.executionDelay = null
     this.executionSkip = null
     this.inputLocked = false
+    this.cardChoice = null
+    this.cardChoiceResolver = null
     // 取消 supply 等待时也要放行挂起的 offerSupply，否则 Promise 永久悬空
     this.supplyDelay = null
     this.supplyDeadline = null

@@ -32,7 +32,7 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
 
   const guide = page.getByRole('dialog', { name: '开局说明' })
   if ((await guide.count()) > 0) {
-    await page.getByRole('button', { name: '坐上牌桌' }).click()
+    await page.getByRole('button', { name: '知道了' }).click()
     await expect(guide).toBeHidden()
   }
 

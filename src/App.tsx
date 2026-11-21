@@ -38,17 +38,28 @@ const FADE_MS = 2400
 const GUIDE_KEY = 'blood-ante.guideSeen'
 
 const GUIDE_LINES = [
-  '谁更接近 21 点，谁夺枪——赢点数，就赢这一轮的裁决权。',
-  '枪口由你决定——射向对面催血；对自己开空膛，白拿一件前人遗物。',
-  '凑齐三层二十一袋血，才算赎契——输光血袋，你的名字就留在三楼。',
+  '比 21 点：要牌或停牌；赢下这轮，枪就归你。牌库只有 A–10，没有 J/Q/K。',
+  '枪口由你定：射它，或射自己。对自己开未知空膛，桌下可能回一件遗物。',
+  '三层赎契：每层血袋重置；清层只能带走一件补给。',
 ] as const
+
+const NARRATIVE_SEEN: Readonly<Record<NarrativeMode, string>> = {
+  intro: 'blood-ante.narrativeSeen.intro',
+  restart: 'blood-ante.narrativeSeen.restart',
+  t2: 'blood-ante.narrativeSeen.t2',
+  t3: 'blood-ante.narrativeSeen.t3',
+  endingB: 'blood-ante.narrativeSeen.endingB',
+}
+
+const FIRST_TURN_HINT_KEY = 'blood-ante.hint.firstTurn'
 
 /** 首次进入的三句话规则；localStorage 记住已读，之后只在角落留一个「规则 / 图鉴」入口 */
 function hasSeenGuide(): boolean {
   try {
     return window.localStorage.getItem(GUIDE_KEY) === '1'
   } catch {
-    return true
+    // 隐私模式读不到 localStorage 时应当看到引导，而不是静默跳过
+    return false
   }
 }
 
@@ -57,6 +68,38 @@ function markGuideSeen(): void {
     window.localStorage.setItem(GUIDE_KEY, '1')
   } catch {
     // 隐私模式写入会抛错，忽略即可，最多下次再弹一次
+  }
+}
+
+function hasSeenNarrative(mode: NarrativeMode): boolean {
+  try {
+    return window.localStorage.getItem(NARRATIVE_SEEN[mode]) === '1'
+  } catch {
+    return false
+  }
+}
+
+function markNarrativeSeen(mode: NarrativeMode): void {
+  try {
+    window.localStorage.setItem(NARRATIVE_SEEN[mode], '1')
+  } catch {
+    // 写不进去就下次再看一遍，不阻塞流程
+  }
+}
+
+function hasSeenFirstTurnHint(): boolean {
+  try {
+    return window.localStorage.getItem(FIRST_TURN_HINT_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function markFirstTurnHintSeen(): void {
+  try {
+    window.localStorage.setItem(FIRST_TURN_HINT_KEY, '1')
+  } catch {
+    // 隐私模式：最多重复提示一次
   }
 }
 
@@ -94,6 +137,9 @@ export default function App() {
   const [clueLine, setClueLine] = useState<string | null>(null)
   const [devOpen, setDevOpen] = useState(false)
   const [corridorState, setCorridorState] = useState<'idle' | 'playing' | 'done'>('idle')
+  const [skipAvailable, setSkipAvailable] = useState(false)
+  const [showFirstTurnHint, setShowFirstTurnHint] = useState(false)
+  const firstTurnHintShownRef = useRef(false)
   const pendingIntroRef = useRef(false)
   const devEPresses = useRef<number[]>([])
   const narrativeRef = useRef<NarrativeVisual | null>(null)
@@ -297,9 +343,11 @@ export default function App() {
       const key = event.key.toLowerCase()
       if (key === 'h') {
         event.preventDefault()
+        setShowFirstTurnHint(false)
         game.hit()
       } else if (key === 's') {
         event.preventDefault()
+        setShowFirstTurnHint(false)
         game.stand()
       }
     }
@@ -321,15 +369,34 @@ export default function App() {
     return () => window.clearInterval(id)
   }, [alive, bpm, sound])
 
-  // 切后台冻结整条音频图：suspend 期间 currentTime 不走，排队的心跳会在回来时一起炸开
+  // 切后台冻结音频图，同时暂停叙事导演：回来不自动续播，避免一次补播积压分镜
   useEffect(() => {
     const onVisibility = () => {
-      if (document.hidden) sound.suspend()
-      else sound.resume()
+      if (document.hidden) {
+        sound.suspend()
+        directorRef.current?.pause()
+      } else {
+        sound.resume()
+        directorRef.current?.resume()
+      }
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [sound])
+
+  useEffect(() => {
+    if (!snapshot || snapshot.phase !== 'playerTurn' || snapshot.round !== 1) return
+    if (firstTurnHintShownRef.current || hasSeenFirstTurnHint()) return
+    firstTurnHintShownRef.current = true
+    markFirstTurnHintSeen()
+    setShowFirstTurnHint(true)
+    // 不在 effect cleanup 里清定时器：开发模式 StrictMode 的二次挂载会立刻取消它
+    window.setTimeout(() => setShowFirstTurnHint(false), 8000)
+  }, [snapshot?.phase, snapshot?.round])
+
+  const finishFirstTurnHint = useCallback(() => {
+    setShowFirstTurnHint(false)
+  }, [])
 
   const devBridge = useMemo(() => new DevBridge(game), [game])
 
@@ -406,6 +473,8 @@ export default function App() {
     if (!scene) return
     directorRef.current?.stop()
     narrativeModeRef.current = mode
+    // 已看过的段落给跳过入口；首见仍完整播放
+    setSkipAvailable(hasSeenNarrative(mode))
     const director = new NarrativeDirector({
       scene,
       sound,
@@ -415,6 +484,8 @@ export default function App() {
         else game.restart()
       },
       onFinish: () => {
+        markNarrativeSeen(mode)
+        setSkipAvailable(false)
         setNarrative(null)
         directorRef.current = null
         narrativeModeRef.current = null
@@ -422,6 +493,15 @@ export default function App() {
     })
     directorRef.current = director
     director.start(mode)
+  }
+
+  function skipNarrative() {
+    const director = directorRef.current
+    const mode = narrativeModeRef.current
+    if (!director || !mode) return
+    markNarrativeSeen(mode)
+    setSkipAvailable(false)
+    director.skip()
   }
 
   const narrativeActive = narrative !== null
@@ -590,7 +670,10 @@ export default function App() {
             <MetalButton
               tone="primary"
               disabled={!canAct}
-              onClick={() => game.hit()}
+              onClick={() => {
+                finishFirstTurnHint()
+                game.hit()
+              }}
               hint={locked ? '手铐锁住了你的手腕' : undefined}
             >
               要牌{' '}
@@ -598,7 +681,14 @@ export default function App() {
                 HIT · H
               </span>
             </MetalButton>
-            <MetalButton tone="secondary" disabled={!canAct} onClick={() => game.stand()}>
+            <MetalButton
+              tone="secondary"
+              disabled={!canAct}
+              onClick={() => {
+                finishFirstTurnHint()
+                game.stand()
+              }}
+            >
               停牌{' '}
               <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45 max-[420px]:hidden">
                 STAND · S
@@ -834,6 +924,22 @@ export default function App() {
         </div>
       ) : null}
 
+      {showFirstTurnHint && snapshot && !narrativeActive ? (
+        <div
+          aria-live="polite"
+          className={`pointer-events-none absolute inset-x-0 z-20 flex justify-center px-4 ${clueLine ? 'bottom-24' : 'bottom-40'}`}
+        >
+          <p className="max-w-md rounded-sm border border-rust-500/35 bg-black/90 px-4 py-2 text-center text-[11px] leading-relaxed tracking-[0.08em] text-bone-200/80 shadow-lg shadow-black/60">
+            你的回合：你 {snapshot.player.visibleHand.total} 点，对手明牌{' '}
+            {snapshot.boss.visibleHand.visible.filter((card): card is Card => card !== null).reduce(
+              (sum, card) => sum + (card.rank === 1 ? 11 : card.rank),
+              0,
+            )}{' '}
+            点。H 要牌 / S 停牌；赢下这轮才拿到枪。
+          </p>
+        </div>
+      ) : null}
+
       {notice ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-32 flex justify-center">
           <p className="rounded-sm border border-white/8 bg-black/70 px-4 py-1.5 text-[10px] tracking-[0.15em] text-bone-200/65">
@@ -883,7 +989,7 @@ export default function App() {
                   setGuideOpen(false)
                 }}
               >
-                坐上牌桌
+                知道了
               </MetalButton>
             </div>
           </div>
@@ -901,7 +1007,13 @@ export default function App() {
       ) : null}
 
       {narrative && directorRef.current ? (
-        <NarrativeOverlay director={directorRef.current} sound={sound} visual={narrative} />
+        <NarrativeOverlay
+          director={directorRef.current}
+          sound={sound}
+          visual={narrative}
+          canSkip={skipAvailable}
+          onSkip={skipNarrative}
+        />
       ) : null}
 
       {devOpen ? (

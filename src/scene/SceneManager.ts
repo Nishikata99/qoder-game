@@ -84,7 +84,7 @@ export interface ShotPayload {
   readonly hpAfter: number
   readonly sawed: boolean
   readonly blackjack: boolean
-  readonly blocked: 'shield' | 'decoy' | null
+  readonly blocked: 'shield' | null
 }
 
 interface Tween {
@@ -1308,7 +1308,7 @@ export class SceneManager {
       const origin = this.bossHitPoint(this.scratchHitPoint)
       if (payload.blocked) {
         // 被挡下：Boss 不受伤，也不闪白、不后仰，只给一次材质化的碎屑反馈
-        this.spawnSparks(origin, payload.blocked)
+        this.spawnSparks(origin)
       } else {
         this.flashBoss()
         this.spawnBlood(origin)
@@ -3229,19 +3229,15 @@ export class SceneManager {
     return points
   }
 
-  /**
-   * 格挡碎屑：护心镜是金色金属火花（会发光、带一盏短命点光），
-   * 诱饵是哑光的稻草/陶土渣（重、不发光），两者一眼能分清是被什么挡下的
-   */
-  private spawnSparks(origin: THREE.Vector3, kind: 'shield' | 'decoy'): void {
+  /** 格挡碎屑：护心镜碎裂的金色金属火花（会发光、带一盏短命点光） */
+  private spawnSparks(origin: THREE.Vector3): void {
     this.sparkLife = 0.5
     const attribute = this.sparkBurst.geometry.getAttribute('position')
     if (!(attribute instanceof THREE.BufferAttribute)) return
     const material = this.sparkBurst.material
-    const shield = kind === 'shield'
-    material.color.setHex(shield ? 0xffe6b0 : 0x9c7a4a)
-    material.size = shield ? 0.18 : 0.11
-    material.blending = shield ? THREE.AdditiveBlending : THREE.NormalBlending
+    material.color.setHex(0xffe6b0)
+    material.size = 0.18
+    material.blending = THREE.AdditiveBlending
     material.needsUpdate = true
 
     const array = attribute.array as Float32Array
@@ -3250,22 +3246,14 @@ export class SceneManager {
       array[base] = origin.x
       array[base + 1] = origin.y
       array[base + 2] = origin.z
-      if (shield) {
-        this.sparkVelocity[base] = (Math.random() - 0.5) * 2.6
-        this.sparkVelocity[base + 1] = Math.random() * 1.6 - 0.2
-        this.sparkVelocity[base + 2] = 1.2 + Math.random() * 2.4
-      } else {
-        // 稻草渣更重、更贴近命中点往下掉
-        this.sparkVelocity[base] = (Math.random() - 0.5) * 1.1
-        this.sparkVelocity[base + 1] = Math.random() * 0.8 - 0.3
-        this.sparkVelocity[base + 2] = 0.5 + Math.random() * 1.2
-      }
+      this.sparkVelocity[base] = (Math.random() - 0.5) * 2.6
+      this.sparkVelocity[base + 1] = Math.random() * 1.6 - 0.2
+      this.sparkVelocity[base + 2] = 1.2 + Math.random() * 2.4
     }
     attribute.needsUpdate = true
     this.sparkBurst.visible = true
-    material.opacity = shield ? 1 : 0.85
+    material.opacity = 1
 
-    if (!shield) return
     // 火花是瞬时强光：补一盏短命点光，否则在暗场里只剩几个像素点
     const impact = new THREE.PointLight(0xffc070, 4, 2, 2)
     impact.position.copy(origin)
@@ -3945,25 +3933,83 @@ export class SceneManager {
         })
         break
       }
-      case 'decoy': {
-        // 诱饵：一尊粗糙的小泥偶，头顶插着草标
-        const clayMat = makeStandardMaterial(0x6b5238, 0.15, 0.85)
-        const strawMat = makeStandardMaterial(0xb59a52, 0.05, 0.9)
-        add(new THREE.CapsuleGeometry(0.055, 0.1, 6, 12), clayMat, (mesh) => {
-          mesh.position.y = 0.085
+      case 'cutter': {
+        // 裁纸刀：黄铜小刀压在一张半卷的旧账页上
+        const bladeMat = makeStandardMaterial(0x9aa3a8, 0.92, 0.3)
+        const gripMat = makeStandardMaterial(0x6a4a2a, 0.08, 0.8)
+        const paperMat = makeStandardMaterial(0xb8a888, 0.02, 0.92)
+        add(new THREE.BoxGeometry(0.24, 0.012, 0.045), paperMat, (mesh) => {
+          mesh.position.y = 0.006
+          mesh.rotation.y = 0.35
         })
-        add(new THREE.SphereGeometry(0.055, 14, 10), clayMat, (mesh) => {
-          mesh.position.y = 0.19
+        add(new THREE.BoxGeometry(0.17, 0.008, 0.03), bladeMat, (mesh) => {
+          mesh.position.set(0.02, 0.03, 0)
+          mesh.rotation.y = 0.15
         })
-        add(new THREE.BoxGeometry(0.11, 0.02, 0.02), clayMat, (mesh) => {
-          mesh.position.y = 0.13
+        add(new THREE.CylinderGeometry(0.016, 0.014, 0.09, 8), gripMat, (mesh) => {
+          mesh.position.set(-0.1, 0.03, -0.01)
+          mesh.rotation.z = Math.PI / 2 + 0.15
         })
-        add(new THREE.CylinderGeometry(0.006, 0.006, 0.09, 6), strawMat, (mesh) => {
-          mesh.position.set(0, 0.26, 0)
+        break
+      }
+      case 'iou': {
+        // 借据：一张压在铜印下的欠条，边角卷起
+        const paperMat = makeStandardMaterial(0xc2b290, 0.01, 0.9)
+        const inkMat = makeStandardMaterial(0x2a1a12, 0.0, 0.95)
+        const sealMat = makeStandardMaterial(0x7d1f18, 0.25, 0.6)
+        add(new THREE.BoxGeometry(0.2, 0.008, 0.26), paperMat, (mesh) => {
+          mesh.position.y = 0.004
+          mesh.rotation.y = -0.12
         })
-        add(new THREE.BoxGeometry(0.07, 0.04, 0.006), strawMat, (mesh) => {
-          mesh.position.set(0, 0.3, 0)
-          mesh.rotation.z = 0.3
+        add(new THREE.BoxGeometry(0.02, 0.004, 0.2), inkMat, (mesh) => {
+          mesh.position.set(0.055, 0.011, 0)
+          mesh.rotation.y = -0.12
+        })
+        add(new THREE.CylinderGeometry(0.045, 0.045, 0.03, 14), sealMat, (mesh) => {
+          mesh.position.set(-0.045, 0.02, 0.06)
+        })
+        break
+      }
+      case 'seal': {
+        // 封条：一条朱砂封纸压着两枚木签
+        const stripMat = makeStandardMaterial(0xb02a1e, 0.02, 0.85)
+        const pegMat = makeStandardMaterial(0x8a7350, 0.05, 0.8)
+        add(new THREE.CylinderGeometry(0.012, 0.014, 0.2, 8), pegMat, (mesh) => {
+          mesh.position.set(-0.05, 0.1, 0)
+          mesh.rotation.z = 0.06
+        })
+        add(new THREE.CylinderGeometry(0.012, 0.014, 0.2, 8), pegMat, (mesh) => {
+          mesh.position.set(0.05, 0.1, 0)
+          mesh.rotation.z = -0.06
+        })
+        add(new THREE.BoxGeometry(0.16, 0.006, 0.05), stripMat, (mesh) => {
+          mesh.position.set(0, 0.14, 0)
+          mesh.rotation.z = 0.05
+        })
+        break
+      }
+      case 'monocle': {
+        // 单片眼镜：黄铜镜圈 + 镜腿链，斜靠在桌面上
+        const rimMat = makeStandardMaterial(0x8a6a3a, 0.92, 0.3)
+        const glassMat = new THREE.MeshStandardMaterial({
+          color: 0xcfd8d4,
+          metalness: 0.1,
+          roughness: 0.08,
+          transparent: true,
+          opacity: 0.45,
+        })
+        this.disposableMaterials.add(glassMat)
+        add(new THREE.TorusGeometry(0.085, 0.01, 8, 24), rimMat, (mesh) => {
+          mesh.position.y = 0.095
+          mesh.rotation.x = -0.5
+        })
+        add(new THREE.CircleGeometry(0.078, 24), glassMat, (mesh) => {
+          mesh.position.y = 0.096
+          mesh.rotation.x = -0.5
+        })
+        add(new THREE.CylinderGeometry(0.005, 0.005, 0.14, 6), rimMat, (mesh) => {
+          mesh.position.set(0.11, 0.03, 0.06)
+          mesh.rotation.set(0.4, 0, -0.9)
         })
         break
       }

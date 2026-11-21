@@ -3,6 +3,7 @@ import type { ActorId, GameEvent, GameSnapshot, ItemId } from '../game/GameEngin
 import type { GameEngine } from '../game/GameEngine'
 import { SceneManager } from '../scene/SceneManager'
 import type { ItemHoverPayload } from '../scene/SceneManager'
+import type { SceneLoadProgress } from '../scene/SceneManager'
 import { itemFlavor } from '../narrative/copy'
 
 export interface GameCanvasProps {
@@ -11,6 +12,8 @@ export interface GameCanvasProps {
   readonly onItemUse?: (actor: ActorId, item: ItemId) => void
   readonly onHoverChange?: (payload: ItemHoverPayload | null) => void
   readonly onSceneReady?: (scene: SceneManager) => void
+  readonly onLoadProgress?: (progress: SceneLoadProgress) => void
+  readonly onLoadError?: (key: string, error: unknown) => void
 }
 
 export function GameCanvas({
@@ -19,20 +22,22 @@ export function GameCanvas({
   onItemUse,
   onHoverChange,
   onSceneReady,
+  onLoadProgress,
+  onLoadError,
 }: GameCanvasProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sceneRef = useRef<SceneManager | null>(null)
-  const callbacksRef = useRef({ onItemUse, onHoverChange })
+  const callbacksRef = useRef({ onItemUse, onHoverChange, onLoadProgress, onLoadError })
   const readyRef = useRef(onSceneReady)
   const [error, setError] = useState<string | null>(null)
   const setErrorRef = useRef(setError)
 
   useEffect(() => {
-    callbacksRef.current = { onItemUse, onHoverChange }
+    callbacksRef.current = { onItemUse, onHoverChange, onLoadProgress, onLoadError }
     readyRef.current = onSceneReady
     setErrorRef.current = setError
-  }, [onItemUse, onHoverChange, onSceneReady, setError])
+  }, [onItemUse, onHoverChange, onSceneReady, onLoadProgress, onLoadError, setError])
 
   useEffect(() => {
     const host = hostRef.current
@@ -44,6 +49,8 @@ export function GameCanvas({
       manager = new SceneManager(host, canvas, {
         onItemHover: (payload) => callbacksRef.current.onHoverChange?.(payload),
         onItemClick: (actor, item) => callbacksRef.current.onItemUse?.(actor, item),
+        onLoadProgress: (progress) => callbacksRef.current.onLoadProgress?.(progress),
+        onLoadError: (key, err) => callbacksRef.current.onLoadError?.(key, err),
       })
     } catch (err) {
       setErrorRef.current(err instanceof Error ? err.message : '无法创建 WebGL 场景')
@@ -163,13 +170,33 @@ export function GameCanvas({
 }
 
 export function ItemTooltip({ payload }: { payload: ItemHoverPayload | null }) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
+
+  useEffect(() => {
+    if (!payload || !ref.current) {
+      setPos(null)
+      return
+    }
+    const rect = ref.current.getBoundingClientRect()
+    const margin = 8
+    let left = payload.x + 16
+    let top = payload.y + 16
+    if (left + rect.width > window.innerWidth - margin) left = payload.x - rect.width - 16
+    if (top + rect.height > window.innerHeight - margin) top = payload.y - rect.height - 16
+    left = Math.max(margin, Math.min(left, window.innerWidth - rect.width - margin))
+    top = Math.max(margin, Math.min(top, window.innerHeight - rect.height - margin))
+    setPos({ left, top })
+  }, [payload])
+
   if (!payload) return null
   const owner = payload.actor === 'player' ? '你的道具' : '对手的道具'
   const usable = payload.actor === 'player'
   return (
     <div
+      ref={ref}
       className="pointer-events-none fixed z-50 max-w-56 rounded-sm border border-rust-500/40 bg-abyss-900/95 px-3 py-2 shadow-lg shadow-black/60 backdrop-blur-sm"
-      style={{ left: payload.x + 16, top: payload.y + 16 }}
+      style={{ left: pos?.left ?? payload.x + 16, top: pos?.top ?? payload.y + 16 }}
     >
       <p className="font-display text-sm text-bone-200">{payload.name}</p>
       <p className="mt-0.5 text-[10px] tracking-widest text-rust-400 uppercase">{owner}</p>

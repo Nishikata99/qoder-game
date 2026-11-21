@@ -29,10 +29,26 @@ export interface ItemHoverPayload {
   readonly y: number
 }
 
+export interface SceneLoadProgress {
+  readonly loaded: number
+  readonly total: number
+  readonly key: string
+}
+
 export interface SceneCallbacks {
   readonly onItemHover?: (payload: ItemHoverPayload | null) => void
   readonly onItemClick?: (actor: ActorId, item: ItemId) => void
+  onLoadProgress?: (progress: SceneLoadProgress) => void
+  onLoadError?: (key: string, error: unknown) => void
 }
+
+export type QualityPreset = 'high' | 'balanced' | 'low'
+
+export const QUALITY_SETTINGS = {
+  high: { maxDpr: 2, shadow: 2048, bloom: true, grain: true },
+  balanced: { maxDpr: 1.5, shadow: 1024, bloom: true, grain: true },
+  low: { maxDpr: 1, shadow: 512, bloom: false, grain: false },
+} as const
 
 export type CameraShot =
   | 'table'
@@ -431,6 +447,7 @@ export class SceneManager {
   private readonly container: HTMLElement
   private readonly canvas: HTMLCanvasElement
   private readonly callbacks: SceneCallbacks
+  private quality: QualityPreset = 'high'
   private readonly renderer: THREE.WebGLRenderer
   private readonly composer: EffectComposer
   private readonly renderPass: RenderPass
@@ -1509,26 +1526,27 @@ export class SceneManager {
     return this.camera
   }
 
-  /** 异步载入全部 GLB；失败的模型保持缺失，渲染时自动回退到程序化几何 */
+  /** 异步载入 GLB：首层关键 → 空闲次级 → Boss2/3 进层补齐；失败保持缺失并回退程序化几何 */
   private preloadModels(): void {
-    const keys: ModelKey[] = [
+    const critical: ModelKey[] = [
+      'gaming_table',
+      'room_environment',
       'shotgun',
+      'player_hand',
       'boss_1',
-      'boss_2',
-      'boss_3',
       'item_magnifier',
       'item_syringe',
       'item_saw',
+      'marble_bust_01',
+    ]
+    const secondary: ModelKey[] = [
+      'gothic_statue',
       'item_magnet',
       'item_handcuffs',
       'item_hourglass',
       'item_dagger',
-      'gaming_table',
-      'room_environment',
-      'gothic_statue',
-      'marble_bust_01',
-      'player_hand',
     ]
+    const levelBosses: ModelKey[] = ['boss_2', 'boss_3']
     // 大件场景模型不必和道具一样压那么暗，否则整个桌面沉进黑里
     const dimFor = (key: ModelKey): number => {
       if (key === 'gaming_table') return 0.82
@@ -1545,10 +1563,33 @@ export class SceneManager {
       if (key === 'player_hand') return 0.85
       return key === 'gothic_statue' || key === 'marble_bust_01' ? 0.62 : GLB_ALBEDO_DIM
     }
-    for (const key of keys) {
-      const task = this.gltfLoader
-        .loadAsync(`${MODEL_BASE}/${key}.glb`)
-        .then((gltf: GLTF) => {
+
+    const criticalTask = this.loadModelBatch(critical, dimFor, albedoDimFor, true)
+    this.pendingModels.push(criticalTask)
+    void criticalTask.then(() => {
+      const idle = (cb: () => void): void => {
+        if (typeof window.requestIdleCallback === 'function') {
+          window.requestIdleCallback(cb)
+        } else {
+          window.setTimeout(cb, 400)
+        }
+      }
+      idle(() => this.pendingModels.push(this.loadModelBatch(secondary, dimFor, albedoDimFor, false)))
+      idle(() => this.pendingModels.push(this.loadModelBatch(levelBosses, dimFor, albedoDimFor, false)))
+    })
+  }
+
+  private async loadModelBatch(
+    keys: readonly ModelKey[],
+    dimFor: (key: ModelKey) => number,
+    albedoDimFor: (key: ModelKey) => number,
+    reportProgress: boolean,
+  ): Promise<void> {
+    let loaded = 0
+    await Promise.all(
+      keys.map(async (key) => {
+        try {
+          const gltf = await this.loadModelWithRetry(key)
           if (this.disposed) return
           const root = gltf.scene
           const tuned = new Set<THREE.Material>()
@@ -1569,13 +1610,54 @@ export class SceneManager {
           })
           this.models.set(key, root)
           this.onModelReady(key, root)
-        })
-        .catch((error: unknown) => {
-          // 缺模型不是致命错误：程序化几何继续兜底
+        } catch (error: unknown) {
+          // 缺模型不是致命错误：程序化几何继续兜底，但要让宿主知道发生了降级
           console.debug(`[SceneManager] 模型 ${key}.glb 加载失败，回退程序化几何`, error)
-        })
-      this.pendingModels.push(task)
+          this.callbacks.onLoadError?.(key, error)
+        } finally {
+          loaded += 1
+          if (reportProgress) {
+            this.callbacks.onLoadProgress?.({ loaded, total: keys.length, key })
+          }
+        }
+      }),
+    )
+  }
+
+  private async loadModelWithRetry(key: ModelKey): Promise<GLTF> {
+    let delay = 1000
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.gltfLoader.loadAsync(`${MODEL_BASE}/${key}.glb`)
+      } catch (error) {
+        if (attempt === 2 || this.disposed) throw error
+        await new Promise<void>((resolve) => window.setTimeout(resolve, delay))
+        delay *= 3
+      }
     }
+    throw new Error(`模型 ${key} 加载失败`)
+  }
+
+  setQuality(preset: QualityPreset): void {
+    if (this.disposed) return
+    this.quality = preset
+    const q = QUALITY_SETTINGS[preset]
+    const dpr = Math.min(window.devicePixelRatio, q.maxDpr)
+    this.renderer.setPixelRatio(dpr)
+    this.composer.setPixelRatio(dpr)
+    this.bloomPass.enabled = q.bloom
+    this.grainPass.enabled = q.grain
+    if (this.spot.shadow.mapSize.x !== q.shadow) {
+      this.spot.shadow.mapSize.set(q.shadow, q.shadow)
+      this.spot.shadow.map?.dispose()
+      this.spot.shadow.map = null
+      this.renderer.shadowMap.needsUpdate = true
+    }
+    this.resize()
+  }
+
+  getQuality(): QualityPreset {
+    return this.quality
   }
 
   /** 把 Blender 模型按目标尺寸贴到桌面：底座对齐 y，水平居中 */

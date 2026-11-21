@@ -1,7 +1,8 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { ITEM_CATALOG, ITEM_IDS, LEVELS, LEVEL_UNLOCKS } from '../game/GameEngine'
 import type { ItemId } from '../game/GameEngine'
 import { bossName, itemFlavor } from '../narrative/copy'
+import { useDialogFocus } from './useDialogFocus'
 
 export type ModalTab = 'rules' | 'items'
 
@@ -64,14 +65,8 @@ export function RulesModal({
   onClose: () => void
 }) {
   const [tab, setTab] = useState<ModalTab>(initialTab)
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  useDialogFocus(dialogRef, onClose)
 
   return (
     <div
@@ -82,7 +77,8 @@ export function RulesModal({
       aria-label="规则与图鉴"
     >
       <div
-        className="relative max-h-[82vh] w-full max-w-2xl overflow-y-auto border border-rust-500/30 bg-abyss-900/95 p-6 shadow-2xl shadow-black/80"
+        ref={dialogRef}
+        className="relative max-h-[82dvh] w-full max-w-2xl overflow-y-auto border border-rust-500/30 bg-abyss-900/95 p-6 shadow-2xl shadow-black/80"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between">
@@ -111,12 +107,12 @@ export function RulesModal({
                   {String(index + 1).padStart(2, '0')}
                 </p>
                 <h3 className="mt-1 font-display text-base text-bone-200">{rule.title}</h3>
-                <p className="mt-1 text-[11px] leading-relaxed text-bone-200/55">{rule.body}</p>
+                <p className="mt-1 text-xs leading-relaxed text-bone-200/70">{rule.body}</p>
               </section>
             ))}
             <section className="border-l border-rust-500/25 pl-3 sm:col-span-2">
               <h3 className="font-display text-base text-bone-200">三层结构</h3>
-              <ul className="mt-2 grid gap-1 text-[11px] text-bone-200/55 sm:grid-cols-3">
+              <ul className="mt-2 grid gap-1 text-xs text-bone-200/70 sm:grid-cols-3">
                 {LEVELS.map((level, index) => (
                   <li key={level.id}>
                     <span className="text-rust-400/80">第 {index + 1} 层 · {bossName(index)}</span>
@@ -171,7 +167,7 @@ function ItemCard({ item }: { item: ItemId }) {
       <span className="font-display text-2xl text-rust-400/80">{catalog.glyph}</span>
       <div>
         <h3 className="font-display text-sm text-bone-200">{catalog.name}</h3>
-        <p className="mt-1 text-[11px] leading-relaxed text-bone-200/55">{catalog.summary}</p>
+        <p className="mt-1 text-xs leading-relaxed text-bone-200/70">{catalog.summary}</p>
         <p className="mt-1 text-[11px] leading-relaxed text-rust-300/60 italic">{itemFlavor(item)}</p>
         <p className="mt-1 text-[10px] tracking-[0.2em] text-bone-200/30 uppercase">
           {unlockLevel <= 0 ? '初始可用' : `第 ${unlockLevel + 1} 层解锁`}

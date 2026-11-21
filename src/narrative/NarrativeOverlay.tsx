@@ -10,10 +10,14 @@ export function NarrativeOverlay({
   director,
   sound,
   visual,
+  canSkip,
+  onSkip,
 }: {
   readonly director: NarrativeDirector
   readonly sound: SoundEngine
   readonly visual: NarrativeVisual
+  readonly canSkip: boolean
+  readonly onSkip: () => void
 }) {
   const [typed, setTyped] = useState(0)
   const subtitle = visual.subtitle
@@ -105,6 +109,15 @@ export function NarrativeOverlay({
             {subtitle.text.slice(0, typed)}
           </p>
         </div>
+      ) : null}
+      {canSkip ? (
+        <button
+          type="button"
+          onClick={onSkip}
+          className="absolute right-4 bottom-[4vh] z-10 border border-white/12 bg-black/55 px-3 py-1.5 text-[10px] tracking-[0.3em] text-bone-200/55 uppercase backdrop-blur-sm hover:border-rust-500/50 hover:text-bone-200/85"
+        >
+          跳过本段
+        </button>
       ) : null}
     </div>
   )

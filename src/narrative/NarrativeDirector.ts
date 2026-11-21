@@ -54,6 +54,7 @@ export class NarrativeDirector {
   private rafId: number | null = null
   private lastTs: number | null = null
   private running = false
+  private startedGame = false
   private visual: NarrativeVisual = { active: false, black: 0, focus: 0, letterbox: false, ledger: false, subtitle: null }
 
   constructor(deps: NarrativeDeps) {
@@ -70,6 +71,7 @@ export class NarrativeDirector {
     this.index = 0
     this.time = 0
     this.lastTs = null
+    this.startedGame = false
     this.running = true
     // 入场/重开从全黑起；章节过渡骑在胜利远景上，不能先黑一帧
     const dark = mode === 'intro' || mode === 'restart'
@@ -84,6 +86,32 @@ export class NarrativeDirector {
     this.rafId = null
   }
 
+  pause(): void {
+    if (!this.running) return
+    this.running = false
+    if (this.rafId !== null) cancelAnimationFrame(this.rafId)
+    this.rafId = null
+    this.lastTs = null
+  }
+
+  resume(): void {
+    if (this.running || !this.visual.active) return
+    this.running = true
+    this.lastTs = null
+    this.rafId = requestAnimationFrame(this.tick)
+  }
+
+  /** 已读后跳过：直接交出控制权；入场会先补一次 startGame，保证引擎只启动一次 */
+  skip(): void {
+    if (!this.visual.active) return
+    if (!this.startedGame) this.deps.onGameStart()
+    this.stop()
+    this.deps.scene.resetNarrativeGrade()
+    this.visual = { ...this.visual, active: false, subtitle: null, ledger: false }
+    this.deps.onVisual(this.visual)
+    this.deps.onFinish()
+  }
+
   private readonly tick = (ts: number): void => {
     if (!this.running) return
     this.rafId = requestAnimationFrame(this.tick)
@@ -91,10 +119,12 @@ export class NarrativeDirector {
       this.lastTs = ts
       return
     }
-    // 后台回来时 dt  clamp，避免一口气补播积压的分镜
-    const dt = Math.min(0.05, (ts - this.lastTs) / 1000)
+    const raw = (ts - this.lastTs) / 1000
     this.lastTs = ts
-    this.time += dt
+    // 后台标签页 rAF 本就停摆；这里再兜一层，防止某些环境回补大量帧
+    if (document.hidden) return
+    // 低帧率按真实时间推进，最多补 0.25s，避免镜头跳过整拍
+    this.time += Math.min(0.25, raw)
     while (this.index < this.beats.length && this.beats[this.index]!.at <= this.time) {
       this.apply(this.beats[this.index]!)
       this.index += 1
@@ -150,7 +180,10 @@ export class NarrativeDirector {
       this.visual = next
       this.deps.onVisual(next)
     }
-    if (beat.action === 'startGame') this.deps.onGameStart()
+    if (beat.action === 'startGame') {
+      this.startedGame = true
+      this.deps.onGameStart()
+    }
     if (beat.action === 'headSnap') scene.triggerHeadSnap()
     if (beat.action === 'sutureGlow') scene.triggerSutureGlow()
     if (beat.action === 'reachHand') scene.triggerReachHand()

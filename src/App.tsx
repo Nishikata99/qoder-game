@@ -136,7 +136,7 @@ export default function App() {
               splatterTimer.current = window.setTimeout(() => setBloodSplatter(0), 1500)
               setVisionBlur((n) => n + 1)
               if (blurTimer.current !== null) window.clearTimeout(blurTimer.current)
-              blurTimer.current = window.setTimeout(() => setVisionBlur(0), 1100)
+              blurTimer.current = window.setTimeout(() => setVisionBlur(0), 1400)
             }
           } else {
             sound.playClickEmpty()
@@ -517,11 +517,10 @@ export default function App() {
         }}
       />
 
-      {/* 自己中弹：世界瞬间失焦，只模糊画布，HUD 保持清晰 */}
+      {/* 自己中弹：先黑屏，再模糊睁眼；镜头等视野恢复后才移向血袋。 */}
       <div
         key={`blur-${visionBlur}`}
-        className={`pointer-events-none absolute inset-0 ${visionBlur > 0 ? 'vision-blur' : 'opacity-0'}`}
-        style={{ backdropFilter: 'blur(9px) saturate(0.65)', WebkitBackdropFilter: 'blur(9px) saturate(0.65)' }}
+        className={`pointer-events-none absolute inset-0 z-40 ${visionBlur > 0 ? 'vision-blur' : 'opacity-0'}`}
       />
 
       {/* Minimal corner chrome. */}

@@ -36,6 +36,8 @@ export interface SceneCallbacks {
 
 export type CameraShot =
   | 'table'
+  | 'bloodPlayer'
+  | 'bloodBoss'
   | 'cylinder'
   | 'magnify'
   | 'execute'
@@ -63,6 +65,7 @@ export interface ShotPayload {
   readonly target: ActorId
   readonly chamber: Chamber
   readonly damage: number
+  readonly hpAfter: number
   readonly sawed: boolean
   readonly blackjack: boolean
   readonly blocked: 'shield' | 'decoy' | null
@@ -550,9 +553,17 @@ export class SceneManager {
   private readonly lookTo = new THREE.Vector3(0, 1.02, -0.62)
   private cameraBlend = 1
   private cameraBlendDuration = 1
+  private cameraBlendStartedAt = 0
+  private cameraBlendRealtime = false
   private fovFrom = 48
   private fovTo = 48
   private shot: CameraShot = 'table'
+  private bloodCloseupGeneration = 0
+  private bloodCloseupTimer: number | null = null
+  private bloodCloseupTimerResolve: ((proceed: boolean) => void) | null = null
+  private bloodCloseupActor: ActorId | null = null
+  private bloodCloseupDrain = false
+  private pendingResolutionShot: { shot: 'death' | 'victory'; duration: number } | null = null
   private revealGlow: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial> | null = null
   private revealLight: THREE.PointLight | null = null
   private revealGlowLife = 0
@@ -728,6 +739,8 @@ export class SceneManager {
   /** Blends the camera to a named shot; `hold` keeps it there until another shot is set. */
   setShot(shot: CameraShot, duration = 0.9): void {
     if (this.disposed) return
+    const realtimeBlend = shot === 'bloodPlayer' || shot === 'bloodBoss' || (shot === 'table' && this.isCloseupShot())
+    if (shot !== 'bloodPlayer' && shot !== 'bloodBoss') this.cancelBloodCloseup()
     this.shot = shot
     const target = this.shotFraming(shot)
     this.cameraFrom.copy(this.cameraBase)
@@ -738,6 +751,8 @@ export class SceneManager {
     this.fovTo = target.fov
     this.cameraBlend = 0
     this.cameraBlendDuration = Math.max(0.001, duration)
+    this.cameraBlendStartedAt = performance.now()
+    this.cameraBlendRealtime = realtimeBlend
     // 离开处决机位时把推近缓回去；无论当前进度是否为 0 都要作废在途的推近 tween，
     // 否则跳过演出后那段延迟 tween 还会在桌面机位里把镜头往前推
     if (shot !== 'execute') {
@@ -839,6 +854,7 @@ export class SceneManager {
       duration: 0.4,
       delay: 1.05,
       onUpdate: (t) => {
+        if (this.isCloseupShot()) return
         const jitter = 0.0025 * t
         this.camera.position.x += (Math.random() - 0.5) * jitter
         this.camera.position.y += (Math.random() - 0.5) * jitter
@@ -1039,12 +1055,41 @@ export class SceneManager {
     })
   }
 
+  private bloodFocus(actor: ActorId): THREE.Vector3 {
+    const rack = this.bloodRacks.get(actor)
+    const focus = new THREE.Vector3()
+    if (!rack || rack.bags.length === 0) return focus
+    const position = new THREE.Vector3()
+    rack.group.updateWorldMatrix(true, true)
+    for (const bag of rack.bags) {
+      bag.shell.getWorldPosition(position)
+      focus.add(position)
+    }
+    return focus.multiplyScalar(1 / rack.bags.length)
+  }
+
   private shotFraming(shot: CameraShot): {
     position: THREE.Vector3
     lookAt: THREE.Vector3
     fov: number
   } {
     switch (shot) {
+      case 'bloodPlayer': {
+        const lookAt = this.bloodFocus('player')
+        return {
+          position: lookAt.clone().add(new THREE.Vector3(0.26, 0.1, 0.56)),
+          lookAt,
+          fov: 34,
+        }
+      }
+      case 'bloodBoss': {
+        const lookAt = this.bloodFocus('boss')
+        return {
+          position: lookAt.clone().add(new THREE.Vector3(0.42, 0.02, 0.67)),
+          lookAt,
+          fov: 34,
+        }
+      }
       case 'cylinder':
         return {
           position: new THREE.Vector3(0.62, 2.16, 1.75),
@@ -1139,6 +1184,82 @@ export class SceneManager {
     }
   }
 
+  isBloodCloseupActive(): boolean {
+    return this.bloodCloseupActor !== null
+  }
+
+  setResolutionShot(shot: 'death' | 'victory', duration: number): void {
+    if (this.isBloodCloseupActive()) {
+      this.pendingResolutionShot = { shot, duration }
+      return
+    }
+    this.setShot(shot, duration)
+  }
+
+  private cancelBloodCloseup(): void {
+    this.bloodCloseupGeneration += 1
+    if (this.bloodCloseupTimer !== null) window.clearTimeout(this.bloodCloseupTimer)
+    this.bloodCloseupTimer = null
+    const resolve = this.bloodCloseupTimerResolve
+    this.bloodCloseupTimerResolve = null
+    resolve?.(false)
+    const shouldSync = this.bloodCloseupActor !== null
+    this.bloodCloseupActor = null
+    this.bloodCloseupDrain = false
+    this.pendingResolutionShot = null
+    if (shouldSync && this.lastSnapshot) this.syncBlood(this.lastSnapshot)
+  }
+
+  private waitBloodCloseup(ms: number, generation: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.bloodCloseupTimerResolve = resolve
+      this.bloodCloseupTimer = window.setTimeout(() => {
+        this.bloodCloseupTimer = null
+        this.bloodCloseupTimerResolve = null
+        resolve(!this.disposed && generation === this.bloodCloseupGeneration)
+      }, ms)
+    })
+  }
+
+  private bloodDrainSettled(actor: ActorId): boolean {
+    const rack = this.bloodRacks.get(actor)
+    const snapshot = this.lastSnapshot
+    if (!rack || !snapshot) return true
+    const hp = actor === 'player' ? snapshot.player.hp : snapshot.boss.hp
+    return rack.bags.every((bag, index) => Math.abs(bag.liquid.scale.y - (index < hp ? 1 : 0)) < 0.01)
+  }
+
+  private async runBloodCloseup(actor: ActorId, hpAfter: number, generation: number): Promise<void> {
+    const shot: CameraShot = actor === 'player' ? 'bloodPlayer' : 'bloodBoss'
+    if (!await this.waitBloodCloseup(actor === 'player' ? 1400 : 250, generation)) return
+    this.setShot(shot, 0.55)
+    if (!await this.waitBloodCloseup(750, generation)) return
+    this.bloodCloseupDrain = true
+    this.syncBlood(this.lastSnapshot!)
+    while (!this.bloodDrainSettled(actor)) {
+      if (!await this.waitBloodCloseup(100, generation)) return
+    }
+    if (!await this.waitBloodCloseup(250, generation)) return
+    const resolution = this.pendingResolutionShot
+    this.pendingResolutionShot = null
+    this.bloodCloseupActor = null
+    this.bloodCloseupDrain = false
+    if (resolution) {
+      this.setShot(resolution.shot, resolution.duration)
+      return
+    }
+    if (hpAfter > 0) this.setShot('table', 0.7)
+  }
+
+  private playBloodCloseup(actor: ActorId, hpAfter: number, damage: number): boolean {
+    if (damage <= 0 || this.reducedMotion) return false
+    this.cancelBloodCloseup()
+    const generation = this.bloodCloseupGeneration
+    this.bloodCloseupActor = actor
+    void this.runBloodCloseup(actor, hpAfter, generation)
+    return true
+  }
+
   playShot(payload: ShotPayload): void {
     if (this.disposed) return
     const live = payload.chamber === 'live'
@@ -1192,6 +1313,9 @@ export class SceneManager {
       },
     })
 
+    if (!this.playBloodCloseup(payload.target, payload.hpAfter, payload.damage)) {
+      this.resetShot(1.1)
+    }
     this.shake(live ? 0.11 : 0.018, live ? 0.6 : 0.3)
   }
 
@@ -1308,6 +1432,12 @@ export class SceneManager {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.bloodCloseupGeneration += 1
+    if (this.bloodCloseupTimer !== null) window.clearTimeout(this.bloodCloseupTimer)
+    this.bloodCloseupTimer = null
+    this.bloodCloseupTimerResolve?.(false)
+    this.bloodCloseupTimerResolve = null
+    this.bloodCloseupActor = null
     cancelAnimationFrame(this.rafId)
     this.timer.dispose()
     this.resizeObserver.disconnect()
@@ -1894,9 +2024,17 @@ export class SceneManager {
     this.shakeTime = Math.max(this.shakeTime, duration)
   }
 
+  private isCloseupShot(): boolean {
+    return this.shot === 'bloodPlayer' || this.shot === 'bloodBoss'
+  }
+
   private updateCamera(dt: number): void {
     if (this.cameraBlend < 1) {
-      this.cameraBlend = Math.min(1, this.cameraBlend + dt / this.cameraBlendDuration)
+      // 血袋运镜与真实计时同步，低帧率时也能在回位前完成切入。
+      const progress = this.cameraBlendRealtime
+        ? (performance.now() - this.cameraBlendStartedAt) / 1000 / this.cameraBlendDuration
+        : this.cameraBlend + dt / this.cameraBlendDuration
+      this.cameraBlend = Math.min(1, progress)
       const eased = easeInOutCubic(this.cameraBlend)
       this.cameraBase.lerpVectors(this.cameraFrom, this.cameraTo, eased)
       this.cameraLookAt.lerpVectors(this.lookFrom, this.lookTo, eased)
@@ -1907,6 +2045,7 @@ export class SceneManager {
       }
     }
 
+    const closeup = this.isCloseupShot()
     const breathe = this.reducedMotion ? 0 : Math.sin(this.elapsed * 0.62) * 0.012
     let sx = 0
     let sy = 0
@@ -1915,12 +2054,16 @@ export class SceneManager {
       this.shakeTime = Math.max(0, this.shakeTime - dt)
       const decay = this.shakeTime / Math.max(0.001, this.shakeDuration)
       const amp = this.shakeStrength * decay * decay
-      sx = (Math.random() - 0.5) * amp * 2
-      sy = (Math.random() - 0.5) * amp * 2
-      sz = (Math.random() - 0.5) * amp
+      if (!closeup) {
+        sx = (Math.random() - 0.5) * amp * 2
+        sy = (Math.random() - 0.5) * amp * 2
+        sz = (Math.random() - 0.5) * amp
+      }
       if (this.shakeTime === 0) this.shakeStrength = 0
     }
-    const drift = this.reducedMotion ? 0 : (this.shot === 'table' ? 1 : 0.22) + this.narrativeSway
+    const drift = this.reducedMotion || closeup
+      ? 0
+      : (this.shot === 'table' ? 1 : 0.22) + this.narrativeSway
     this.camera.position.set(
       this.cameraBase.x + Math.sin(this.elapsed * 0.21) * 0.035 * drift + sx,
       this.cameraBase.y + breathe * drift + sy,
@@ -1984,6 +2127,10 @@ export class SceneManager {
   }
 
   private spaceLook(): void {
+    if (this.isCloseupShot()) {
+      this.camera.lookAt(this.cameraLookAt)
+      return
+    }
     const look = this.scratchVector
     look.copy(this.cameraLookAt)
     const sway = this.reducedMotion ? 0 : this.narrativeSway
@@ -4042,6 +4189,8 @@ export class SceneManager {
   /** 血袋 = 一格生命：掉血从右往左排空，回血重新注满；maxHp 变了整架重建 */
   private syncBlood(snapshot: GameSnapshot): void {
     for (const actor of ['player', 'boss'] as const) {
+      if (this.bloodCloseupActor === actor && !this.bloodCloseupDrain) continue
+      const closeupDrain = this.bloodCloseupActor === actor && this.bloodCloseupDrain
       const view = actor === 'player' ? snapshot.player : snapshot.boss
       const maxHp = Math.max(1, view.maxHp)
       let rack = this.bloodRacks.get(actor)
@@ -4059,10 +4208,10 @@ export class SceneManager {
         const bag = rack.bags[i]
         const target = i < view.hp ? 1 : 0
         const from = bag.liquid.scale.y
-        if (Math.abs(from - target) < 0.01) continue
+        if (Math.abs(from - target) < 0.01 || (closeupDrain && bag.fill === target)) continue
         bag.fill = target
         this.tween({
-          duration: 0.5 + Math.abs(from - target) * 0.18,
+          duration: (0.5 + Math.abs(from - target) * 0.18) * (closeupDrain ? 5 / 3 : 1),
           delay: (rack.bags.length - 1 - i) * 0.04,
           onUpdate: (t) => {
             const f = from + (target - from) * easeInOutCubic(t)

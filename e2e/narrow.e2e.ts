@@ -74,7 +74,7 @@ async function expectInsideViewport(page: Page, locator: Locator, axes: 'x' | 'x
 async function dismissGuide(page: Page) {
   const guide = page.getByRole('dialog', { name: '开局说明' })
   if ((await guide.count()) === 0) return
-  await page.getByRole('button', { name: '坐上牌桌' }).click()
+  await page.getByRole('button', { name: '知道了' }).click()
   await expect(guide).toBeHidden()
 }
 
@@ -90,7 +90,7 @@ for (const vp of VIEWPORTS) {
       expect(report.docScrollWidth).toBeLessThanOrEqual(report.viewportWidth)
       expect(report.mainOverflow).toBeLessThanOrEqual(0)
       expect(report.offenders).toEqual([])
-      await expectInsideViewport(page, page.getByRole('button', { name: '坐上牌桌' }))
+      await expectInsideViewport(page, page.getByRole('button', { name: '知道了' }))
       await expectInsideViewport(page, page.getByRole('button', { name: '查看完整血契' }))
 
       await page.getByRole('button', { name: '查看完整血契' }).click()

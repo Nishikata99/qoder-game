@@ -187,14 +187,23 @@ body {
 }
 
 @keyframes vision-blur {
-  0% { opacity: 0; }
-  10% { opacity: 1; }
-  45% { opacity: 0.72; }
-  100% { opacity: 0; }
+  0%, 57% {
+    opacity: 1;
+    background-color: #000;
+    backdrop-filter: blur(18px) saturate(0.45);
+    -webkit-backdrop-filter: blur(18px) saturate(0.45);
+  }
+  100% {
+    opacity: 0;
+    background-color: #000;
+    backdrop-filter: blur(0) saturate(1);
+    -webkit-backdrop-filter: blur(0) saturate(1);
+  }
 }
 
 .vision-blur {
-  animation: vision-blur 1100ms ease-out both;
+  background-color: #000;
+  animation: vision-blur 1400ms ease-out both;
 }
 
 @keyframes banner-slide {
@@ -302,7 +311,7 @@ body {
 
   .vision-blur {
     animation: none;
-    opacity: 0.5;
+    opacity: 0;
   }
 
   .slide-banner,

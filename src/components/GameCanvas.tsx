@@ -65,23 +65,23 @@ export function GameCanvas({
   }, [snapshot])
 
   useEffect(() => {
-    return engine.subscribe((event) => {
+    return engine.subscribe((event, eventSnapshot) => {
       const scene = sceneRef.current
-      if (scene) applyVisualEvent(scene, event)
+      if (scene) applyVisualEvent(scene, event, eventSnapshot)
     })
   }, [engine])
 
-  function applyVisualEvent(scene: SceneManager, event: GameEvent): void {
+  function applyVisualEvent(scene: SceneManager, event: GameEvent, eventSnapshot: GameSnapshot): void {
     switch (event.type) {
       case 'state':
         scene.applySnapshot(event.snapshot)
         break
       case 'reload':
         scene.playReload()
-        scene.setShot('cylinder', 0.9)
+        if (!scene.isBloodCloseupActive()) scene.setShot('cylinder', 0.9)
         break
       case 'roundStart':
-        scene.resetShot(0.85)
+        if (!scene.isBloodCloseupActive()) scene.resetShot(0.85)
         break
       case 'execution':
         scene.playExecution({
@@ -97,11 +97,11 @@ export function GameCanvas({
           target: event.target,
           chamber: event.chamber,
           damage: event.damage,
+          hpAfter: (event.target === 'player' ? eventSnapshot.player : eventSnapshot.boss).hp,
           sawed: event.sawed,
           blackjack: event.blackjack,
           blocked: event.blocked,
         })
-        scene.resetShot(1.1)
         break
       case 'chamberRevealed':
         scene.revealChamber(event.chamber)
@@ -117,14 +117,14 @@ export function GameCanvas({
         scene.playHourglass()
         break
       case 'levelClear':
-        scene.setShot('victory', 1.4)
+        scene.setResolutionShot('victory', 1.4)
         break
       case 'supplyOffer':
         // 补给面板是纯 DOM 覆盖层，机位停在清层后的远景，别跟着回合机位抖
-        scene.setShot('victory', 1.2)
+        scene.setResolutionShot('victory', 1.2)
         break
       case 'gameOver':
-        scene.setShot(event.winner === 'boss' ? 'death' : 'victory', 1.6)
+        scene.setResolutionShot(event.winner === 'boss' ? 'death' : 'victory', 1.6)
         break
       default:
         break

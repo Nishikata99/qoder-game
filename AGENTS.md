@@ -145,11 +145,27 @@ src/
 
 删除文件即回退程序化贴图。
 
-## 六、部署
+## 六、蔓延子游戏（第二入口）
+
+`moyan.html` 是独立入口，与主游戏共用构建产物但运行时零耦合：
+
+```text
+moyan.html → src/moyan/main.tsx → MoyanApp
+src/moyan/engine.ts   纯逻辑 7×7 翻牌引擎（不 import React / Three）
+src/moyan/scene.ts    3D 棋盘表现（CRT 器官屏只在蔓延页保留）
+src/scene/PixelArt.ts 器官像素画，仅蔓延页使用
+```
+
+- 入口链路：走廊序章点「左门」→ `CorridorScene.chooseDoor('L')` 开门动画结束 → `onEnterMoyan` → `window.location.assign('./moyan.html')`；蔓延页「返回走廊」回 `./`。
+- `vite.config.ts` 的 `rollupOptions.input` 必须同时保留 `main` 与 `moyan` 两个入口，`manualChunks` 不要删。
+- 主游戏牌面保持花色字形（♠♥♦♣），右门场景无 CRT；器官像素画与 CRT 数据屏只属于蔓延页。
+- 规则文档：`docs/游戏规则.md`。
+
+## 七、部署
 
 `vite.config.ts` 固定 `base: './'`，**不要改**。`dist/` 可直接部署到任意静态托管（Qoder Sites / GitHub Pages 子路径），不会资源 404。
 
-## 七、Git 分工流程
+## 八、Git 分工流程
 
 远端：`https://github.com/Nishikata99/qoder-game`（公开发布分支 `main`）。
 
@@ -180,7 +196,7 @@ git push -u origin <分支名>
 
 凭据由 `gh` 作为 git credential helper 提供，**无需令牌，不要向任何人索要 PAT**。
 
-## 八、新人上手（第一台新电脑必读）
+## 九、新人上手（第一台新电脑必读）
 
 ```bash
 git clone https://github.com/Nishikata99/qoder-game.git
@@ -236,7 +252,7 @@ npm run build      # 必须通过，否则 PR 的 build 检查会红
 
 CI 在 PR 上会自动跑 `npm ci && npm test && npm run build`，红色 PR 无法合并。
 
-## 九、代码风格
+## 十、代码风格
 
 - TypeScript `strict` 已开启；不要用 `any`、`@ts-ignore`
 - 不留 `console.log`；`console.warn/error` 只用于真正的异常分支，设计内的降级（如 GLB 缺失回退程序化几何）用 `console.debug`

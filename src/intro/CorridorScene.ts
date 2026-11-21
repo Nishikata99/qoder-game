@@ -63,6 +63,8 @@ interface CorridorCallbacks {
   readonly onReady: () => void
   readonly onDoorPhase: () => void
   readonly onComplete: () => void
+  /** 左门开到位：离开主游戏，进入蔓延子游戏 */
+  readonly onEnterMoyan: () => void
   /** 行走途中的独白字幕：text 为 null 表示到点收起 */
   readonly onWalkLine: (text: string | null) => void
 }
@@ -109,6 +111,7 @@ export class CorridorScene {
   private gazeY = 1.5
   private openFrom = 0
   private openFromL = 0
+  private leftExited = false
   private walkLineIndex = 0
   private walkLineOpen = false
 
@@ -175,7 +178,7 @@ export class CorridorScene {
   chooseDoor(side: 'L' | 'R'): void {
     if (this.phase !== 'choose' && this.phase !== 'openingL') return
     if (side === 'L') {
-      // 别馆封契中：只给开门动画与落锁声，不转场；DLC 接入时替换此分支即可
+      // 左门开到位后整页切到蔓延子游戏（onEnterMoyan 在 tick 里回调）
       this.phase = 'openingL'
       this.phaseTime = 0
       this.openFromL = this.doorPivotL?.rotation.y ?? 0
@@ -240,6 +243,10 @@ export class CorridorScene {
       if (this.phase === 'openingL' && this.doorPivotL) {
         const t = Math.min(1, this.phaseTime / OPEN_SECONDS)
         this.doorPivotL.rotation.y = this.openFromL + easeInOutCubic(t) * 1.85
+        if (t >= 1 && !this.leftExited) {
+          this.leftExited = true
+          this.callbacks.onEnterMoyan()
+        }
       }
     } else if (this.phase === 'glitch') {
       const t = Math.min(1, this.phaseTime / GLITCH_SECONDS)

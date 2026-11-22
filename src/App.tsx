@@ -211,8 +211,10 @@ export default function App() {
   const [loot, setLoot] = useState<LootBanner | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [bloodFlash, setBloodFlash] = useState(0)
+  const [muzzleFlash, setMuzzleFlash] = useState(0)
   const [bloodSplatter, setBloodSplatter] = useState(0)
   const [visionBlur, setVisionBlur] = useState(0)
+  const [wakeBlur, setWakeBlur] = useState(0)
   const [narrative, setNarrative] = useState<NarrativeVisual | null>(null)
   const [clueLine, setClueLine] = useState<string | null>(null)
   const [devOpen, setDevOpen] = useState(false)
@@ -238,8 +240,10 @@ export default function App() {
   const relayTimer = useRef<number | null>(null)
   const lootTimer = useRef<number | null>(null)
   const bloodTimer = useRef<number | null>(null)
+  const muzzleTimer = useRef<number | null>(null)
   const splatterTimer = useRef<number | null>(null)
   const blurTimer = useRef<number | null>(null)
+  const wakeBlurTimer = useRef<number | null>(null)
   const bannerId = useRef(0)
   const startedRef = useRef(false)
   const finishedRef = useRef(false)
@@ -291,6 +295,12 @@ export default function App() {
           if (event.chamber === 'live') {
             // 自己中弹才保留完整耳鸣长尾，打向对手时缩短以避免拖沓
             sound.playGunshot({ selfShot: event.target === 'player' })
+            // 自射时枪口精灵落在画面上缘之外，靠一层屏幕空间爆闪补「砰」的读感
+            if (event.target === 'player') {
+              setMuzzleFlash((n) => n + 1)
+              if (muzzleTimer.current !== null) window.clearTimeout(muzzleTimer.current)
+              muzzleTimer.current = window.setTimeout(() => setMuzzleFlash(0), 160)
+            }
             if (event.blocked !== null) {
               showNotice('护心镜碎裂：伤害被完全挡下')
               setSpokenLine('实弹被护心镜完全挡下。')
@@ -311,9 +321,14 @@ export default function App() {
               setVisionBlur(0)
               if (blurTimer.current !== null) window.clearTimeout(blurTimer.current)
               // 黑屏等枪口火光熄灭后再硬切进入。
+              // 睁眼模糊也必须等这一刻才挂上：它挂载即满糊+压暗，枪响帧会直接糊掉枪口火光
               blurTimer.current = window.setTimeout(() => {
                 setVisionBlur((n) => n + 1)
                 blurTimer.current = window.setTimeout(() => setVisionBlur(0), 1500)
+                setWakeBlur((n) => n + 1)
+                if (wakeBlurTimer.current !== null) window.clearTimeout(wakeBlurTimer.current)
+                // 2000ms 动画在黑屏挂上后 2.1s 全清，2.25s 才开始撑桌起身
+                wakeBlurTimer.current = window.setTimeout(() => setWakeBlur(0), 2150)
               }, 100)
             }
           } else {
@@ -841,6 +856,12 @@ export default function App() {
         }}
       />
 
+      {/* 自己开枪：枪口在画面上缘外，用屏幕空间爆闪替代看不见的精灵 */}
+      <div
+        key={`muzzle-${muzzleFlash}`}
+        className={`pointer-events-none absolute inset-0 ${muzzleFlash > 0 ? 'muzzle-burst' : 'opacity-0'}`}
+      />
+
       {/* 自己中弹：先黑屏，再模糊睁眼；镜头等视野恢复后才移向血袋。 */}
       <div
         key={`blackout-${visionBlur}`}
@@ -849,6 +870,10 @@ export default function App() {
       <div
         key={`blur-${visionBlur}`}
         className={`pointer-events-none absolute inset-0 z-[41] ${visionBlur > 0 ? 'vr-blur' : 'opacity-0'}`}
+      />
+      <div
+        key={`wake-${wakeBlur}`}
+        className={`pointer-events-none absolute inset-0 z-[42] ${wakeBlur > 0 ? 'wake-blur' : 'opacity-0'}`}
       />
 
       {/* Minimal corner chrome. */}

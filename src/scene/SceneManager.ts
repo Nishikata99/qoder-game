@@ -63,6 +63,8 @@ export type CameraShot =
   | 'cylinder'
   | 'magnify'
   | 'execute'
+  | 'playerDown'
+  | 'playerSitUp'
   | 'death'
   | 'victory'
   | 'introWake'
@@ -118,8 +120,8 @@ interface ItemEntry {
   hovered: boolean
   hoverScale: number
   spawnScale: number
+  spawnTarget: number
   baseY: number
-  phase: number
   materials: THREE.MeshStandardMaterial[]
 }
 
@@ -190,6 +192,16 @@ interface BloodRack {
 }
 
 const TABLE_TOP = 0.98
+/**
+ * Gothic Coffee Table（Poly Haven，CC0）原始测量：1.443m 见方、总高 0.559m。
+ * 台面是下沉凹板：flat 区 z=0.525、半宽 0.62m，四周雕花边框顶 z=0.559。
+ * 场景道具摊开的范围远大于这张 1.44m 小桌，只能非均匀放大凹板来承托：
+ * x 覆盖到敌方道具栏外缘（±2.89），z 覆盖到敌方道具与开场双手（±2.3 左右）。
+ */
+const GOTHIC_TABLE_PANEL_HALF = 0.62
+const GOTHIC_TABLE_PANEL_TOP = 0.525
+const GOTHIC_TABLE_FIT_HALF_X = 3.0
+const GOTHIC_TABLE_FIT_HALF_Z = 2.35
 /** 叙事转头惊吓的包络时长：快攻慢释 */
 const HEAD_SNAP_LIFE = 0.9
 
@@ -231,7 +243,7 @@ const devStatsEnabled = import.meta.env.DEV
 const CARD_W = 0.3
 const CARD_H = 0.42
 const CARD_T = 0.012
-const DECK_POS = new THREE.Vector3(2.42, TABLE_TOP + 0.06, 0.16)
+const DECK_POS = new THREE.Vector3(2.55, TABLE_TOP + 0.06, 0.16)
 const MAX_VISIBLE_CARDS = 8
 const ITEM_SCALE = 1.0
 /** 手牌点数直接印在台呢上：贴片中心（世界坐标）与尺寸，避开卡牌/道具/血袋架/牌堆/后侧围栏 */
@@ -287,7 +299,8 @@ const BLOOD_RACK_LAYOUT: Readonly<
   boss: {
     x: -1.62,
     y: 0,
-    z: -2.72,
+    // 哥特桌后沿伸到 z=-2.74，落地架得退到桌外，否则立杆会插进桌板
+    z: -3.05,
     yaw: 0.42,
     poleH: 1.62,
     baseR: 0.16,
@@ -333,7 +346,13 @@ type ModelKey =
   | 'item_handcuffs'
   | 'item_hourglass'
   | 'item_dagger'
-  | 'gaming_table'
+  | 'item_aegis'
+  | 'item_hammer'
+  | 'item_seal'
+  | 'item_cutter'
+  | 'item_iou'
+  | 'item_monocle'
+  | 'table_gothic'
   | 'room_environment'
   | 'gothic_statue'
   | 'marble_bust_01'
@@ -348,7 +367,72 @@ const ITEM_MODEL: Readonly<Partial<Record<ItemId, ModelKey>>> = {
   handcuffs: 'item_handcuffs',
   hourglass: 'item_hourglass',
   dagger: 'item_dagger',
+  aegis: 'item_aegis',
+  hammer: 'item_hammer',
+  seal: 'item_seal',
+  cutter: 'item_cutter',
+  iou: 'item_iou',
+  monocle: 'item_monocle',
 }
+
+const ITEM_MODEL_SIZE = 0.5
+// 斜放的放大镜对角线约 0.53，格子取 0.54 才能整件收进边框
+const ITEM_GRID = {
+  columns: 4,
+  spacing: 0.56,
+  slotSize: 0.54,
+  player: { originX: 0.78, originZ: 0.92 },
+  // 敌方栏本应关于桌心与玩家栏斜对称，但枪管斜压在左上中部，只能再往后让开枪口
+  boss: { originX: 1.0, originZ: 1.43, spacing: 0.54 },
+} as const
+
+type ItemTone = 'iron' | 'brass' | 'wood' | 'paper' | 'wax' | 'glass'
+
+/** 每种材质的受光参数；道具改用受光材质后，桌面灯会把轮廓和体积打出来 */
+const ITEM_TONE_STYLE: Record<
+  ItemTone,
+  {
+    color: number
+    metalness: number
+    roughness: number
+    emissiveIntensity: number
+    transparent?: boolean
+    opacity?: number
+  }
+> = {
+  iron: { color: 0x8e9aa6, metalness: 0.55, roughness: 0.5, emissiveIntensity: 0.04 },
+  brass: { color: 0xc08f3c, metalness: 0.55, roughness: 0.5, emissiveIntensity: 0.03 },
+  wood: { color: 0x7c512e, metalness: 0.03, roughness: 0.8, emissiveIntensity: 0.03 },
+  paper: { color: 0xc3b083, metalness: 0, roughness: 0.95, emissiveIntensity: 0 },
+  wax: { color: 0x9c211a, metalness: 0.08, roughness: 0.6, emissiveIntensity: 0.04 },
+  glass: {
+    color: 0xd94a4a,
+    metalness: 0.15,
+    roughness: 0.12,
+    emissiveIntensity: 0.12,
+    transparent: true,
+    opacity: 0.55,
+  },
+}
+
+/** 每件道具有自己的主色和底环荧光色，避免整桌都是灰+橙+红 */
+const ITEM_PALETTE: Record<ItemId, { glow: number; tones: Partial<Record<ItemTone, number>> }> = {
+  magnifier: { glow: 0xff5b66, tones: { brass: 0xc79a42, wood: 0x5f3e23, iron: 0x8f9caa, glass: 0xe84353 } },
+  sedative: { glow: 0x45d6a2, tones: { iron: 0xb9c6cf, glass: 0x35c98f } },
+  saw: { glow: 0xff7a2f, tones: { iron: 0x8f9aa4, wood: 0x5a3423, wax: 0x8e1d1d } },
+  magnet: { glow: 0x5b8dff, tones: { iron: 0x6b7f9e, wax: 0xc62f2f } },
+  handcuffs: { glow: 0xdfe6ee, tones: { iron: 0xb9c1c9, brass: 0xe0b55a } },
+  aegis: { glow: 0xffb020, tones: { brass: 0x9c6f2f, glass: 0xcc3434, iron: 0x6f5129, wax: 0x7f1a1a } },
+  hourglass: { glow: 0x3fd9e8, tones: { brass: 0xcfa03f, glass: 0x57c8d8, wax: 0xd6403c } },
+  dagger: { glow: 0xe8443f, tones: { iron: 0xbcc6cf, wood: 0xcaa06a, wax: 0x8f1d1d } },
+  hammer: { glow: 0xd8c07a, tones: { iron: 0x545c66, wood: 0x966438, paper: 0xd6cfc0, brass: 0xb98a45, wax: 0x71251e } },
+  cutter: { glow: 0xbfe4ff, tones: { iron: 0xaeb9c1, wood: 0x2f2a28, paper: 0xb0a480 } },
+  iou: { glow: 0xffc46b, tones: { paper: 0xa8986c, wax: 0xa3201a, wood: 0x6d5033 } },
+  seal: { glow: 0xe0262f, tones: { wax: 0x941a16, paper: 0xd8c9a4, brass: 0xc19645, wood: 0x5f4229, iron: 0x8b9199 } },
+  monocle: { glow: 0x8be3ff, tones: { brass: 0xe3b552, glass: 0x7fd4e8 } },
+}
+
+const ITEM_HOVER_TINT = new THREE.Color(0xffe3b8)
 
 const MODEL_BASE = './models'
 
@@ -358,9 +442,9 @@ const BOSS_BUST_HEIGHTS = [2.15, 1.7, 3.0] as const
 const BOSS_CHEST_RATIO = 0.64
 /** 半身像底座（斗篷下摆）压到桌面以下，被桌沿挡住，形成「坐在桌后」的错觉 */
 const BOSS_BUST_BASE_Y = 0.26
-/** Boss 站在桌后：桌体后沿 z=-2.23，斗篷前半 z≈-0.51 缩放后约 0.55m，
- * 所以中心必须在 -2.23-0.55=-2.78 之后，否则会穿进桌体 */
-const BOSS_Z = -3.0
+/** Boss 站在桌后：哥特桌放大后后沿 z=-2.74，斗篷前半 z≈-0.51 缩放后约 0.55m，
+ * 所以中心必须在 -2.74-0.55-0.1≈-3.39 之后，否则会穿进桌沿 */
+const BOSS_Z = -3.4
 const BOSS_CRAWLER_BASE_Y = 0.65
 const BOSS_CRAWLER_Z_OFFSET = -1.2
 
@@ -369,8 +453,16 @@ const CEILING_Y = 6.0
 /** 灯罩下沿在世界坐标中的高度，聚光灯挂在这里才不会被罩体遮挡 */
 const LAMP_SHADE_BOT_Y = 4.02
 
-/** 枪口瞄准的旋转中心：枪座落在桌面上的位置 */
-const GUN_PIVOT = new THREE.Vector3(0, TABLE_TOP + 0.075, 0.08)
+/** 枪口瞄准的旋转中心：抬离桌面，给瞄准时下摆的枪托留出空间 */
+const GUN_PIVOT = new THREE.Vector3(0, TABLE_TOP + 0.28, 0.08)
+/** 开局枪平躺在桌面上的侧翻角（绕枪管轴线），略小于 90° 保留一点斜面 */
+const GUN_REST_ROLL = -1.35
+/** 抬起/放下时先腾空的高度，保证转正过程中不扫穿桌面 */
+const GUN_LIFT_CLEARANCE = 0.18
+/** 处决开始，枪从桌面抬到持握位的过渡时长 */
+const GUN_RAISE_DURATION = 0.62
+/** 开枪后枪落回桌面的过渡时长 */
+const GUN_LOWER_DURATION = 0.6
 const GUN_SHAKE = {
   delay: 0.045,
   offsetMin: -0.006,
@@ -561,6 +653,7 @@ export class SceneManager {
   private readonly narrativeGroup = new THREE.Group()
   private towelMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial> | null = null
   private introHands: THREE.Group | null = null
+  private introHandsTween = 0
   /** Boss 倒地/起身：纯逻辑状态机只产出姿态采样，Three 对象映射留在 updateBoss */
   private readonly bossPose = new BossPoseController()
   private readonly bossPosePivot = new THREE.Vector3()
@@ -580,7 +673,6 @@ export class SceneManager {
   /** 上一帧姿态状态，用于派发离散的音效提示 */
   private lastBossPoseState: BossPoseState = 'idle'
 
-
   private readonly roomGroup = new THREE.Group()
   private readonly tableGroup = new THREE.Group()
   private readonly bossGroup = new THREE.Group()
@@ -591,6 +683,7 @@ export class SceneManager {
   private readonly deckGroup = new THREE.Group()
   private readonly cardGroup = new THREE.Group()
   private readonly itemRoot = new THREE.Group()
+  private readonly itemGrid = new THREE.Group()
   private readonly lampRig = new THREE.Group()
   /** 背景陈设单独成组：swapRoom 会清空 roomGroup，道具不能跟着被删 */
   private readonly propsGroup = new THREE.Group()
@@ -624,15 +717,28 @@ export class SceneManager {
   private bloodCloseupTimerResolve: ((proceed: boolean) => void) | null = null
   private bloodCloseupActor: ActorId | null = null
   private bloodCloseupDrain = false
+  /** 玩家中弹后的「桌沿低位→坐起→血袋特写」整段：期间保持特写闸门关闭 */
+  private playerRecoveryActive = false
   private pendingResolutionShot: { shot: 'death' | 'victory'; duration: number } | null = null
   private revealGlow: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial> | null = null
   private revealLight: THREE.PointLight | null = null
+  /** 中弹低位镜头专用补光：只在这 1 秒多里亮，照亮桌沿/桌底 */
+  private recoveryLight: THREE.PointLight | null = null
+  private impactLight: THREE.PointLight | null = null
+  private impactGeneration = 0
   private revealGlowLife = 0
   private aimTarget: ActorId = 'boss'
   /** 处决推近进度 0..1；作为视线方向上的偏移叠在相机基座上 */
   private executionPush = 0
   private executionPushGeneration = 0
-  private gunRestYaw = 1.02
+  /** 平放更接近横置：枪托末尾让开玩家右侧道具栏（1.02 时枪身斜压第一列道具） */
+  private gunRestYaw = 1.3
+  /** 开局枪平躺在桌面上；第一次处决时抬起，之后沿用原有持枪动画 */
+  private gunHolstered = true
+  private gunRaiseGeneration = 0
+  private gunHolsterY = GUN_PIVOT.y
+  /** 抬枪/落枪过渡进行中：引擎要等它结束才允许重新发牌 */
+  private gunMotionActive = false
   private gunShakeAfterAim = false
   private gunShakeActive = false
   private readonly gunShakeBase = new THREE.Vector3()
@@ -732,6 +838,15 @@ export class SceneManager {
     this.composer.addPass(new OutputPass())
 
     this.scene.add(this.roomGroup, this.tableGroup, this.bossGroup, this.gunGroup, this.deckGroup, this.cardGroup, this.itemRoot, this.lampRig, this.propsGroup, this.narrativeGroup)
+    // 恢复补光在场景初始化时就建好：枪响那一刻才加灯会让全场景材质重编译，
+    // 首帧卡顿会把 0.1s 的枪口火光和 +0.1s 的黑屏一起吞掉
+    this.recoveryLight = new THREE.PointLight(0xffa860, 0, 3.2, 2)
+    // 左前方的低位侧光：掠亮桌沿立面和双手，避免正打在桌底形成一片泛白
+    this.recoveryLight.position.set(-1.35, 0.48, 3.05)
+    this.scene.add(this.recoveryLight)
+    // 命中闪光同样预建：每次命中加/拆点光都会让全场景材质重编译，枪响当帧卡一下
+    this.impactLight = new THREE.PointLight(0xff2a14, 0, 4.5, 2)
+    this.scene.add(this.impactLight)
 
     this.buildRoom()
     this.buildTable()
@@ -744,6 +859,7 @@ export class SceneManager {
     this.gunAim.add(this.gunShake)
     this.gunShake.add(gun.root)
     this.gunGroup.add(this.gunAim)
+    this.holsterGun()
     this.drum = gun.drum
     this.muzzleLight = gun.muzzleLight
     this.flash = gun.flash
@@ -758,6 +874,7 @@ export class SceneManager {
     this.dust = this.buildDust()
     this.deckGroup.position.copy(DECK_POS)
     this.buildDeckPile()
+    this.buildItemGrid()
     this.buildScorePlates()
     this.buildNarrativeProps()
 
@@ -900,7 +1017,9 @@ export class SceneManager {
       if (this.gunShakeActive) this.stopGunShake()
     }
     const realtimeBlend = shot === 'bloodPlayer' || shot === 'bloodBoss' || (shot === 'table' && this.isCloseupShot())
-    if (shot !== 'bloodPlayer' && shot !== 'bloodBoss') this.cancelBloodCloseup()
+    // 中弹恢复期间会连续切低位/坐起/桌面机位，这些 setShot 不能把恢复序列自己取消掉
+    const keepsCloseup = shot === 'bloodPlayer' || shot === 'bloodBoss' || this.playerRecoveryActive
+    if (!keepsCloseup) this.cancelBloodCloseup()
     this.shot = shot
     const target = this.shotFraming(shot)
     this.cameraFrom.copy(this.cameraBase)
@@ -988,6 +1107,7 @@ export class SceneManager {
   playExecution(payload: ExecutionPayload): void {
     if (this.disposed) return
     this.clearReveal()
+    this.raiseGun()
     const deathShot = payload.lethal && payload.target === 'player'
     this.setShot('execute', 0.85)
     this.aimTarget = payload.target
@@ -1266,9 +1386,24 @@ export class SceneManager {
         }
       case 'execute':
         return {
-          position: new THREE.Vector3(0.32, 2.16, 1.66),
-          lookAt: new THREE.Vector3(0, 1.2, -0.95),
+          // 抬高并略后拉：新桌子更深，原机位把枪口顶在画面上缘；这样枪口和枪身都落在画面里
+          position: new THREE.Vector3(0.32, 2.32, 1.86),
+          lookAt: new THREE.Vector3(0, 1.32, -1.02),
           fov: 38,
+        }
+      case 'playerDown':
+        return {
+          // 中枪后趴/靠在桌外：视线越过桌沿直对吊灯，睁眼第一眼看到的是灯
+          position: new THREE.Vector3(0.18, 0.52, 3.62),
+          lookAt: new THREE.Vector3(-0.15, 4.6, -0.3),
+          fov: 62,
+        }
+      case 'playerSitUp':
+        return {
+          // 撑桌坐起的中途机位：离桌沿留出距离，双手不会扫进近裁剪面
+          position: new THREE.Vector3(0.1, 1.34, 3.3),
+          lookAt: new THREE.Vector3(0, 0.98, 0.35),
+          fov: 50,
         }
       case 'death':
         return {
@@ -1347,7 +1482,7 @@ export class SceneManager {
   }
 
   isBloodCloseupActive(): boolean {
-    return this.bloodCloseupActor !== null
+    return this.bloodCloseupActor !== null || this.playerRecoveryActive
   }
 
   setResolutionShot(shot: 'death' | 'victory', duration: number): void {
@@ -1369,6 +1504,11 @@ export class SceneManager {
     this.bloodCloseupActor = null
     this.bloodCloseupDrain = false
     this.bossPoseHold = false
+    if (this.playerRecoveryActive) {
+      this.playerRecoveryActive = false
+      this.resetIntroHandsPose()
+      if (this.recoveryLight) this.recoveryLight.intensity = 0
+    }
     this.pendingResolutionShot = null
     if (shouldSync && this.lastSnapshot) this.syncBlood(this.lastSnapshot)
   }
@@ -1452,19 +1592,83 @@ export class SceneManager {
     return true
   }
 
+  /**
+   * 玩家中弹（未死）后的恢复段：黑屏期间切到桌沿低位，黑屏淡出后撑桌坐起回桌面，
+   * 视角归位后再播原来的血袋特写。整段保持特写闸门关闭，下一回合不会提前发牌。
+   */
+  private playPlayerHitRecovery(): void {
+    if (this.disposed) return
+    this.cancelBloodCloseup()
+    const generation = this.bloodCloseupGeneration
+    this.playerRecoveryActive = true
+    // 用 closeup actor 冻住血袋：黑屏/坐起期间保持旧读数，等特写镜头再抽干
+    this.bloodCloseupActor = 'player'
+    let light = this.recoveryLight
+    if (!light) {
+      light = new THREE.PointLight(0xffa860, 0, 3.2, 2)
+      light.position.set(-1.35, 0.48, 3.05)
+      this.scene.add(light)
+      this.recoveryLight = light
+    }
+    this.tween({ duration: 0.5, onUpdate: (t) => { light.intensity = 3.8 * t } })
+    // 黑屏在 100ms 后盖上，落枪放到黑屏已经全黑之后再开始
+    this.lowerGun(0.2)
+    void this.runPlayerHitRecovery(generation)
+  }
+
+  private fadeRecoveryLight(duration: number): void {
+    const light = this.recoveryLight
+    if (!light) return
+    const from = light.intensity
+    this.tween({ duration, onUpdate: (t) => { light.intensity = from * (1 - t) } })
+  }
+
+  private async runPlayerHitRecovery(generation: number): Promise<void> {
+    // 黑屏已经盖住时切低位，外面看不到跳变
+    if (!await this.waitBloodCloseup(200, generation)) return
+    this.setIntroHandsGrip()
+    this.setShot('playerDown', 0.35)
+    // 黑屏 1.5s 淡出后再停一拍，让低位视角和模糊睁眼都露出来，然后慢慢撑桌坐起
+    if (!await this.waitBloodCloseup(2050, generation)) return
+    this.setShot('playerSitUp', 1.6)
+    this.fadeRecoveryLight(1.6)
+    this.tweenIntroHandsRest(1.9)
+    if (!await this.waitBloodCloseup(1800, generation)) return
+    this.setShot('table', 1.5)
+    // 镜头完全归位后，再播原来的血袋特写
+    if (!await this.waitBloodCloseup(1700, generation)) return
+    this.setShot('bloodPlayer', 0.55)
+    if (!await this.waitBloodCloseup(750, generation)) return
+    this.bloodCloseupDrain = true
+    this.syncBlood(this.lastSnapshot!)
+    while (!this.bloodDrainSettled('player')) {
+      if (!await this.waitBloodCloseup(100, generation)) return
+    }
+    if (!await this.waitBloodCloseup(250, generation)) return
+    this.bloodCloseupDrain = false
+    this.bloodCloseupActor = null
+    this.playerRecoveryActive = false
+    this.setShot('table', 0.7)
+  }
+
   playShot(payload: ShotPayload): void {
     if (this.disposed) return
     this.gunShakeAfterAim = false
     this.stopGunShake()
     const live = payload.chamber === 'live'
+    // 射向 Boss 时枪口背对镜头、离视点约 3m，原尺寸火光会被击中闪白和桌面高光吞掉；
+    // 仅对这种「远处枪口」放大精灵并延长亮灯，读起来才和自射一样有明确的枪口爆闪
+    const distantFlash = live && payload.target === 'boss'
+    const flashSize = distantFlash ? 0.82 : live ? 0.42 : 0.22
+    const flashLife = distantFlash ? 0.18 : 0.1
     this.flash.visible = true
     this.flash.material.opacity = live ? 1 : 0.35
     this.flash.material.color.setHex(live ? 0xffc060 : 0x9fb8c8)
-    this.flash.scale.setScalar(live ? 0.42 : 0.22)
+    this.flash.scale.setScalar(flashSize)
     this.tween({
-      duration: 0.1,
+      duration: flashLife,
       onUpdate: (t) => {
-        this.flash.scale.setScalar((live ? 0.42 : 0.22) * (0.75 + t * 0.9))
+        this.flash.scale.setScalar(flashSize * (0.8 + t * 0.8))
         this.flash.material.opacity = (1 - t) ** 2 * (live ? 1 : 0.4)
       },
       onComplete: () => {
@@ -1472,12 +1676,13 @@ export class SceneManager {
         this.flash.material.opacity = 0
       },
     })
+    const lightPeak = distantFlash ? 54 : live ? 60 : 4
     this.muzzleLight.color.setHex(live ? 0xffb060 : 0x8fb4c8)
-    this.muzzleLight.intensity = live ? 36 : 4
+    this.muzzleLight.intensity = lightPeak
     this.tween({
-      duration: 0.12,
+      duration: distantFlash ? 0.2 : live ? 0.16 : 0.12,
       onUpdate: (t) => {
-        this.muzzleLight.intensity = (live ? 36 : 4) * (1 - t) ** 3
+        this.muzzleLight.intensity = lightPeak * (1 - t) ** 3
       },
     })
 
@@ -1512,10 +1717,16 @@ export class SceneManager {
       },
     })
 
-    if (!this.playBloodCloseup(payload.target, payload.hpAfter, payload.damage)) {
+    // 中弹恢复对每一次实弹命中都播；致命时后面的补针面板和原来一样，盖在这段演出之上
+    const playerHitRecovery = live && payload.target === 'player' && payload.damage > 0 && !this.reducedMotion
+    if (playerHitRecovery) {
+      this.playPlayerHitRecovery()
+    } else if (!this.playBloodCloseup(payload.target, payload.hpAfter, payload.damage)) {
       this.resetShot(1.1)
     }
     this.shake(live ? 0.11 : 0.018, live ? 0.6 : 0.3)
+    // 等镜头回到桌面机位（或结算机位）后再落枪，避免视角还在移动时枪先归位
+    this.lowerGunWhenCameraSettles()
   }
 
   /** Boss 被实弹命中：整身材质瞬间泛白，随后指数衰减回原样 */
@@ -1593,7 +1804,7 @@ export class SceneManager {
         found.group.rotation.y = t * Math.PI * 3
         const scale = startScale * (1 - t) ** 1.4
         found.group.scale.setScalar(Math.max(0.001, scale))
-        for (const mat of found.materials) mat.emissiveIntensity = 0.6 + t * 2.4
+        for (const mat of found.materials) mat.color.setHex(t > 0.5 ? 0xffd08a : Number(mat.userData.baseColor ?? 0xffffff))
       },
       onComplete: () => {
         this.itemRoot.remove(found.group)
@@ -1643,43 +1854,22 @@ export class SceneManager {
     this.renderer.dispose()
   }
 
-  /** 用 GLB 模型替换某个已存在道具的程序化几何（保留外层的缩放/悬停动画） */
+  /** 用 GLB 模型替换某个已存在道具的程序化几何（内容重建，外层只保留摆放姿态） */
   private replaceItemMesh(entry: ItemEntry, source: THREE.Object3D): void {
-    const stale: THREE.Object3D[] = []
-    for (const child of entry.group.children) {
-      if (child.userData.isModelClone) continue
-      stale.push(child)
-    }
-    for (const child of stale) {
+    for (const child of [...entry.group.children]) {
       entry.group.remove(child)
       this.disposeObject(child)
     }
     entry.materials.length = 0
 
-    const clone = source.clone(true)
-    clone.userData.isModelClone = true
-    // 道具目标尺寸 0.28m；归一到底座 y=0、水平居中
-    const box = new THREE.Box3().setFromObject(clone)
-    const size = box.getSize(new THREE.Vector3())
-    const longest = Math.max(size.x, size.y, size.z)
-    if (longest > 1e-6) clone.scale.setScalar(0.28 / longest)
-    const scaled = new THREE.Box3().setFromObject(clone)
-    const center = scaled.getCenter(new THREE.Vector3())
-    clone.position.set(-center.x, -scaled.min.y, -center.z)
-
-    clone.traverse((child) => {
-      if (child instanceof THREE.Mesh) {
-        child.castShadow = true
-        child.receiveShadow = true
-        const materials = Array.isArray(child.material) ? child.material : [child.material]
-        for (const material of materials) {
-          if (material instanceof THREE.MeshStandardMaterial) {
-            entry.materials.push(material)
-          }
-        }
-      }
-    })
-    entry.group.add(clone)
+    const { content, materials } = this.buildItemContent(entry.item, source)
+    entry.materials.push(...materials)
+    entry.group.add(content)
+    // 程序化几何的归一化旋转会落在旧外层上，替换后必须回到道具自己的摆放姿态
+    this.applyItemPose(entry.group, entry.item, entry.actor)
+    entry.spawnTarget = 1
+    entry.spawnScale = 1
+    entry.group.scale.setScalar(ITEM_SCALE * entry.hoverScale)
   }
 
   getCamera(): THREE.PerspectiveCamera {
@@ -1689,7 +1879,7 @@ export class SceneManager {
   /** 异步载入 GLB：首层关键 → 空闲次级 → Boss2/3 进层补齐；失败保持缺失并回退程序化几何 */
   private preloadModels(): void {
     const critical: ModelKey[] = [
-      'gaming_table',
+      'table_gothic',
       'room_environment',
       'shotgun',
       'player_hand',
@@ -1705,11 +1895,17 @@ export class SceneManager {
       'item_handcuffs',
       'item_hourglass',
       'item_dagger',
+      'item_aegis',
+      'item_hammer',
+      'item_seal',
+      'item_cutter',
+      'item_iou',
+      'item_monocle',
     ]
     const levelBosses: ModelKey[] = ['boss_2', 'boss_3']
     // 大件场景模型不必和道具一样压那么暗，否则整个桌面沉进黑里
     const dimFor = (key: ModelKey): number => {
-      if (key === 'gaming_table') return 0.82
+      if (key === 'table_gothic') return 0.82
       if (key === 'room_environment') return 0.9
       // Boss 是视觉焦点，压太狠时脸部和躯干细节全丢
       if (key === 'boss_1' || key === 'boss_2' || key === 'boss_3') return 0.85
@@ -1721,6 +1917,8 @@ export class SceneManager {
       if (key === 'boss_1') return 1.0
       if (key === 'boss_2' || key === 'boss_3') return 0.85
       if (key === 'player_hand') return 0.85
+      // 哥特桌是木材质贴图，压到默认 0.42 会整张沉进暗场，桌沿轮廓就没了
+      if (key === 'table_gothic') return 0.85
       return key === 'gothic_statue' || key === 'marble_bust_01' ? 0.62 : GLB_ALBEDO_DIM
     }
 
@@ -1864,7 +2062,7 @@ export class SceneManager {
         if (level === this.currentLevelIndex) this.applyBossMaskModel(level)
         break
       }
-      case 'gaming_table': {
+      case 'table_gothic': {
         this.swapTable(root)
         break
       }
@@ -1923,6 +2121,59 @@ export class SceneManager {
     this.introHands = group
   }
 
+  /** 中弹后双手先扒住桌沿；黑屏期间完成，不可见 */
+  private setIntroHandsGrip(): void {
+    const group = this.introHands
+    if (!group) return
+    this.introHandsTween += 1
+    for (const hand of group.children) {
+      hand.position.set(
+        hand.position.x < 0 ? -0.42 : 0.42,
+        TABLE_TOP + 0.09,
+        2.66,
+      )
+    }
+  }
+
+  /** 坐起过程中双手从桌沿滑回桌面原位 */
+  private tweenIntroHandsRest(duration: number): void {
+    const group = this.introHands
+    if (!group) return
+    const generation = ++this.introHandsTween
+    for (const hand of group.children) {
+      const target = new THREE.Vector3(
+        hand.position.x < 0 ? -0.43 : 0.43,
+        TABLE_TOP + 0.022,
+        2.05,
+      )
+      const from = hand.position.clone()
+      this.tween({
+        duration,
+        onUpdate: (t) => {
+          if (generation !== this.introHandsTween) return
+          const eased = easeOutCubic(t)
+          hand.position.x = from.x + (target.x - from.x) * eased
+          hand.position.z = from.z + (target.z - from.z) * eased
+          // 跨过桌沿时抬一点，别从雕花边框里穿过去
+          hand.position.y = from.y + (target.y - from.y) * eased + Math.sin(t * Math.PI) * 0.05
+        },
+      })
+    }
+  }
+
+  private resetIntroHandsPose(): void {
+    const group = this.introHands
+    if (!group) return
+    this.introHandsTween += 1
+    for (const hand of group.children) {
+      hand.position.set(
+        hand.position.x < 0 ? -0.43 : 0.43,
+        TABLE_TOP + 0.022,
+        2.05,
+      )
+    }
+  }
+
   /** 用 GLB 霰弹枪替换程序化占位枪，保留开火动画所需的 group 层级 */
   private swapShotgun(root: THREE.Object3D): void {
     const placeholder = this.gunGroup.getObjectByName('GunPlaceholder')
@@ -1968,11 +2219,16 @@ export class SceneManager {
       this.pumpSlide = pump
       this.pumpBaseZ = pump.position.z
     }
+
+    // 换模型会改变包围盒，平躺姿态要按新枪重新贴一次桌面
+    if (this.gunHolstered) this.settleGunOnTable()
   }
 
   /**
-   * 用 Blender 重型钢板赌桌替换程序化桌体。
-   * 模型台呢面在 glTF 的 y=0，这里整体抬到 TABLE_TOP，卡牌/道具/枪无需改坐标即可贴合。
+   * 用 Poly Haven 的哥特咖啡桌替换程序化桌体。
+   * 小桌放大到能罩住整套道具摊面：x/z 各自非均匀缩放，把下沉凹板拉到桌面覆盖范围，
+   * y 缩放让凹板面正好落在 TABLE_TOP，桌脚仍踩在地面上；
+   * 卡牌/道具/枪的坐标无需改动，边框比面板高约 6cm，边缘道具不会埋进雕花里。
    */
   private swapTable(root: THREE.Object3D): void {
     const stale: THREE.Object3D[] = []
@@ -1986,9 +2242,14 @@ export class SceneManager {
     }
 
     const clone = root.clone(true)
-    // 模型原地不动：台呢面本来就是 y=0，只需整体上移到桌面高度
-    clone.position.set(0, TABLE_TOP, 0)
-    clone.name = 'GamingTableGLB'
+    clone.scale.set(
+      GOTHIC_TABLE_FIT_HALF_X / GOTHIC_TABLE_PANEL_HALF,
+      TABLE_TOP / GOTHIC_TABLE_PANEL_TOP,
+      GOTHIC_TABLE_FIT_HALF_Z / GOTHIC_TABLE_PANEL_HALF,
+    )
+    // 模型原点在脚底、水平居中，缩放后直接落地即可
+    clone.position.set(0, 0, 0)
+    clone.name = 'GothicTableGLB'
     this.tableGroup.add(clone)
   }
 
@@ -2203,6 +2464,7 @@ export class SceneManager {
     this.updateNarrativeGrade(dt)
     this.updateChains(dt)
     this.updateGunAim(dt)
+    if (this.gunMotionActive) this.keepGunAboveTable()
     this.updateGunShake(dt)
     this.updateItems(dt)
     this.updateCards(dt)
@@ -2326,6 +2588,147 @@ export class SceneManager {
     this.spaceLook()
   }
 
+  /** 新一局/首层开局：枪平躺回桌面，等第一次处决再抬起 */
+  restGunOnTable(): void {
+    if (this.disposed) return
+    this.holsterGun()
+  }
+
+  /** 重新发牌前的演出闸门：枪已放平、镜头回到桌面且不再运镜、血液特写结束 */
+  whenReadyForDeal(): Promise<void> {
+    if (this.disposed) return Promise.resolve()
+    const startedAt = performance.now()
+    return new Promise((resolve) => {
+      const check = (): void => {
+        if (this.disposed) {
+          resolve()
+          return
+        }
+        const settled =
+          this.gunHolstered &&
+          !this.gunMotionActive &&
+          this.shot === 'table' &&
+          this.cameraBlend >= 1 &&
+          !this.isBloodCloseupActive()
+        // 兜底 8 秒：任何异常都不能把发牌锁死
+        if (settled || performance.now() - startedAt > 8000) {
+          resolve()
+          return
+        }
+        window.setTimeout(check, 90)
+      }
+      check()
+    })
+  }
+
+  private holsterGun(): void {
+    this.gunHolstered = true
+    this.gunMotionActive = false
+    this.gunRaiseGeneration += 1
+    this.gunAim.position.copy(GUN_PIVOT)
+    this.gunAim.rotation.set(0, this.gunRestYaw, GUN_REST_ROLL)
+    this.settleGunOnTable()
+  }
+
+  /** 侧翻后按包围盒最低点贴住桌面，换模型/换姿态都能复用 */
+  private settleGunOnTable(): void {
+    const holder =
+      this.gunShake.getObjectByName('ShotgunGLB') ?? this.gunShake.getObjectByName('GunPlaceholder')
+    if (!holder) return
+    this.gunAim.updateWorldMatrix(true, true)
+    const box = new THREE.Box3().setFromObject(holder)
+    if (!Number.isFinite(box.min.y)) return
+    this.gunAim.position.y += TABLE_TOP - box.min.y
+    this.gunHolsterY = this.gunAim.position.y
+  }
+
+  /** 处决开始：抬升、翻正、瞄准同步完成，整段是一条连贯的「端起」弧线 */
+  private raiseGun(): void {
+    if (!this.gunHolstered) return
+    this.gunHolstered = false
+    this.gunMotionActive = true
+    const generation = ++this.gunRaiseGeneration
+    const fromY = this.gunAim.position.y
+    const fromRoll = this.gunAim.rotation.z
+    this.tween({
+      duration: this.reducedMotion ? 0.24 : GUN_RAISE_DURATION,
+      onUpdate: (t) => {
+        if (generation !== this.gunRaiseGeneration) return
+        // 基础位移叠一段拱形抬升，翻正发生在枪身抬到高处时，不再「先抬后翻」
+        this.gunAim.position.y = fromY + (GUN_PIVOT.y - fromY) * easeOutCubic(t) + GUN_LIFT_CLEARANCE * Math.sin(Math.PI * t)
+        this.gunAim.rotation.z = fromRoll * (1 - easeInOutCubic(clamp01((t - 0.08) / 0.8)))
+      },
+      onComplete: () => {
+        if (generation !== this.gunRaiseGeneration) return
+        this.gunAim.position.copy(GUN_PIVOT)
+        this.gunAim.rotation.z = 0
+        this.gunMotionActive = false
+      },
+    })
+  }
+
+  /**
+   * 每次开枪后：镜头回到桌面机位（或结算机位）且运镜完成，才触发落枪归位。
+   * 血液特写期间机位仍是特写，必须等它结束。
+   */
+  private lowerGunWhenCameraSettles(): void {
+    const generation = this.gunRaiseGeneration
+    const check = (): void => {
+      if (this.disposed || generation !== this.gunRaiseGeneration) return
+      if (this.gunHolstered) return
+      const settledShot = this.shot === 'table' || this.shot === 'death' || this.shot === 'victory'
+      if (settledShot && this.cameraBlend >= 1 && !this.isBloodCloseupActive()) {
+        this.lowerGun(0.12)
+        return
+      }
+      window.setTimeout(check, 70)
+    }
+    check()
+  }
+
+  /** 每次开枪后：翻回侧躺与下落同步完成，最后落回桌面 */
+  private lowerGun(delay: number): void {
+    if (this.gunHolstered) return
+    this.gunHolstered = true
+    this.gunMotionActive = true
+    const generation = ++this.gunRaiseGeneration
+    const fromY = this.gunAim.position.y
+    const fromRoll = this.gunAim.rotation.z
+    const fromYaw = this.gunAim.rotation.y
+    const fromPitch = this.gunAim.rotation.x
+    const yawDelta = Math.atan2(Math.sin(this.gunRestYaw - fromYaw), Math.cos(this.gunRestYaw - fromYaw))
+    const targetY = this.gunHolsterY
+    this.tween({
+      delay,
+      duration: this.reducedMotion ? 0.24 : GUN_LOWER_DURATION,
+      onUpdate: (t) => {
+        if (generation !== this.gunRaiseGeneration) return
+        const eased = easeInOutCubic(t)
+        this.gunAim.position.y = fromY + (targetY - fromY) * eased + GUN_LIFT_CLEARANCE * Math.sin(Math.PI * t)
+        this.gunAim.rotation.z = fromRoll + (GUN_REST_ROLL - fromRoll) * easeInOutCubic(clamp01((t - 0.08) / 0.8))
+        this.gunAim.rotation.y = fromYaw + yawDelta * eased
+        this.gunAim.rotation.x = fromPitch * (1 - eased)
+      },
+      onComplete: () => {
+        if (generation !== this.gunRaiseGeneration) return
+        this.gunAim.position.y = targetY
+        this.gunAim.rotation.set(0, this.gunRestYaw, GUN_REST_ROLL)
+        this.gunMotionActive = false
+      },
+    })
+  }
+
+  /** 抬升/侧翻过程中把枪身最低点压在桌面之上，避免扫穿桌板 */
+  private keepGunAboveTable(): void {
+    const holder = this.gunShake.getObjectByName('ShotgunGLB') ?? this.gunShake.getObjectByName('GunPlaceholder')
+    if (!holder) return
+    this.gunAim.updateWorldMatrix(true, true)
+    const box = new THREE.Box3().setFromObject(holder, true)
+    if (!Number.isFinite(box.min.y)) return
+    const deficit = TABLE_TOP - box.min.y
+    if (deficit > 0) this.gunAim.position.y += deficit
+  }
+
   private updateGunAim(dt: number): void {
     if (this.shot === 'execute') {
       this.gunAim.getWorldPosition(this.aimScratch)
@@ -2340,7 +2743,9 @@ export class SceneManager {
       const horizontal = Math.hypot(this.aimScratchTarget.x, this.aimScratchTarget.z)
       const yaw = Math.atan2(-this.aimScratchTarget.x, -this.aimScratchTarget.z)
       const pitch = Math.atan2(this.aimScratchTarget.y, Math.max(0.0001, horizontal))
-      this.turnGun(yaw, pitch, dt)
+      // 枪还侧躺着的时候不甩向目标，翻正过程中再逐渐咬合，避免「平躺着先转向」
+      const upright = clamp01(1 - Math.abs(this.gunAim.rotation.z) / Math.abs(GUN_REST_ROLL))
+      this.turnGun(yaw, pitch, dt, upright * upright)
       if (this.gunShakeAfterAim) {
         const yawError = Math.abs(Math.atan2(Math.sin(yaw - this.gunAim.rotation.y), Math.cos(yaw - this.gunAim.rotation.y)))
         const pitchError = Math.abs(Math.atan2(Math.sin(pitch - this.gunAim.rotation.x), Math.cos(pitch - this.gunAim.rotation.x)))
@@ -2350,7 +2755,8 @@ export class SceneManager {
         }
       }
     } else {
-      this.turnGun(this.gunRestYaw, 0, dt)
+      // 归位动画自己会转回待机朝向，动画期间不再叠加一次转动
+      if (!this.gunMotionActive) this.turnGun(this.gunRestYaw, 0, dt)
     }
     if (this.revealGlowLife > 0) {
       this.revealGlowLife = Math.max(0, this.revealGlowLife - dt)
@@ -2368,9 +2774,9 @@ export class SceneManager {
     }
   }
 
-  /** 短弧插值：yaw 绕过 ±π 时不会倒着甩一整圈 */
-  private turnGun(yaw: number, pitch: number, dt: number): void {
-    const k = Math.min(1, dt * 5.5)
+  /** 短弧插值：yaw 绕过 ±π 时不会倒着甩一整圈；strength 用于和抬枪/归位动画同步 */
+  private turnGun(yaw: number, pitch: number, dt: number, strength = 1): void {
+    const k = Math.min(1, dt * 5.5) * strength
     const yawDelta = Math.atan2(Math.sin(yaw - this.gunAim.rotation.y), Math.cos(yaw - this.gunAim.rotation.y))
     const pitchDelta = Math.atan2(Math.sin(pitch - this.gunAim.rotation.x), Math.cos(pitch - this.gunAim.rotation.x))
     this.gunAim.rotation.y += yawDelta * k
@@ -2733,11 +3139,18 @@ export class SceneManager {
       entry.hoverScale += (target - entry.hoverScale) * Math.min(1, dt * 12)
       entry.group.scale.setScalar(ITEM_SCALE * entry.hoverScale * entry.spawnScale)
       const hoverLift = entry.hovered ? 0.04 : 0
-      entry.group.position.y = entry.baseY + Math.sin(this.elapsed * 2 + entry.phase) * 0.006 + hoverLift
-      entry.group.rotation.y = Math.sin(this.elapsed * 0.8 + entry.phase) * 0.12
-      const glowTarget = entry.hovered ? 1.1 : 0
+      entry.group.position.y = entry.baseY + hoverLift
       for (const material of entry.materials) {
-        material.emissiveIntensity += (glowTarget - material.emissiveIntensity) * Math.min(1, dt * 10)
+        const base = Number(material.userData.baseColor ?? 0xffffff)
+        const baseGlow = Number(material.userData.baseGlow ?? 0)
+        material.color.setHex(base)
+        material.emissive.setHex(base)
+        material.emissiveIntensity = baseGlow
+        if (entry.hovered) {
+          material.color.lerp(ITEM_HOVER_TINT, 0.35)
+          material.emissive.setHex(Number(material.userData.glowColor ?? 0xffffff))
+          material.emissiveIntensity = baseGlow + 0.6
+        }
       }
     }
   }
@@ -3287,6 +3700,8 @@ export class SceneManager {
       transparent: true,
       opacity: 0,
       blending: THREE.AdditiveBlending,
+      // 枪口贴着枪管，深度测试会把火光切掉一半；开火瞬间必须压在所有几何之上
+      depthTest: false,
       depthWrite: false,
       toneMapped: false,
     })
@@ -3294,6 +3709,7 @@ export class SceneManager {
     const flash = new THREE.Sprite(flashMat)
     flash.position.set(0, 0.06, -1.06)
     flash.scale.setScalar(0.3)
+    flash.renderOrder = 20
     flash.visible = false
     root.add(flash)
 
@@ -3365,6 +3781,36 @@ export class SceneManager {
     return out.set(0, BOSS_BUST_BASE_Y + bustHeight * BOSS_CHEST_RATIO, BOSS_Z + 0.62)
   }
 
+  /** 命中闪光复用同一盏预建点光，只改颜色/距离/强度/位置；运行中加拆光源会触发全场景重编译 */
+  private pulseImpactLight(
+    color: number,
+    intensity: number,
+    distance: number,
+    origin: THREE.Vector3,
+    zOffset: number,
+    duration: number,
+  ): void {
+    const light = this.impactLight
+    if (!light) return
+    const generation = ++this.impactGeneration
+    light.color.setHex(color)
+    light.distance = distance
+    light.intensity = intensity
+    light.position.copy(origin)
+    light.position.z += zOffset
+    this.tween({
+      duration,
+      onUpdate: (t) => {
+        if (generation !== this.impactGeneration) return
+        light.intensity = intensity * (1 - t) ** 2
+      },
+      onComplete: () => {
+        if (generation !== this.impactGeneration) return
+        light.intensity = 0
+      },
+    })
+  }
+
   private spawnBlood(origin: THREE.Vector3): void {
     this.bloodLife = 0.95
     const attribute = this.bloodBurst.geometry.getAttribute('position')
@@ -3408,20 +3854,7 @@ export class SceneManager {
     this.bloodMistLife = 0.7
 
     // 命中瞬间的红光，让血在曝光里"炸"一下
-    const impact = new THREE.PointLight(0xff2a14, 16, 4.5, 2)
-    impact.position.copy(origin)
-    impact.position.z += 0.15
-    this.scene.add(impact)
-    this.tween({
-      duration: 0.3,
-      onUpdate: (t) => {
-        impact.intensity = 16 * (1 - t) ** 2
-      },
-      onComplete: () => {
-        this.scene.remove(impact)
-        impact.dispose()
-      },
-    })
+    this.pulseImpactLight(0xff2a14, 16, 4.5, origin, 0.15, 0.3)
   }
 
   private updateBlood(dt: number): void {
@@ -3499,21 +3932,8 @@ export class SceneManager {
     this.sparkBurst.visible = true
     material.opacity = 1
 
-    // 火花是瞬时强光：补一盏短命点光，否则在暗场里只剩几个像素点
-    const impact = new THREE.PointLight(0xffc070, 4, 2, 2)
-    impact.position.copy(origin)
-    impact.position.z += 0.2
-    this.scene.add(impact)
-    this.tween({
-      duration: 0.32,
-      onUpdate: (t) => {
-        impact.intensity = 4 * (1 - t) ** 2
-      },
-      onComplete: () => {
-        this.scene.remove(impact)
-        impact.dispose()
-      },
-    })
+    // 火花是瞬时强光：复用命中补光，否则在暗场里只剩几个像素点
+    this.pulseImpactLight(0xffc070, 4, 2, origin, 0.2, 0.32)
   }
 
   private updateSparks(dt: number): void {
@@ -3887,13 +4307,13 @@ export class SceneManager {
       }
       for (const [key, value] of wanted) {
         if (this.items.has(key)) continue
-        const entry = this.spawnItem(actor, value.item, value.index, key, list.length)
+        const entry = this.spawnItem(actor, value.item, value.index, key)
         this.items.set(key, entry)
       }
       for (const [key, value] of wanted) {
         const entry = this.items.get(key)
         if (!entry) continue
-        const slot = this.itemSlot(actor, value.index, list.length)
+        const slot = this.itemSlot(actor, value.index)
         entry.baseY = slot.y
         const fromPos = entry.group.position.clone()
         this.tween({
@@ -3906,53 +4326,245 @@ export class SceneManager {
     }
   }
 
-  private itemSlot(actor: ActorId, index: number, count: number): THREE.Vector3 {
-    const total = Math.max(1, count)
-    if (actor === 'player') {
-      // 血袋架占住近处左角，道具沿右侧排开
-      const spacing = 0.4
-      const width = (total - 1) * spacing
-      const lastX = 1.1
-      const firstX = lastX - width
-      return new THREE.Vector3(firstX + index * spacing, TABLE_TOP + 0.02, 1.1)
+  private normalizeItemModel(object: THREE.Object3D, upright = false): void {
+    let box = new THREE.Box3().setFromObject(object)
+    let size = box.getSize(new THREE.Vector3())
+    if (upright) {
+      // 立起来：最薄一轴转去朝镜头（+Z），镜面保持竖直
+      if (size.x <= size.y && size.x <= size.z) object.rotation.y += Math.PI / 2
+      else if (size.y <= size.x && size.y <= size.z) object.rotation.x -= Math.PI / 2
+    } else {
+      // 平躺：最薄的一轴朝上，避免薄片模型在桌上立着。
+      if (size.x <= size.y && size.x <= size.z) object.rotation.z += Math.PI / 2
+      else if (size.z <= size.x && size.z <= size.y) object.rotation.x += Math.PI / 2
     }
-    const spacing = 0.5
-    const offset = (index - (total - 1) / 2) * spacing
-    return new THREE.Vector3(offset, TABLE_TOP + 0.02, -1.55)
+    object.updateMatrixWorld(true)
+    box = new THREE.Box3().setFromObject(object)
+    size = box.getSize(new THREE.Vector3())
+    const longest = Math.max(size.x, size.y, size.z)
+    if (longest <= 1e-6) return
+    object.scale.setScalar(ITEM_MODEL_SIZE / longest)
+    const scaled = new THREE.Box3().setFromObject(object)
+    const center = scaled.getCenter(new THREE.Vector3())
+    object.position.set(-center.x, -scaled.min.y, -center.z)
   }
 
-  private spawnItem(actor: ActorId, item: ItemId, index: number, key: string, count: number): ItemEntry {
-    const group = new THREE.Group()
-    const materials: THREE.MeshStandardMaterial[] = []
-    const template = this.itemModelTemplates.get(item)
+  private itemMaterialKind(
+    item: ItemId,
+    objectName: string,
+    source: THREE.MeshStandardMaterial,
+  ): ItemTone {
+    const object = objectName.toLowerCase()
+    const color = source.color.getHex()
+    if (item === 'magnifier') {
+      if (object.includes('lens')) return 'glass'
+      if (object.includes('brassring') || object.includes('ferrule')) return 'brass'
+      if (object.includes('brassgrip')) return 'wood'
+      return 'iron'
+    }
+    if (item === 'monocle') return source.name.toLowerCase().includes('glass') ? 'glass' : 'brass'
+    if (item === 'aegis') {
+      return object.includes('redmirror') || source.name.toLowerCase().includes('glass') ? 'glass' : 'brass'
+    }
+    if (item === 'iou') {
+      if (object.includes('closed')) return 'wood'
+      if (color === 0x7d1f18) return 'wax'
+      return 'paper'
+    }
+    if (item === 'seal') {
+      if (object.includes('waxdisk') || object.includes('redpaper')) return 'wax'
+      if (object.includes('wood') || object.includes('knob')) return 'wood'
+      if (object.includes('brass') || object.includes('rim') || object.includes('stud')) return 'brass'
+      return 'iron'
+    }
+    if (item === 'hourglass') return source.transparent ? 'glass' : 'brass'
+    if (item === 'dagger') {
+      if (object.includes('scabbard')) return 'wood'
+      if (color === 0x5e1410) return 'wax'
+      if (color === 0x7a4a22) return 'brass'
+      return 'iron'
+    }
+    if (item === 'cutter') {
+      if (object.includes('scabbard')) return 'wood'
+      if (color === 0xb8a888) return 'paper'
+      if (color === 0x6a4a2a) return 'wood'
+      return 'iron'
+    }
+    if (item === 'saw') return color === 0x5a2f1a ? 'wood' : 'iron'
+    if (item === 'magnet') return color === 0x9e2f24 ? 'wax' : 'iron'
+    if (item === 'sedative') return source.transparent || color === 0x3fae78 ? 'glass' : 'iron'
+    if (item === 'hammer') {
+      if (object.includes('wood') || object.includes('handle')) return 'wood'
+      if (object.includes('rag')) return 'wax'
+      if (object.includes('brass') || object.includes('collar') || object.includes('pommel')) return 'brass'
+      if (color === 0x7d2a22) return 'wax'
+      if (color === 0x4a2d18) return 'wood'
+      return 'iron'
+    }
+    return 'iron'
+  }
+
+  private applyItemStyle(object: THREE.Object3D, item: ItemId): THREE.MeshStandardMaterial[] {
+    const palette = ITEM_PALETTE[item]
+    const cache = new Map<ItemTone, THREE.MeshStandardMaterial>()
+    const make = (tone: ItemTone): THREE.MeshStandardMaterial => {
+      const cached = cache.get(tone)
+      if (cached) return cached
+      const style = ITEM_TONE_STYLE[tone]
+      const color = palette.tones[tone] ?? style.color
+      const material = new THREE.MeshStandardMaterial({
+        color,
+        metalness: style.metalness,
+        roughness: style.roughness,
+        emissive: color,
+        emissiveIntensity: style.emissiveIntensity,
+        transparent: style.transparent ?? false,
+        opacity: style.opacity ?? 1,
+      })
+      material.userData.baseColor = color
+      material.userData.baseGlow = style.emissiveIntensity
+      material.userData.glowColor = palette.glow
+      this.disposableMaterials.add(material)
+      cache.set(tone, material)
+      return material
+    }
+    object.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return
+      child.castShadow = true
+      child.receiveShadow = true
+      // 道具会从 0.001 放大到目标尺寸，禁用裁剪避免缩放后的包围体被误判为不可见。
+      child.frustumCulled = false
+      const originals = Array.isArray(child.material) ? child.material : [child.material]
+      // GLB 常把整个网格压成 0 个 group；此时 material 若是数组，Three 按 group 分发会一次都不画。
+      // 单材质必须保留单值形式，否则道具在局内完全隐形。
+      const mapped = originals.map((source) => {
+        if (!(source instanceof THREE.MeshStandardMaterial)) return source
+        return make(this.itemMaterialKind(item, child.name, source))
+      })
+      child.material = mapped.length === 1 ? mapped[0] : mapped
+    })
+    return [...cache.values()]
+  }
+
+  private buildItemGrid(): void {
+    const baseGeo = new THREE.BoxGeometry(ITEM_GRID.slotSize, 0.006, ITEM_GRID.slotSize)
+    this.disposableGeometries.add(baseGeo)
+    const borderGeo = new THREE.EdgesGeometry(baseGeo)
+    this.disposableGeometries.add(borderGeo)
+    const baseMat = new THREE.MeshStandardMaterial({
+      color: 0x1c1714,
+      metalness: 0.35,
+      roughness: 0.9,
+      emissive: 0x050403,
+      emissiveIntensity: 0.14,
+    })
+    const borderMat = new THREE.LineBasicMaterial({ color: 0xb08540, transparent: true, opacity: 0.9 })
+    const barMat = new THREE.MeshStandardMaterial({
+      color: 0x8c652f,
+      metalness: 0.78,
+      roughness: 0.4,
+      emissive: 0x2a1908,
+      emissiveIntensity: 0.25,
+    })
+    const horizontalGeo = new THREE.BoxGeometry(ITEM_GRID.slotSize, 0.004, 0.006)
+    const verticalGeo = new THREE.BoxGeometry(0.006, 0.004, ITEM_GRID.slotSize)
+    this.disposableGeometries.add(horizontalGeo)
+    this.disposableGeometries.add(verticalGeo)
+    this.disposableMaterials.add(baseMat)
+    this.disposableMaterials.add(borderMat)
+    this.disposableMaterials.add(barMat)
+    for (const actor of ['player', 'boss'] as const) {
+      for (let index = 0; index < 8; index += 1) {
+        const slot = new THREE.Group()
+        slot.name = `ItemSlot-${actor}-${index + 1}`
+        slot.userData.slotIndex = index
+        slot.position.copy(this.itemSlot(actor, index))
+        const base = new THREE.Mesh(baseGeo, baseMat)
+        base.position.y = -0.003
+        base.receiveShadow = true
+        slot.add(base)
+        const border = new THREE.LineSegments(borderGeo, borderMat)
+        border.position.y = 0.001
+        slot.add(border)
+        const edge = ITEM_GRID.slotSize / 2 - 0.003
+        for (const z of [-edge, edge]) {
+          const bar = new THREE.Mesh(horizontalGeo, barMat)
+          bar.position.set(0, 0.002, z)
+          slot.add(bar)
+        }
+        for (const x of [-edge, edge]) {
+          const bar = new THREE.Mesh(verticalGeo, barMat)
+          bar.position.set(x, 0.002, 0)
+          slot.add(bar)
+        }
+        this.itemGrid.add(slot)
+      }
+      const side = actor === 'player' ? 1 : -1
+      const grid = actor === 'player' ? ITEM_GRID.player : ITEM_GRID.boss
+      const spacing = 'spacing' in grid ? grid.spacing : ITEM_GRID.spacing
+      const gridLight = new THREE.PointLight(0xffc083, actor === 'player' ? 1.3 : 1.1, 2.3, 2)
+      gridLight.position.set(
+        side * (grid.originX + ((ITEM_GRID.columns - 1) * spacing) / 2),
+        TABLE_TOP + 0.72,
+        side * (grid.originZ + spacing / 2),
+      )
+      this.itemGrid.add(gridLight)
+    }
+    this.itemRoot.add(this.itemGrid)
+  }
+
+  /** 玩家栏在右下，敌方栏在其斜对的左上（即敌人的右侧） */
+  private itemSlot(actor: ActorId, index: number): THREE.Vector3 {
+    const column = index % ITEM_GRID.columns
+    const row = Math.floor(index / ITEM_GRID.columns)
+    const grid = actor === 'player' ? ITEM_GRID.player : ITEM_GRID.boss
+    const spacing = 'spacing' in grid ? grid.spacing : ITEM_GRID.spacing
+    const side = actor === 'player' ? 1 : -1
+    return new THREE.Vector3(
+      side * (grid.originX + column * spacing),
+      TABLE_TOP + 0.02,
+      side * (grid.originZ + row * spacing),
+    )
+  }
+
+  /** 道具内容与摆放姿态分离：归一化只作用在 content 上，外层 group 只负责槽位与朝向 */
+  private buildItemContent(
+    item: ItemId,
+    source?: THREE.Object3D,
+  ): { content: THREE.Group; materials: THREE.MeshStandardMaterial[] } {
+    const upright = item === 'aegis'
+    const content = new THREE.Group()
+    const template = source ?? this.itemModelTemplates.get(item)
     if (template) {
-      // 模型已就绪：直接用 GLB，尺寸与贴地在这里归一
       const clone = template.clone(true)
       clone.userData.isModelClone = true
-      const box = new THREE.Box3().setFromObject(clone)
-      const size = box.getSize(new THREE.Vector3())
-      const longest = Math.max(size.x, size.y, size.z)
-      if (longest > 1e-6) clone.scale.setScalar(0.28 / longest)
-      const scaled = new THREE.Box3().setFromObject(clone)
-      const center = scaled.getCenter(new THREE.Vector3())
-      clone.position.set(-center.x, -scaled.min.y, -center.z)
-      clone.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          child.castShadow = true
-          child.receiveShadow = true
-          const list = Array.isArray(child.material) ? child.material : [child.material]
-          for (const material of list) {
-            if (material instanceof THREE.MeshStandardMaterial) {
-              materials.push(material)
-            }
-          }
-        }
-      })
-      group.add(clone)
+      this.normalizeItemModel(clone, upright)
+      content.add(clone)
     } else {
-      this.buildItemMesh(item, group, materials)
+      this.buildItemMesh(item, content, [])
+      this.normalizeItemModel(content, upright)
     }
-    const slot = this.itemSlot(actor, index, count)
+    const materials = this.applyItemStyle(content, item)
+    return { content, materials }
+  }
+
+  private applyItemPose(group: THREE.Group, item: ItemId, actor: ActorId): void {
+    // 放大镜/锤子/手锯平躺，重点端朝向左上（视线远-左），尾端收向右下；护心镜立起朝镜头
+    // 手锯（GLB 与程序化几何）刀刃朝向本地 -Z，需与放大镜相反的摆角才能让刃尖朝左上
+    // 人机与玩家对坐：所有道具多转 180°（含护心镜），让两边各自看自己的桌面时布局一致
+    let yaw = 0
+    if (item === 'magnifier' || item === 'hammer') yaw = -Math.PI * 0.75
+    else if (item === 'saw') yaw = Math.PI * 0.25
+    if (actor !== 'player') yaw += Math.PI
+    group.rotation.set(0, yaw, 0)
+  }
+
+  private spawnItem(actor: ActorId, item: ItemId, index: number, key: string): ItemEntry {
+    const group = new THREE.Group()
+    const { content, materials } = this.buildItemContent(item)
+    group.add(content)
+    this.applyItemPose(group, item, actor)
+    const slot = this.itemSlot(actor, index)
     group.position.copy(slot)
     group.position.y += 0.5
     group.scale.setScalar(0.001)
@@ -3968,22 +4580,18 @@ export class SceneManager {
       hovered: false,
       hoverScale: 1,
       spawnScale: 0.001,
+      spawnTarget: 1,
       baseY: slot.y,
-      phase: index * 1.7,
       materials,
     }
     this.tween({
       duration: 0.34,
       onUpdate: (t) => {
         const eased = easeOutCubic(t)
-        entry.spawnScale = 0.001 + eased * 0.999
+        entry.spawnScale = entry.spawnTarget * (0.001 + eased * 0.999)
         group.position.y = slot.y + (1 - eased) * 0.5
       },
     })
-    for (const material of materials) {
-      material.emissive = new THREE.Color(0x000000)
-      material.emissiveIntensity = 0
-    }
     return entry
   }
 
@@ -4018,20 +4626,21 @@ export class SceneManager {
           emissiveIntensity: 0.5,
         })
         this.disposableMaterials.add(glassMat)
+        // 放大镜平躺：镜面朝上，手柄沿 -Z 伸出（与外层 -135° 摆角配合，镜片朝左上）
         add(new THREE.TorusGeometry(0.13, 0.018, 10, 24), rimMat, (mesh) => {
-          mesh.position.set(0, 0.13, 0)
-          mesh.rotation.x = -0.5
+          mesh.position.set(0, 0.03, 0)
+          mesh.rotation.x = -Math.PI / 2
         })
         add(new THREE.CylinderGeometry(0.017, 0.019, 0.2, 10), handleMat, (mesh) => {
-          mesh.position.set(0, 0.035, 0.13)
-          mesh.rotation.x = Math.PI / 2 - 0.5
+          mesh.position.set(0, 0.019, -0.23)
+          mesh.rotation.x = Math.PI / 2
         })
         const lensGeo = new THREE.CircleGeometry(0.115, 24)
         this.disposableGeometries.add(lensGeo)
         this.disposableMaterials.add(glassMat)
         const lens = new THREE.Mesh(lensGeo, glassMat)
-        lens.position.set(0, 0.135, 0)
-        lens.rotation.x = -0.5
+        lens.position.set(0, 0.033, 0)
+        lens.rotation.x = -Math.PI / 2
         group.add(lens)
         break
       }
@@ -4066,27 +4675,27 @@ export class SceneManager {
         break
       }
       case 'saw': {
+        // 与 item_saw.glb 同轴：刃尖朝本地 -Z，锯柄收在 +Z，替换模型时朝向不翻转
         const bladeMat = makeStandardMaterial(0x9aa2a6, 0.95, 0.28)
         const gripMat = makeStandardMaterial(0x5a2f1a, 0.15, 0.7)
-        add(new THREE.BoxGeometry(0.46, 0.018, 0.13), bladeMat, (mesh) => {
-          mesh.position.set(0.05, 0.03, 0)
+        add(new THREE.BoxGeometry(0.13, 0.018, 0.46), bladeMat, (mesh) => {
+          mesh.position.set(0, 0.03, -0.05)
         })
         const toothGeo = new THREE.ConeGeometry(0.018, 0.045, 4)
         this.disposableGeometries.add(toothGeo)
         this.disposableMaterials.add(bladeMat)
         for (let i = 0; i < 9; i += 1) {
           const tooth = new THREE.Mesh(toothGeo, bladeMat)
-          tooth.position.set(-0.15 + i * 0.05, 0.03, 0.075)
-          tooth.rotation.x = Math.PI / 2
+          tooth.position.set(0.075, 0.03, 0.15 - i * 0.05)
+          tooth.rotation.z = -Math.PI / 2
           group.add(tooth)
         }
-        add(new THREE.BoxGeometry(0.16, 0.05, 0.06), gripMat, (mesh) => {
-          mesh.position.set(-0.32, 0.035, 0)
-          mesh.rotation.y = 0.1
+        add(new THREE.BoxGeometry(0.06, 0.05, 0.16), gripMat, (mesh) => {
+          mesh.position.set(0, 0.035, 0.32)
+          mesh.rotation.y = -0.1
         })
         add(new THREE.TorusGeometry(0.04, 0.012, 8, 14), gripMat, (mesh) => {
-          mesh.position.set(-0.42, 0.04, 0)
-          mesh.rotation.y = Math.PI / 2
+          mesh.position.set(0, 0.04, 0.42)
         })
         break
       }

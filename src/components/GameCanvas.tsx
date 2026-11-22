@@ -61,9 +61,12 @@ export function GameCanvas({
     }
 
     sceneRef.current = manager
+    // 发牌闸门：等枪放平、镜头回位后再让引擎进入下一回合
+    engine.setPresentationGate(() => manager.whenReadyForDeal())
     readyRef.current?.(manager)
 
     return () => {
+      engine.setPresentationGate(null)
       manager?.dispose()
       sceneRef.current = null
     }
@@ -91,6 +94,8 @@ export function GameCanvas({
         if (!scene.isBloodCloseupActive()) scene.setShot('cylinder', 0.9)
         break
       case 'roundStart':
+        // 新一局 / 首层第一回合：枪先平躺回桌面
+        if (event.level === 1 && event.round === 1) scene.restGunOnTable()
         if (!scene.isBloodCloseupActive()) scene.resetShot(0.85)
         break
       case 'execution':
@@ -203,8 +208,8 @@ export function ItemTooltip({ payload }: { payload: ItemHoverPayload | null }) {
     >
       <p className="font-display text-sm text-bone-200">{payload.name}</p>
       <p className="mt-0.5 text-[10px] tracking-widest text-rust-400 uppercase">{owner}</p>
-      <p className="mt-1 text-[11px] leading-relaxed text-bone-200/60">{payload.summary}</p>
-      <p className="mt-1 text-[11px] leading-relaxed text-rust-300/60 italic">
+      <p className="mt-1 text-[11px] leading-relaxed text-bone-200/90">{payload.summary}</p>
+      <p className="mt-1 text-[11px] leading-relaxed text-bone-200/45 italic">
         {itemFlavor(payload.item)}
       </p>
       {!usable ? <p className="mt-1 text-[10px] text-bone-200/35">无法动用对手的道具</p> : null}

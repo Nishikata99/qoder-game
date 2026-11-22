@@ -365,7 +365,7 @@ export const BOSS_ITEM_POOLS: Readonly<Record<BossPersonality, readonly ItemId[]
   executioner: ['magnifier', 'saw', 'sedative', 'magnet', 'handcuffs', 'aegis', 'dagger', 'hammer'],
 }
 
-const MAX_ITEMS = 8
+export const MAX_ITEMS = 8
 /** 玩家每回合最多使用 3 件道具；Boss 仍受人格 itemBudget 限制 */
 export const PLAYER_ITEM_CAP = 3
 const LOG_LIMIT = 80
@@ -651,6 +651,8 @@ export class GameEngine {
   private destroyed = false
   private started = false
   private paused = false
+  /** 场景演出闸门：枪放平、镜头回位后才允许重新发牌；测试/无场景时为 null */
+  private presentationGate: (() => Promise<void>) | null = null
   private runRounds = 0
   private phase: Phase = 'idle'
   private levelIndex = 0
@@ -1189,6 +1191,11 @@ export class GameEngine {
     return true
   }
 
+  /** 注入场景演出闸门；传 null 恢复立即发牌（测试与无场景环境） */
+  setPresentationGate(gate: (() => Promise<void>) | null): void {
+    this.presentationGate = gate
+  }
+
   /** 跳过处决悬念停顿，立即揭晓枪响结果；只在处决演出进行中有效 */
   skipExecution(): boolean {
     if (this.phase !== 'execution' || this.executionSkip === null) return false
@@ -1292,6 +1299,11 @@ export class GameEngine {
     this.publish()
     await this.wait(900)
     if (!this.alive(token)) return
+    // 等枪完全放平、镜头回到桌面机位，再开始下一回合发牌
+    if (this.presentationGate) {
+      await this.presentationGate()
+      if (!this.alive(token)) return
+    }
     void this.startRound(token)
   }
 

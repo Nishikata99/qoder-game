@@ -8,17 +8,19 @@ import { DevPanel } from './components/DevPanel'
 import { CorridorIntro } from './components/CorridorIntro'
 import { NarrativeOverlay } from './narrative/NarrativeOverlay'
 import type { ItemHoverPayload } from './scene/SceneManager'
-import type { SceneManager } from './scene/SceneManager'
+import type { QualityPreset, SceneManager } from './scene/SceneManager'
 import type { ActorId, ActorView, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
 import {
   GameEngine,
   ITEM_CATALOG,
   LEVELS,
+  PLAYER_ITEM_CAP,
   createSeededRandom,
   evaluateHand,
   formatCard as formatCardLabel,
 } from './game/GameEngine'
 import { bossName, levelTitle, itemFlavor, narrativeLog } from './narrative/copy'
+import { useDialogFocus } from './components/useDialogFocus'
 
 interface RelayBanner {
   readonly id: number
@@ -37,17 +39,102 @@ const FADE_MS = 2400
 const GUIDE_KEY = 'blood-ante.guideSeen'
 
 const GUIDE_LINES = [
-  '谁更接近 21 点，谁夺枪——赢点数，就赢这一轮的裁决权。',
-  '枪口由你决定——射向对面催血；对自己开空膛，白拿一件前人遗物。',
-  '凑齐三层二十一袋血，才算赎契——输光血袋，你的名字就留在三楼。',
+  '比 21 点：要牌或停牌；赢下这轮，枪就归你。牌库只有 A–10，没有 J/Q/K。',
+  '枪口由你定：射它，或射自己。对自己开未知空膛，桌下可能回一件遗物。',
+  '三层赎契：每层血袋重置；清层只能带走一件补给。',
 ] as const
+
+const NARRATIVE_SEEN: Readonly<Record<NarrativeMode, string>> = {
+  intro: 'blood-ante.narrativeSeen.intro',
+  restart: 'blood-ante.narrativeSeen.restart',
+  t2: 'blood-ante.narrativeSeen.t2',
+  t3: 'blood-ante.narrativeSeen.t3',
+  endingB: 'blood-ante.narrativeSeen.endingB',
+}
+
+const FIRST_TURN_HINT_KEY = 'blood-ante.hint.firstTurn'
+const SETTINGS_KEY = 'blood-ante.settings.v1'
+const CHECKPOINT_KEY = 'blood-ante.checkpoint.v1'
+
+interface StoredSettings {
+  readonly muted: boolean
+  readonly volume: number
+  readonly quality: string
+}
+
+interface StoredCheckpoint {
+  readonly levelIndex: number
+  readonly carryOver: readonly ItemId[]
+  readonly runRounds: number
+}
+
+function readSettings(): Partial<StoredSettings> {
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return {}
+    const value = parsed as Record<string, unknown>
+    return {
+      muted: typeof value.muted === 'boolean' ? value.muted : undefined,
+      volume: typeof value.volume === 'number' ? value.volume : undefined,
+      quality: typeof value.quality === 'string' ? value.quality : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
+function writeSettings(settings: StoredSettings): void {
+  try {
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ v: 1, ...settings }))
+  } catch {
+    // 隐私模式写不进去，本次会话内仍然生效
+  }
+}
+
+function readCheckpoint(): StoredCheckpoint | null {
+  try {
+    const raw = window.localStorage.getItem(CHECKPOINT_KEY)
+    if (!raw) return null
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const value = parsed as Record<string, unknown>
+    const levelIndex = value.levelIndex
+    if (typeof levelIndex !== 'number' || !Number.isInteger(levelIndex) || levelIndex < 0) return null
+    const carryOver = Array.isArray(value.carryOver)
+      ? (value.carryOver.filter((item): item is ItemId => typeof item === 'string'))
+      : []
+    const runRounds = typeof value.runRounds === 'number' ? value.runRounds : 0
+    return { levelIndex, carryOver, runRounds }
+  } catch {
+    return null
+  }
+}
+
+function writeCheckpoint(checkpoint: StoredCheckpoint): void {
+  try {
+    window.localStorage.setItem(CHECKPOINT_KEY, JSON.stringify({ v: 1, ...checkpoint }))
+  } catch {
+    // 存不下检查点时最多刷新后回第一层
+  }
+}
+
+function clearCheckpoint(): void {
+  try {
+    window.localStorage.removeItem(CHECKPOINT_KEY)
+  } catch {
+    // 忽略
+  }
+}
 
 /** 首次进入的三句话规则；localStorage 记住已读，之后只在角落留一个「规则 / 图鉴」入口 */
 function hasSeenGuide(): boolean {
   try {
     return window.localStorage.getItem(GUIDE_KEY) === '1'
   } catch {
-    return true
+    // 隐私模式读不到 localStorage 时应当看到引导，而不是静默跳过
+    return false
   }
 }
 
@@ -56,6 +143,38 @@ function markGuideSeen(): void {
     window.localStorage.setItem(GUIDE_KEY, '1')
   } catch {
     // 隐私模式写入会抛错，忽略即可，最多下次再弹一次
+  }
+}
+
+function hasSeenNarrative(mode: NarrativeMode): boolean {
+  try {
+    return window.localStorage.getItem(NARRATIVE_SEEN[mode]) === '1'
+  } catch {
+    return false
+  }
+}
+
+function markNarrativeSeen(mode: NarrativeMode): void {
+  try {
+    window.localStorage.setItem(NARRATIVE_SEEN[mode], '1')
+  } catch {
+    // 写不进去就下次再看一遍，不阻塞流程
+  }
+}
+
+function hasSeenFirstTurnHint(): boolean {
+  try {
+    return window.localStorage.getItem(FIRST_TURN_HINT_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function markFirstTurnHintSeen(): void {
+  try {
+    window.localStorage.setItem(FIRST_TURN_HINT_KEY, '1')
+  } catch {
+    // 隐私模式：最多重复提示一次
   }
 }
 
@@ -79,20 +198,37 @@ export default function App() {
   const snapshotRef = useRef<GameSnapshot | null>(null)
   snapshotRef.current = snapshot
   const [hover, setHover] = useState<ItemHoverPayload | null>(null)
-  const [muted, setMuted] = useState(false)
-  const [volume, setVolume] = useState(0.85)
+  const [muted, setMuted] = useState(() => readSettings().muted ?? false)
+  const [volume, setVolume] = useState(() => {
+    const stored = readSettings().volume
+    return typeof stored === 'number' ? Math.min(1, Math.max(0, stored)) : 0.85
+  })
+  const [quality, setQuality] = useState(() => readSettings().quality ?? 'auto')
   const [modal, setModal] = useState<ModalTab | null>(null)
   const [guideOpen, setGuideOpen] = useState(() => !hasSeenGuide())
   const [relay, setRelay] = useState<RelayBanner | null>(null)
   const [loot, setLoot] = useState<LootBanner | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [bloodFlash, setBloodFlash] = useState(0)
+  const [muzzleFlash, setMuzzleFlash] = useState(0)
   const [bloodSplatter, setBloodSplatter] = useState(0)
   const [visionBlur, setVisionBlur] = useState(0)
+  const [wakeBlur, setWakeBlur] = useState(0)
   const [narrative, setNarrative] = useState<NarrativeVisual | null>(null)
   const [clueLine, setClueLine] = useState<string | null>(null)
   const [devOpen, setDevOpen] = useState(false)
   const [corridorState, setCorridorState] = useState<'idle' | 'playing' | 'done'>('idle')
+  const [skipAvailable, setSkipAvailable] = useState(false)
+  const [showFirstTurnHint, setShowFirstTurnHint] = useState(false)
+  const firstTurnHintShownRef = useRef(false)
+  const [paused, setPaused] = useState(false)
+  const [checkpoint, setCheckpoint] = useState<StoredCheckpoint | null>(() => readCheckpoint())
+  const [loadProgress, setLoadProgress] = useState<{ loaded: number; total: number } | null>(null)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [logOpen, setLogOpen] = useState(false)
+  const [spokenLine, setSpokenLine] = useState('')
+  const guideRef = useRef<HTMLDivElement | null>(null)
+  const logRef = useRef<HTMLDivElement | null>(null)
   const pendingIntroRef = useRef(false)
   const devEPresses = useRef<number[]>([])
   const narrativeRef = useRef<NarrativeVisual | null>(null)
@@ -103,9 +239,44 @@ export default function App() {
   const relayTimer = useRef<number | null>(null)
   const lootTimer = useRef<number | null>(null)
   const bloodTimer = useRef<number | null>(null)
+  const muzzleTimer = useRef<number | null>(null)
   const splatterTimer = useRef<number | null>(null)
   const blurTimer = useRef<number | null>(null)
+  const wakeBlurTimer = useRef<number | null>(null)
   const bannerId = useRef(0)
+  const startedRef = useRef(false)
+  const finishedRef = useRef(false)
+
+  const togglePause = useCallback(
+    (next: boolean) => {
+      if (next) {
+        if (!startedRef.current || finishedRef.current) return
+        game.pause()
+        directorRef.current?.pause()
+        sound.suspend()
+      } else {
+        game.resume()
+        directorRef.current?.resume()
+        sound.resume()
+      }
+      setPaused(next)
+    },
+    [game, sound],
+  )
+
+  const applyQuality = useCallback((scene: SceneManager, preset: string) => {
+    const resolved: QualityPreset =
+      preset === 'high' || preset === 'balanced' || preset === 'low'
+        ? preset
+        : window.matchMedia('(pointer: coarse)').matches ||
+            (navigator.hardwareConcurrency ?? 8) <= 4
+          ? 'balanced'
+          : 'high'
+    scene.setQuality(resolved)
+  }, [])
+
+  useDialogFocus(guideRef, () => setGuideOpen(false), guideOpen)
+  useDialogFocus(logRef, () => setLogOpen(false), logOpen)
 
   const showNotice = useCallback((message: string) => {
     setNotice(message)
@@ -123,10 +294,22 @@ export default function App() {
           if (event.chamber === 'live') {
             // 自己中弹才保留完整耳鸣长尾，打向对手时缩短以避免拖沓
             sound.playGunshot({ selfShot: event.target === 'player' })
+            // 自射时枪口精灵落在画面上缘之外，靠一层屏幕空间爆闪补「砰」的读感
+            if (event.target === 'player') {
+              setMuzzleFlash((n) => n + 1)
+              if (muzzleTimer.current !== null) window.clearTimeout(muzzleTimer.current)
+              muzzleTimer.current = window.setTimeout(() => setMuzzleFlash(0), 160)
+            }
             if (event.blocked !== null) {
-              showNotice(event.blocked === 'shield' ? '护心镜碎裂：伤害被完全挡下' : '替身被击中：子弹落空')
+              showNotice('护心镜碎裂：伤害被完全挡下')
+              setSpokenLine('实弹被护心镜完全挡下。')
               break
             }
+            setSpokenLine(
+              event.target === 'player'
+                ? `你受到 ${event.damage} 点伤害。`
+                : `对手受到 ${event.damage} 点伤害。`,
+            )
             setBloodFlash((n) => n + 1)
             if (bloodTimer.current !== null) window.clearTimeout(bloodTimer.current)
             bloodTimer.current = window.setTimeout(() => setBloodFlash(0), 900)
@@ -134,9 +317,18 @@ export default function App() {
               setBloodSplatter((n) => n + 1)
               if (splatterTimer.current !== null) window.clearTimeout(splatterTimer.current)
               splatterTimer.current = window.setTimeout(() => setBloodSplatter(0), 1500)
-              setVisionBlur((n) => n + 1)
+              setVisionBlur(0)
               if (blurTimer.current !== null) window.clearTimeout(blurTimer.current)
-              blurTimer.current = window.setTimeout(() => setVisionBlur(0), 1400)
+              // 黑屏等枪口火光熄灭后再硬切进入。
+              // 睁眼模糊也必须等这一刻才挂上：它挂载即满糊+压暗，枪响帧会直接糊掉枪口火光
+              blurTimer.current = window.setTimeout(() => {
+                setVisionBlur((n) => n + 1)
+                blurTimer.current = window.setTimeout(() => setVisionBlur(0), 1500)
+                setWakeBlur((n) => n + 1)
+                if (wakeBlurTimer.current !== null) window.clearTimeout(wakeBlurTimer.current)
+                // 2000ms 动画在黑屏挂上后 2.1s 全清，2.25s 才开始撑桌起身
+                wakeBlurTimer.current = window.setTimeout(() => setWakeBlur(0), 2150)
+              }, 100)
             }
           } else {
             sound.playClickEmpty()
@@ -167,6 +359,29 @@ export default function App() {
           sound.playItemUse()
           sound.playReload()
           showNotice(`匕首献祭：重装 ${event.live} 实 ${event.blank} 空`)
+          break
+        case 'cardCuttered':
+          sound.playItemUse()
+          if (event.actor === 'player') {
+            showNotice(`裁纸刀：裁掉了 ${formatCardLabel(event.old)}`)
+          }
+          break
+        case 'iouSigned':
+          sound.playItemUse()
+          if (event.actor === 'player') {
+            showNotice('借据落印：本局赢下的实弹 +2，输掉时挨的实弹 +1')
+          }
+          break
+        case 'cardSealed':
+          sound.playItemUse()
+          if (event.actor === 'player') {
+            showNotice(`封条贴住 ${formatCardLabel(event.card)}，本局不计点`)
+          }
+          break
+        case 'deckPeeked':
+          if (event.actor === 'player') {
+            showNotice(`单片眼镜：牌靴顶部 ${event.cards.map((card) => formatCardLabel(card)).join('、')}`)
+          }
           break
         case 'notice':
           showNotice(event.message)
@@ -227,7 +442,8 @@ export default function App() {
 
   useEffect(() => {
     sound.setMasterVolume(muted ? 0 : volume)
-  }, [muted, volume, sound])
+    writeSettings({ muted, volume, quality })
+  }, [muted, volume, quality, sound])
 
   useEffect(() => () => sound.dispose(), [sound])
 
@@ -252,6 +468,15 @@ export default function App() {
         return
       }
       const snap = snapshotRef.current
+      // Esc：暂停/继续；弹窗或叙事期间交给它们自己处理
+      if (event.key === 'Escape') {
+        if (modal !== null || narrativeRef.current !== null) return
+        if (!startedRef.current || finishedRef.current) return
+        event.preventDefault()
+        togglePause(!paused)
+        return
+      }
+      if (paused) return
       // 开发者面板：1.6s 内连按 4 次 E 打开，关闭后需再次连按；E 不与任何游戏键位冲突
       if (event.key.toLowerCase() === 'e') {
         const presses = devEPresses.current
@@ -296,15 +521,17 @@ export default function App() {
       const key = event.key.toLowerCase()
       if (key === 'h') {
         event.preventDefault()
+        setShowFirstTurnHint(false)
         game.hit()
       } else if (key === 's') {
         event.preventDefault()
+        setShowFirstTurnHint(false)
         game.stand()
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [game])
+  }, [game, togglePause, paused, modal])
 
   const hpRatio =
     snapshot && snapshot.player.maxHp > 0 ? snapshot.player.hp / snapshot.player.maxHp : 1
@@ -320,15 +547,39 @@ export default function App() {
     return () => window.clearInterval(id)
   }, [alive, bpm, sound])
 
-  // 切后台冻结整条音频图：suspend 期间 currentTime 不走，排队的心跳会在回来时一起炸开
+  // 切后台冻结音频图并暂停整局：回来不自动续，避免 Boss 回合在后台跑完
   useEffect(() => {
     const onVisibility = () => {
-      if (document.hidden) sound.suspend()
-      else sound.resume()
+      if (document.hidden) {
+        sound.suspend()
+        directorRef.current?.pause()
+        if (startedRef.current && !finishedRef.current) togglePause(true)
+      } else {
+        sound.resume()
+      }
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => document.removeEventListener('visibilitychange', onVisibility)
-  }, [sound])
+  }, [sound, togglePause])
+
+  useEffect(() => {
+    startedRef.current = snapshot?.started ?? false
+    finishedRef.current = snapshot?.phase === 'gameOver' || snapshot?.phase === 'victory'
+  }, [snapshot?.started, snapshot?.phase])
+
+  useEffect(() => {
+    if (!snapshot || snapshot.phase !== 'playerTurn' || snapshot.round !== 1) return
+    if (firstTurnHintShownRef.current || hasSeenFirstTurnHint()) return
+    firstTurnHintShownRef.current = true
+    markFirstTurnHintSeen()
+    setShowFirstTurnHint(true)
+    // 不在 effect cleanup 里清定时器：开发模式 StrictMode 的二次挂载会立刻取消它
+    window.setTimeout(() => setShowFirstTurnHint(false), 8000)
+  }, [snapshot?.phase, snapshot?.round])
+
+  const finishFirstTurnHint = useCallback(() => {
+    setShowFirstTurnHint(false)
+  }, [])
 
   const devBridge = useMemo(() => new DevBridge(game), [game])
 
@@ -366,6 +617,26 @@ export default function App() {
   }
 
   function handleEventNarrative(event: GameEvent) {
+    // 只在结果节点播报，不做每回合点数播报
+    if (event.type === 'bust') {
+      setSpokenLine(event.actor === 'player' ? '你爆牌了。' : '对手爆牌了。')
+    } else if (event.type === 'tie') {
+      setSpokenLine('双方同点，本轮不开枪，走火遗恨加一。')
+    }
+    if (event.type === 'checkpoint') {
+      const next: StoredCheckpoint = {
+        levelIndex: event.levelIndex,
+        carryOver: [...event.carryOver],
+        runRounds: event.runRounds,
+      }
+      writeCheckpoint(next)
+      setCheckpoint(next)
+      return
+    }
+    if (event.type === 'gameOver') {
+      clearCheckpoint()
+      setCheckpoint(null)
+    }
     // directorRef 在 beginNarrative 里同步赋值；narrativeRef 要等一次渲染才同步。
     // 同一帧内「开叙事 + 来事件」时只看 narrativeRef 会误判成空闲
     const narrativeBusy = narrativeRef.current !== null || directorRef.current !== null
@@ -405,6 +676,8 @@ export default function App() {
     if (!scene) return
     directorRef.current?.stop()
     narrativeModeRef.current = mode
+    // 已看过的段落给跳过入口；首见仍完整播放
+    setSkipAvailable(hasSeenNarrative(mode))
     const director = new NarrativeDirector({
       scene,
       sound,
@@ -414,6 +687,8 @@ export default function App() {
         else game.restart()
       },
       onFinish: () => {
+        markNarrativeSeen(mode)
+        setSkipAvailable(false)
         setNarrative(null)
         directorRef.current = null
         narrativeModeRef.current = null
@@ -421,6 +696,15 @@ export default function App() {
     })
     directorRef.current = director
     director.start(mode)
+  }
+
+  function skipNarrative() {
+    const director = directorRef.current
+    const mode = narrativeModeRef.current
+    if (!director || !mode) return
+    markNarrativeSeen(mode)
+    setSkipAvailable(false)
+    director.skip()
   }
 
   const narrativeActive = narrative !== null
@@ -452,6 +736,10 @@ export default function App() {
       showNotice(`【${ITEM_CATALOG[item].name}】尚未解锁。`)
       return
     }
+    if (snapshot.player.itemsUsedThisTurn >= PLAYER_ITEM_CAP) {
+      showNotice('本回合的道具已经用尽。')
+      return
+    }
     game.useItem(item)
   }
 
@@ -460,9 +748,16 @@ export default function App() {
   const playerTurn = phase === 'playerTurn'
   const locked = snapshot?.player.skipTurn ?? false
   const inputLocked = snapshot?.inputLocked ?? false
-  const canAct = playerTurn && !locked && !inputLocked
+  const canAct = playerTurn && !locked && !inputLocked && !snapshot?.cardChoice
   const finished = phase === 'gameOver' || phase === 'victory'
   const level = snapshot?.level ?? (LEVELS[0] as (typeof LEVELS)[number])
+  const [, forceTick] = useState(0)
+
+  useEffect(() => {
+    if (phase !== 'supply' || snapshot?.paused) return
+    const id = window.setInterval(() => forceTick((n) => n + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [phase, snapshot?.paused])
 
   return (
     <main className="relative h-full w-full overflow-hidden bg-abyss-950">
@@ -475,6 +770,7 @@ export default function App() {
             onHoverChange={setHover}
             onSceneReady={(scene) => {
               sceneRef.current = scene
+              applyQuality(scene, quality)
               // 走廊黑场后 GameCanvas 重新挂载：SceneManager 就位即开始入场
               if (pendingIntroRef.current && corridorState === 'done') {
                 pendingIntroRef.current = false
@@ -485,6 +781,8 @@ export default function App() {
               // 否则字幕继续走，setShot / setNarrativeGrade 却都落在已销毁的场景上
               if (narrativeModeRef.current) beginNarrative(narrativeModeRef.current)
             }}
+            onLoadProgress={(progress) => setLoadProgress(progress)}
+            onLoadError={() => setLoadFailed(true)}
           />
         ) : null}
         {corridorState !== 'done' ? (
@@ -494,6 +792,21 @@ export default function App() {
             onIntroComplete={handleCorridorComplete}
             onEnterMoyan={enterMoyan}
           />
+        ) : null}
+        {corridorState === 'idle' && checkpoint && !started ? (
+          <div className="absolute inset-x-0 top-[46vh] z-50 flex justify-center">
+            <button
+              type="button"
+              className="metal-btn"
+              onClick={() => {
+                void sound.unlock()
+                setCorridorState('done')
+                game.startAtLevel(checkpoint.levelIndex, checkpoint.carryOver)
+              }}
+            >
+              继续第 {checkpoint.levelIndex + 1} 层（血袋重置）
+            </button>
+          </div>
         ) : null}
       </div>
 
@@ -517,10 +830,24 @@ export default function App() {
         }}
       />
 
+      {/* 自己开枪：枪口在画面上缘外，用屏幕空间爆闪替代看不见的精灵 */}
+      <div
+        key={`muzzle-${muzzleFlash}`}
+        className={`pointer-events-none absolute inset-0 ${muzzleFlash > 0 ? 'muzzle-burst' : 'opacity-0'}`}
+      />
+
       {/* 自己中弹：先黑屏，再模糊睁眼；镜头等视野恢复后才移向血袋。 */}
       <div
+        key={`blackout-${visionBlur}`}
+        className={`pointer-events-none absolute inset-0 z-40 ${visionBlur > 0 ? 'vr-blackout' : 'opacity-0'}`}
+      />
+      <div
         key={`blur-${visionBlur}`}
-        className={`pointer-events-none absolute inset-0 z-40 ${visionBlur > 0 ? 'vision-blur' : 'opacity-0'}`}
+        className={`pointer-events-none absolute inset-0 z-[41] ${visionBlur > 0 ? 'vr-blur' : 'opacity-0'}`}
+      />
+      <div
+        key={`wake-${wakeBlur}`}
+        className={`pointer-events-none absolute inset-0 z-[42] ${wakeBlur > 0 ? 'wake-blur' : 'opacity-0'}`}
       />
 
       {/* Minimal corner chrome. */}
@@ -529,13 +856,14 @@ export default function App() {
       >
         <div className="flex items-center gap-3">
           <span className="h-[1px] w-8 bg-rust-500/50 max-[420px]:hidden" />
-          <p className="text-[9px] tracking-[0.42em] text-bone-200/35 uppercase">
+          <p className="text-[11px] tracking-[0.4em] text-bone-200/55 uppercase">
             Blood Ante · 第 {level.id} 层
           </p>
         </div>
         {snapshot && started ? (
-          <p className="text-[9px] tracking-[0.3em] text-bone-200/25 uppercase">
+          <p className="text-[11px] tracking-[0.28em] text-bone-200/45 uppercase">
             回合 {snapshot.round || 1} · {phaseLabel(phase)}
+            {snapshot.deckRemaining !== null ? ` · 牌靴 ${snapshot.deckRemaining}` : ''}
           </p>
         ) : null}
       </div>
@@ -553,7 +881,10 @@ export default function App() {
       ) : null}
 
       {/* Bottom control rail. */}
-      <div className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 px-4 pb-5">
+      <div
+        className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 px-4"
+        style={{ paddingBottom: 'max(1.25rem, var(--safe-bottom))' }}
+      >
         {narrativeActive ? null : !started ? null : phase === 'targeting' ? (
           <div className="flex flex-col items-center gap-2">
             <p className="text-[9px] tracking-[0.4em] text-rust-400/80 uppercase">
@@ -585,7 +916,10 @@ export default function App() {
             <MetalButton
               tone="primary"
               disabled={!canAct}
-              onClick={() => game.hit()}
+              onClick={() => {
+                finishFirstTurnHint()
+                game.hit()
+              }}
               hint={locked ? '手铐锁住了你的手腕' : undefined}
             >
               要牌{' '}
@@ -593,7 +927,14 @@ export default function App() {
                 HIT · H
               </span>
             </MetalButton>
-            <MetalButton tone="secondary" disabled={!canAct} onClick={() => game.stand()}>
+            <MetalButton
+              tone="secondary"
+              disabled={!canAct}
+              onClick={() => {
+                finishFirstTurnHint()
+                game.stand()
+              }}
+            >
               停牌{' '}
               <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45 max-[420px]:hidden">
                 STAND · S
@@ -633,6 +974,13 @@ export default function App() {
         </button>
         <button
           type="button"
+          onClick={() => setLogOpen(true)}
+          className="corner-chip"
+        >
+          战报
+        </button>
+        <button
+          type="button"
           onClick={() => setMuted((value) => !value)}
           className="corner-chip"
           aria-pressed={muted}
@@ -661,7 +1009,7 @@ export default function App() {
           className="slide-banner absolute inset-x-0 top-[16%] flex justify-center"
         >
           <div className="flex flex-col items-center gap-1 border-y border-rust-500/25 bg-black/55 px-10 py-3 backdrop-blur-sm">
-            <p className="text-[9px] tracking-[0.42em] text-bone-200/35 uppercase">Loading cylinder</p>
+            <p className="text-[11px] tracking-[0.4em] text-bone-200/55 uppercase">Loading cylinder</p>
             <p className="font-display text-lg text-bone-200">
               装入 <span className="text-rust-400">{relay.live}</span> 发实弹，
               <span className="text-sky-300">{relay.blank}</span> 发空弹
@@ -706,7 +1054,16 @@ export default function App() {
           >
             <p className="text-[9px] tracking-[0.45em] text-rust-400/75 uppercase">before the next door</p>
             <h2 className="mt-2 font-display text-2xl text-bone-200">门前的补给</h2>
-            <p className="mt-1 text-[11px] text-bone-200/45">只能带走一件。选中的道具会跟到下一层。</p>
+            <p className="mt-1 text-[11px] text-bone-200/45">
+              只能带走一件。第 1 层摆两件，之后三件；选中的道具会跟到下一层。
+            </p>
+            <p className="mt-1 text-[11px] tracking-[0.1em] text-rust-300/70">
+              {snapshot.paused
+                ? '已暂停 · 计时冻结'
+                : snapshot.supplyDeadline !== null
+                  ? `剩余 ${Math.max(0, Math.ceil((snapshot.supplyDeadline - Date.now()) / 1000))} 秒`
+                  : '稍候'}
+            </p>
             <div className="mt-4 grid gap-2 sm:grid-cols-3">
               {snapshot.supplyOptions.map((item, index) => (
                 <button
@@ -750,7 +1107,99 @@ export default function App() {
         </div>
       ) : null}
 
+      {logOpen && snapshot ? (
+        <div
+          className="absolute inset-0 z-40 flex items-center justify-center bg-black/78 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="战报"
+          onClick={() => setLogOpen(false)}
+        >
+          <div
+            className="max-h-[82dvh] w-full max-w-xl overflow-y-auto border border-rust-500/30 bg-abyss-900/95 p-5 shadow-2xl shadow-black/80"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="font-display text-lg text-bone-200">战报</h2>
+              <button
+                type="button"
+                onClick={() => setLogOpen(false)}
+                className="text-[10px] tracking-[0.3em] text-bone-200/45 uppercase hover:text-bone-200/80"
+              >
+                关闭 ESC
+              </button>
+            </div>
+            <div className="mt-4 space-y-1.5">
+              {snapshot.log.slice(-60).map((line, index) => (
+                <p
+                  key={index}
+                  className="text-[12px] leading-relaxed text-bone-200/55 [text-shadow:0_1px_3px_rgba(0,0,0,0.9)]"
+                >
+                  {narrativeLog(line, snapshot.levelIndex)}
+                </p>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <p aria-live="polite" className="sr-live">
+        {spokenLine}
+      </p>
+
+      {/* 首层关键模型加载进度：程序化画面先跑，不黑屏 */}
+      {corridorState === 'done' && loadProgress && loadProgress.loaded < loadProgress.total && !finished ? (
+        <div className="pointer-events-none absolute inset-x-0 top-[12vh] z-20 flex justify-center">
+          <p className="rounded-sm border border-white/8 bg-black/65 px-3 py-1.5 text-[10px] tracking-[0.25em] text-bone-200/55 uppercase">
+            正在摆桌… {loadProgress.loaded}/{loadProgress.total}
+          </p>
+        </div>
+      ) : null}
+      {loadFailed ? (
+        <div className="pointer-events-none absolute inset-x-0 top-[16vh] z-20 flex justify-center">
+          <p className="rounded-sm border border-rust-500/30 bg-black/70 px-3 py-1.5 text-[10px] tracking-[0.15em] text-rust-300/70">
+            部分模型未能加载，已使用占位几何
+          </p>
+        </div>
+      ) : null}
+
       {/* Death / victory end screens. */}
+      {paused && !finished ? (
+        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-5 bg-black/80 px-6 text-center backdrop-blur-sm">
+          <p className="text-[9px] tracking-[0.5em] text-rust-400/70 uppercase">the table waits</p>
+          <h2 className="font-display text-3xl text-bone-200/90">暂停</h2>
+          <p className="max-w-xs text-[11px] leading-relaxed text-bone-200/40">
+            {snapshot?.phase === 'supply' ? '补给计时已冻结，继续后按剩余时间走。' : '轮盘、子弹与呼吸都停在原处。'}
+          </p>
+          <div className="flex flex-col items-center gap-2">
+            <MetalButton tone="primary" onClick={() => togglePause(false)}>
+              继续
+            </MetalButton>
+            <label className="mt-1 flex items-center gap-2 text-[10px] tracking-[0.2em] text-bone-200/40 uppercase">
+              画质
+              <select
+                value={quality}
+                onChange={(event) => {
+                  setQuality(event.target.value)
+                  if (sceneRef.current) {
+                    applyQuality(sceneRef.current, event.target.value)
+                  }
+                }}
+                className="border border-white/10 bg-black/60 px-2 py-1 text-[10px] tracking-[0.15em] text-bone-200/75"
+              >
+                <option value="auto">自动</option>
+                <option value="high">高</option>
+                <option value="balanced">均衡</option>
+                <option value="low">低</option>
+              </select>
+            </label>
+            <MetalButton tone="ghost" onClick={() => setModal('rules')}>
+              查看血契
+            </MetalButton>
+          </div>
+        </div>
+      ) : null}
+
       {finished && !narrativeActive ? (
         <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-6 overflow-y-auto bg-black/78 px-6 py-8 text-center backdrop-blur-sm">
           {phase === 'victory' ? (
@@ -818,12 +1267,36 @@ export default function App() {
                 <MetalButton tone="primary" onClick={() => beginNarrative('restart')}>
                   重新坐上牌桌
                 </MetalButton>
+                <MetalButton
+                  tone="secondary"
+                  onClick={() => {
+                    if (game.retryLevel()) setCorridorState('done')
+                  }}
+                >
+                  从第 {(snapshot?.levelIndex ?? 0) + 1} 层重来
+                </MetalButton>
                 <MetalButton tone="ghost" onClick={() => setModal('rules')}>
                   查看血契
                 </MetalButton>
               </div>
             </>
           )}
+        </div>
+      ) : null}
+
+      {showFirstTurnHint && snapshot && !narrativeActive ? (
+        <div
+          aria-live="polite"
+          className={`pointer-events-none absolute inset-x-0 z-20 flex justify-center px-4 ${clueLine ? 'bottom-24' : 'bottom-40'}`}
+        >
+          <p className="max-w-md rounded-sm border border-rust-500/35 bg-black/90 px-4 py-2 text-center text-[11px] leading-relaxed tracking-[0.08em] text-bone-200/80 shadow-lg shadow-black/60">
+            你的回合：你 {snapshot.player.visibleHand.total} 点，对手明牌{' '}
+            {snapshot.boss.visibleHand.visible.filter((card): card is Card => card !== null).reduce(
+              (sum, card) => sum + (card.rank === 1 ? 11 : card.rank),
+              0,
+            )}{' '}
+            点。H 要牌 / S 停牌；赢下这轮才拿到枪。
+          </p>
         </div>
       ) : null}
 
@@ -842,7 +1315,10 @@ export default function App() {
           aria-modal="true"
           aria-label="开局说明"
         >
-          <div className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto border border-rust-500/35 bg-abyss-900/95 p-6 shadow-2xl shadow-black/80">
+          <div
+            ref={guideRef}
+            className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto border border-rust-500/35 bg-abyss-900/95 p-6 shadow-2xl shadow-black/80"
+          >
             <p className="text-[9px] tracking-[0.45em] text-rust-400/75 uppercase">
               blood ante · 血契须知
             </p>
@@ -876,7 +1352,7 @@ export default function App() {
                   setGuideOpen(false)
                 }}
               >
-                坐上牌桌
+                知道了
               </MetalButton>
             </div>
           </div>
@@ -884,6 +1360,35 @@ export default function App() {
       ) : null}
 
       {modal ? <RulesModal initialTab={modal} onClose={() => setModal(null)} /> : null}
+
+      {snapshot?.cardChoice && !narrativeActive ? (
+        <div className="absolute inset-x-0 bottom-28 z-30 flex justify-center px-4">
+          <div className="max-w-lg rounded-sm border border-rust-500/40 bg-abyss-900/95 p-3 shadow-2xl shadow-black/70">
+            <p className="text-center text-[11px] tracking-[0.15em] text-rust-300/75">
+              {snapshot.cardChoice.kind === 'cutter' ? '选择要裁掉的一张牌' : '选择要封住的明牌'}
+            </p>
+            <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+              {snapshot.cardChoice.cards.map((card, index) => (
+                <button
+                  key={`${card.id}-${index}`}
+                  type="button"
+                  onClick={() => game.resolveCardChoice(index)}
+                  className="min-w-12 border border-white/12 bg-black/40 px-2 py-1.5 font-display text-sm text-bone-200/85 transition-colors hover:border-rust-500/60 hover:bg-rust-500/15"
+                >
+                  {formatCardLabel(card)}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => game.cancelCardChoice()}
+                className="px-2 py-1.5 text-[10px] tracking-[0.2em] text-bone-200/35 uppercase hover:text-bone-200/70"
+              >
+                放弃
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {clueLine && !narrativeActive ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-[16vh] z-20 flex justify-center px-6">
@@ -894,7 +1399,13 @@ export default function App() {
       ) : null}
 
       {narrative && directorRef.current ? (
-        <NarrativeOverlay director={directorRef.current} sound={sound} visual={narrative} />
+        <NarrativeOverlay
+          director={directorRef.current}
+          sound={sound}
+          visual={narrative}
+          canSkip={skipAvailable}
+          onSkip={skipNarrative}
+        />
       ) : null}
 
       {devOpen ? (
@@ -933,15 +1444,16 @@ function ActorPanel({
       } ${className}`}
     >
       <div className="flex items-center justify-between">
-        <span className="text-[9px] tracking-[0.3em] text-bone-200/40 uppercase">{label}</span>
+        <span className="text-[11px] tracking-[0.25em] text-bone-200/60 uppercase">{label}</span>
       </div>
-      <p className="mt-1 flex items-center gap-2 text-[9px] tracking-[0.15em] text-bone-200/30">
+      <p className="mt-1 flex items-center gap-2 text-[11px] tracking-[0.12em] text-bone-200/50">
         <span>
           {shown.busted ? '爆牌' : actor.standing ? '已停牌' : '在局中'} · 道具 {actor.items.length}
+          {actor.id === 'player' ? ` · 用 ${actor.itemsUsedThisTurn}/${PLAYER_ITEM_CAP}` : ''}
         </span>
         {actor.sawBoost > 0 ? <span className="text-amber-300/80">锯</span> : null}
         {actor.shield > 0 ? <span className="text-sky-300/80">盾</span> : null}
-        {actor.decoy > 0 ? <span className="text-fuchsia-300/70">饵</span> : null}
+        {actor.iou > 0 ? <span className="text-rose-300/80">债</span> : null}
       </p>
     </div>
   )
@@ -955,7 +1467,7 @@ function LogPanel({ snapshot }: { snapshot: GameSnapshot }) {
       {lines.map((line, index) => (
         <p
           key={index}
-          className={`line-clamp-2 text-[10px] leading-relaxed [text-shadow:0_1px_3px_rgba(0,0,0,0.9)] ${
+          className={`line-clamp-2 text-[12px] leading-relaxed [text-shadow:0_1px_3px_rgba(0,0,0,0.9)] ${
             index === lines.length - 1 ? 'text-bone-200/65' : 'text-bone-200/30'
           }`}
         >

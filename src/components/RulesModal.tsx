@@ -1,7 +1,8 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { ITEM_CATALOG, ITEM_IDS, LEVELS, LEVEL_UNLOCKS } from '../game/GameEngine'
 import type { ItemId } from '../game/GameEngine'
 import { bossName, itemFlavor } from '../narrative/copy'
+import { useDialogFocus } from './useDialogFocus'
 
 export type ModalTab = 'rules' | 'items'
 
@@ -28,7 +29,7 @@ const RULES: ReadonlyArray<{ title: string; body: string }> = [
   },
   {
     title: '枪口裁决',
-    body: '持枪者可射向对面，也可对准自己。对自己扣响空膛，牌桌会赏你一件遗物道具；若打出实弹，则由自己流血。',
+    body: '持枪者可射向对面，也可对准自己。对自己扣响空膛，牌桌会赏你一件遗物道具；若打出实弹，则由自己流血。每回合最多使用 3 件道具。',
   },
   {
     title: '血契结算',
@@ -36,7 +37,7 @@ const RULES: ReadonlyArray<{ title: string; body: string }> = [
   },
   {
     title: '走火遗恨',
-    body: '双方同点视作僵持罚息：本轮不开枪，各摸一件道具，且走火遗恨 +1（可叠加），直到有人真正中弹才清零。',
+    body: '双方同点视作僵持罚息：本轮不开枪，各摸一件道具，且走火遗恨 +1（可叠加）。只有真正扣血才会清零；被护心镜完全挡下时，遗恨保留。借据会在赢下时 +2、输掉时 +1。',
   },
   {
     title: '霰弹枪弹仓',
@@ -44,11 +45,11 @@ const RULES: ReadonlyArray<{ title: string; body: string }> = [
   },
   {
     title: '层间遗物',
-    body: '清空一层后，门前会摆出三件前人留下的遗物，你只能带走一件进入下一层。12 秒未选将自动拿走第一件。',
+    body: '清空一层后，门前会摆出前人留下的遗物，你只能带走一件进入下一层。第 1 层摆两件，之后摆三件；12 秒未选将自动拿走第一件。',
   },
   {
     title: '三层赎价',
-    body: '第 1/2/3 层：对手生命 6/8/8，你的血袋 7/7/7（合计 21 袋），开局补给 2/3/4 件。第 2 层解锁磁铁、手铐、护心镜；第 3 层解锁沙漏、匕首、诱饵、重锤。',
+    body: '第 1/2/3 层：对手生命 6/8/8，你的血袋 7/7/7（合计 21 袋），开局补给 2/3/4 件。第 2 层解锁磁铁、手铐、护心镜、裁纸刀、借据；第 3 层解锁沙漏、匕首、重锤、封条、单片眼镜。Boss 只会携带自己会用到的道具，沙漏为玩家专属。',
   },
   {
     title: '快捷键',
@@ -64,14 +65,8 @@ export function RulesModal({
   onClose: () => void
 }) {
   const [tab, setTab] = useState<ModalTab>(initialTab)
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  useDialogFocus(dialogRef, onClose)
 
   return (
     <div
@@ -82,7 +77,8 @@ export function RulesModal({
       aria-label="规则与图鉴"
     >
       <div
-        className="relative max-h-[82vh] w-full max-w-2xl overflow-y-auto border border-rust-500/30 bg-abyss-900/95 p-6 shadow-2xl shadow-black/80"
+        ref={dialogRef}
+        className="relative max-h-[82dvh] w-full max-w-2xl overflow-y-auto border border-rust-500/30 bg-abyss-900/95 p-6 shadow-2xl shadow-black/80"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between">
@@ -111,12 +107,12 @@ export function RulesModal({
                   {String(index + 1).padStart(2, '0')}
                 </p>
                 <h3 className="mt-1 font-display text-base text-bone-200">{rule.title}</h3>
-                <p className="mt-1 text-[11px] leading-relaxed text-bone-200/55">{rule.body}</p>
+                <p className="mt-1 text-xs leading-relaxed text-bone-200/70">{rule.body}</p>
               </section>
             ))}
             <section className="border-l border-rust-500/25 pl-3 sm:col-span-2">
               <h3 className="font-display text-base text-bone-200">三层结构</h3>
-              <ul className="mt-2 grid gap-1 text-[11px] text-bone-200/55 sm:grid-cols-3">
+              <ul className="mt-2 grid gap-1 text-xs text-bone-200/70 sm:grid-cols-3">
                 {LEVELS.map((level, index) => (
                   <li key={level.id}>
                     <span className="text-rust-400/80">第 {index + 1} 层 · {bossName(index)}</span>
@@ -171,7 +167,7 @@ function ItemCard({ item }: { item: ItemId }) {
       <span className="font-display text-2xl text-rust-400/80">{catalog.glyph}</span>
       <div>
         <h3 className="font-display text-sm text-bone-200">{catalog.name}</h3>
-        <p className="mt-1 text-[11px] leading-relaxed text-bone-200/55">{catalog.summary}</p>
+        <p className="mt-1 text-xs leading-relaxed text-bone-200/70">{catalog.summary}</p>
         <p className="mt-1 text-[11px] leading-relaxed text-rust-300/60 italic">{itemFlavor(item)}</p>
         <p className="mt-1 text-[10px] tracking-[0.2em] text-bone-200/30 uppercase">
           {unlockLevel <= 0 ? '初始可用' : `第 ${unlockLevel + 1} 层解锁`}

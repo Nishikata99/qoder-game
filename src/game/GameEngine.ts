@@ -47,8 +47,11 @@ export const ITEM_IDS = [
   'aegis',
   'hourglass',
   'dagger',
-  'decoy',
   'hammer',
+  'cutter',
+  'iou',
+  'seal',
+  'monocle',
 ] as const
 
 export type ItemId = (typeof ITEM_IDS)[number]
@@ -109,25 +112,43 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
     summary: '自损 1 点生命，立刻清空手牌、重洗牌库并重新装填弹仓。',
     glyph: '†',
   },
-  decoy: {
-    id: 'decoy',
-    name: '诱饵',
-    summary: '在身前放一个替身：对手下一次对你开枪时子弹会落空，不造成伤害。',
-    glyph: '✧',
-  },
   hammer: {
     id: 'hammer',
     name: '重锤',
     summary: '把膛内当前一发空膛砸成实弹；若这一发本来就是实弹，则无法使用。',
     glyph: '⚒',
   },
+  cutter: {
+    id: 'cutter',
+    name: '裁纸刀',
+    summary: '亮出裁纸刀，自选一张手牌裁掉，不再补牌。每回合限一次，爆牌时不可用。',
+    glyph: '✂',
+  },
+  iou: {
+    id: 'iou',
+    name: '借据',
+    summary: '本局押上血债：你赢下的实弹伤害 +2，输掉时打向你的实弹 +1。每局只能签一张。',
+    glyph: '▤',
+  },
+  seal: {
+    id: 'seal',
+    name: '封条',
+    summary: '先亮出对手底牌，再自选其一张明牌贴住，本局该牌不计点数。每局限一次。',
+    glyph: '⊘',
+  },
+  monocle: {
+    id: 'monocle',
+    name: '单片眼镜',
+    summary: '看清牌靴顶部三张牌的顺序，只有你知道，不会改变牌序。',
+    glyph: '◍',
+  },
 }
 
 /** Items unlocked at the start of each level, in level order. */
 export const LEVEL_UNLOCKS: readonly (readonly ItemId[])[] = [
   ['magnifier', 'sedative', 'saw'],
-  ['magnet', 'handcuffs', 'aegis'],
-  ['hourglass', 'dagger', 'decoy', 'hammer'],
+  ['magnet', 'handcuffs', 'aegis', 'cutter', 'iou'],
+  ['hourglass', 'dagger', 'hammer', 'seal', 'monocle'],
 ]
 
 export type BossPersonality = 'cautious' | 'gambler' | 'executioner'
@@ -142,6 +163,8 @@ export interface LevelConfig {
   readonly playerHp: number
   readonly supply: number
   readonly personality: BossPersonality
+  /** persistent：整层共用一副牌，不逐局重洗（第 3 层算牌人格） */
+  readonly deckPolicy?: 'fresh' | 'persistent'
 }
 
 export const LEVELS: readonly LevelConfig[] = [
@@ -171,6 +194,7 @@ export const LEVELS: readonly LevelConfig[] = [
     playerHp: 7,
     supply: 4,
     personality: 'executioner',
+    deckPolicy: 'persistent',
   },
 ]
 
@@ -188,8 +212,10 @@ export interface ActorView {
   readonly sawBoost: number
   /** 护心镜层数：>0 时下一次实弹伤害被完全吸收 */
   readonly shield: number
-  /** 诱饵：>0 时对手下一次对你开枪会落空 */
-  readonly decoy: number
+  /** 本局已签下的借据：赢下时实弹 +2，输掉时承受的实弹 +2 */
+  readonly iou: number
+  /** 本回合已经使用的道具数；玩家达到上限后拒绝继续使用 */
+  readonly itemsUsedThisTurn: number
 }
 
 export interface CylinderView {
@@ -198,6 +224,13 @@ export interface CylinderView {
   readonly live: number
   readonly blank: number
   readonly revealed: Chamber | null
+}
+
+export interface CardChoiceView {
+  /** cutter：从自己手牌里选一张裁掉；seal：从对手明牌里选一张封住 */
+  readonly kind: 'cutter' | 'seal'
+  readonly cards: readonly Card[]
+  readonly labels?: readonly string[]
 }
 
 export interface GameSnapshot {
@@ -222,6 +255,15 @@ export interface GameSnapshot {
   /** supply 阶段的三选一候选；其他阶段为空数组 */
   readonly supplyOptions: readonly ItemId[]
   readonly inputLocked: boolean
+  readonly paused: boolean
+  /** 本场跨层累计回合数；round 仍是每层回合 */
+  readonly runRounds: number
+  /** 补给阶段剩余毫秒；非补给或暂停时为 null */
+  readonly supplyDeadline: number | null
+  /** 第 3 层牌靴剩余张数；其他层为 null */
+  readonly deckRemaining: number | null
+  /** 裁纸刀/封条使用后等待玩家点选一张牌 */
+  readonly cardChoice: CardChoiceView | null
   readonly log: readonly string[]
 }
 
@@ -246,6 +288,14 @@ export type GameEvent =
   | { readonly type: 'chamberRecovered'; readonly actor: ActorId; readonly item: ItemId }
   | { readonly type: 'hourglass'; readonly actor: ActorId }
   | { readonly type: 'daggerReshuffle'; readonly actor: ActorId; readonly live: number; readonly blank: number }
+  | { readonly type: 'cardCuttered'; readonly actor: ActorId; readonly old: Card }
+  | { readonly type: 'iouSigned'; readonly actor: ActorId }
+  | { readonly type: 'cardSealed'; readonly actor: ActorId; readonly card: Card }
+  | {
+      readonly type: 'deckPeeked'
+      readonly actor: ActorId
+      readonly cards: readonly Card[]
+    }
   | {
       readonly type: 'execution'
       readonly by: ActorId
@@ -261,8 +311,8 @@ export type GameEvent =
       readonly damage: number
       readonly sawed: boolean
       readonly blackjack: boolean
-      /** 实弹被护心镜挡下或诱饵引开时为对应来源，否则 null */
-      readonly blocked: 'shield' | 'decoy' | null
+      /** 实弹被护心镜挡下时为对应来源，否则 null */
+      readonly blocked: 'shield' | null
     }
   | { readonly type: 'tie'; readonly player: number; readonly boss: number }
   | { readonly type: 'reload'; readonly live: number; readonly blank: number }
@@ -273,6 +323,12 @@ export type GameEvent =
       readonly items: readonly ItemId[]
     }
   | { readonly type: 'supplyOffer'; readonly options: readonly ItemId[] }
+  | {
+      readonly type: 'checkpoint'
+      readonly levelIndex: number
+      readonly carryOver: readonly ItemId[]
+      readonly runRounds: number
+    }
   | { readonly type: 'gameOver'; readonly winner: ActorId }
 
 export type GameEventListener = (event: GameEvent, snapshot: GameSnapshot) => void
@@ -302,7 +358,16 @@ const BOSS_PROFILES: Readonly<Record<BossPersonality, BossProfile>> = {
   executioner: { label: '算牌', personality: 'executioner', standAt: 19, itemBudget: 4, thinkingMs: 620 },
 }
 
-const MAX_ITEMS = 8
+/** Boss 只携带自己人格会用的道具；沙漏是玩家专属，永不入池 */
+export const BOSS_ITEM_POOLS: Readonly<Record<BossPersonality, readonly ItemId[]>> = {
+  cautious: ['magnifier', 'sedative', 'saw'],
+  gambler: ['magnifier', 'saw', 'sedative', 'magnet', 'handcuffs'],
+  executioner: ['magnifier', 'saw', 'sedative', 'magnet', 'handcuffs', 'aegis', 'dagger', 'hammer'],
+}
+
+export const MAX_ITEMS = 8
+/** 玩家每回合最多使用 3 件道具；Boss 仍受人格 itemBudget 限制 */
+export const PLAYER_ITEM_CAP = 3
 const LOG_LIMIT = 80
 const SUPPLY_OPTION_COUNT = 3
 /** 门前补给停留时长；超时自动抓取第一件，避免玩家离开后整局卡死 */
@@ -410,7 +475,10 @@ class ActorRuntime {
   skipTurn = false
   sawBoost = 0
   shield = 0
-  decoy = 0
+  iou = 0
+  cutterUsedThisRound = false
+  sealedThisRound = false
+  itemsUsedThisTurn = 0
 
   constructor(id: ActorId, hp: number) {
     this.id = id
@@ -489,6 +557,63 @@ class Cylinder {
   }
 }
 
+/**
+ * 可暂停的定时器：暂停时保留剩余毫秒，恢复后继续计时，不会重复触发。
+ * wait / 处决停顿 / 补给倒计时 / 输入锁统一走这里，避免各自处理暂停。
+ */
+class PausableDelay {
+  private remaining: number
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private startedAt = 0
+  private resolved = false
+  private readonly done: () => void
+
+  constructor(ms: number, done: () => void) {
+    this.remaining = Math.max(0, ms)
+    this.done = done
+  }
+
+  start(): void {
+    if (this.resolved || this.timer !== null) return
+    this.startedAt = Date.now()
+    this.timer = setTimeout(() => this.fire(), this.remaining)
+  }
+
+  pause(): void {
+    if (this.timer === null || this.resolved) return
+    clearTimeout(this.timer)
+    this.timer = null
+    this.remaining = Math.max(0, this.remaining - (Date.now() - this.startedAt))
+  }
+
+  resume(): void {
+    if (this.resolved || this.timer !== null) return
+    this.start()
+  }
+
+  /** 取消并放行挂起的 Promise，避免暂停/销毁后协程永久悬空 */
+  cancel(): void {
+    if (this.timer !== null) {
+      clearTimeout(this.timer)
+      this.timer = null
+    }
+    this.fire()
+  }
+
+  get leftover(): number {
+    if (this.resolved) return 0
+    if (this.timer === null) return this.remaining
+    return Math.max(0, this.remaining - (Date.now() - this.startedAt))
+  }
+
+  private fire(): void {
+    if (this.resolved) return
+    this.resolved = true
+    this.remaining = 0
+    this.done()
+  }
+}
+
 function actorLabel(id: ActorId): string {
   return id === 'player' ? '你' : '它'
 }
@@ -504,29 +629,38 @@ export class GameEngine {
   private readonly thinkOverride: number | null
   private readonly dealLockMs: number
   private readonly itemLockMs: number
-  private inputUnlockTimer: ReturnType<typeof setTimeout> | null = null
-  private executionTimer: ReturnType<typeof setTimeout> | null = null
+  private inputDelay: PausableDelay | null = null
+  private executionDelay: PausableDelay | null = null
   private executionSkip: (() => void) | null = null
-  private supplyTimer: ReturnType<typeof setTimeout> | null = null
+  private supplyDelay: PausableDelay | null = null
+  private supplyRemainingMs = 0
+  private supplyDeadline: number | null = null
   private supplyOptions: ItemId[] = []
   private supplyChoice: ItemId | null = null
   private supplyResolver: (() => void) | null = null
+  /** 裁纸刀/封条等待点选的牌；暂停/换层/销毁时清空 */
+  private cardChoice: { kind: 'cutter' | 'seal'; cards: Card[] } | null = null
+  private cardChoiceResolver: (() => void) | null = null
   /** 层间三选一选中的道具：beginLevel 会重建 Actor，必须先寄存再注入 */
   private carryOver: ItemId[] = []
   private readonly listeners = new Set<GameEventListener>()
-  private readonly timers = new Set<ReturnType<typeof setTimeout>>()
+  private readonly delays = new Set<PausableDelay>()
   private readonly cylinder: Cylinder
 
   private generation = 0
   private destroyed = false
   private started = false
+  private paused = false
+  /** 场景演出闸门：枪放平、镜头回位后才允许重新发牌；测试/无场景时为 null */
+  private presentationGate: (() => Promise<void>) | null = null
+  private runRounds = 0
   private phase: Phase = 'idle'
   private levelIndex = 0
   private round = 0
   private player: ActorRuntime = new ActorRuntime('player', 0)
   private boss: ActorRuntime = new ActorRuntime('boss', 0)
   private deck: Card[] = []
-  private revealed: Chamber | null = null
+  private revealedBy: Record<ActorId, Chamber | null> = { player: null, boss: null }
   private damageBonus = 0
   private pendingShot: ActorId = 'player'
   private hourglassActive = false
@@ -550,9 +684,34 @@ export class GameEngine {
     if (this.destroyed || this.started) return
     this.started = true
     this.generation += 1
+    this.runRounds = 0
     this.logLines = []
     this.log('你坐下，牌桌另一端的影子抬起头。')
     void this.beginLevel(0, this.generation)
+  }
+
+  /** 从层首检查点继续：血袋与补给重置，不保留局内手牌 */
+  startAtLevel(levelIndex: number, carryOver: readonly ItemId[] = []): void {
+    if (this.destroyed) return
+    const index = Math.max(0, Math.min(this.levelList.length - 1, Math.floor(levelIndex)))
+    if (this.started) this.cancelTimers()
+    this.generation += 1
+    this.started = true
+    this.runRounds = 0
+    this.paused = false
+    this.carryOver = [...carryOver]
+    this.logLines = []
+    this.log('你从门缝里退回上一层，血袋重新注满。')
+    void this.beginLevel(index, this.generation)
+  }
+
+  /** 死亡后从本层重来；不保留旧手牌与旧补给 */
+  retryLevel(): boolean {
+    if (this.phase !== 'gameOver') {
+      return this.reject('现在还不能重来。')
+    }
+    this.startAtLevel(this.levelIndex)
+    return true
   }
 
   restart(): void {
@@ -560,13 +719,15 @@ export class GameEngine {
     this.generation += 1
     this.cancelTimers()
     this.started = false
+    this.paused = false
+    this.runRounds = 0
     this.phase = 'idle'
     this.levelIndex = 0
     this.round = 0
     this.player = new ActorRuntime('player', 0)
     this.boss = new ActorRuntime('boss', 0)
     this.deck = []
-    this.revealed = null
+    this.clearReveals()
     this.damageBonus = 0
     this.pendingShot = 'player'
     this.hourglassActive = false
@@ -580,6 +741,7 @@ export class GameEngine {
   }
 
   hit(): boolean {
+    if (this.cardChoice) return this.reject('先选好要裁/要封的牌。')
     if (this.phase !== 'playerTurn') {
       return this.reject('现在不是你的回合。')
     }
@@ -607,6 +769,7 @@ export class GameEngine {
   }
 
   stand(): boolean {
+    if (this.cardChoice) return this.reject('先选好要裁/要封的牌。')
     if (this.phase !== 'playerTurn') {
       return this.reject('现在不是你的回合。')
     }
@@ -622,11 +785,15 @@ export class GameEngine {
   }
 
   useItem(item: ItemId): boolean {
+    if (this.cardChoice) return this.reject('先选好要裁/要封的牌。')
     if (this.phase !== 'playerTurn') {
       return this.reject('现在不是使用道具的时机。')
     }
     if (this.inputLocked) {
       return this.reject('动作还没结束。')
+    }
+    if (this.player.itemsUsedThisTurn >= PLAYER_ITEM_CAP) {
+      return this.reject('本回合的道具已经用尽。')
     }
     if (!this.applyItem(this.player, item)) return false
     if (this.resolveDeaths()) return true
@@ -658,6 +825,47 @@ export class GameEngine {
     return true
   }
 
+  /** 裁纸刀/封条的选牌结算：index 对应快照 cardChoice.cards */
+  resolveCardChoice(index: number): boolean {
+    const choice = this.cardChoice
+    if (!choice) return this.reject('现在没有等待选择的牌。')
+    if (!Number.isInteger(index) || index < 0 || index >= choice.cards.length) {
+      return this.reject('这不是可以选择的牌。')
+    }
+    const card = choice.cards[index]
+    if (!card) return this.reject('这不是可以选择的牌。')
+    this.cardChoice = null
+
+    if (choice.kind === 'cutter') {
+      if (this.player.hand.busted) return this.reject('已经爆牌，裁牌也救不回来。')
+      this.player.hand = evaluateHand(this.player.hand.cards.filter((value) => value !== card))
+      this.player.cutterUsedThisRound = true
+      this.log(`你裁掉了 ${formatCard(card)}，现为 ${this.player.hand.total} 点。`)
+      this.dispatch({ type: 'cardCuttered', actor: 'player', old: card })
+    } else {
+      this.boss.hand = withHoleCard(
+        evaluateHand(this.boss.hand.cards.filter((value) => value !== card)),
+        false,
+      )
+      this.player.sealedThisRound = true
+      this.log(`你把封条贴在 ${formatCard(card)} 上，对手现为 ${this.boss.hand.total} 点。`)
+      this.dispatch({ type: 'cardSealed', actor: 'player', card })
+    }
+    this.cardChoiceResolver?.()
+    this.cardChoiceResolver = null
+    this.publish()
+    return true
+  }
+
+  cancelCardChoice(): boolean {
+    if (!this.cardChoice) return false
+    this.cardChoice = null
+    this.cardChoiceResolver?.()
+    this.cardChoiceResolver = null
+    this.publish()
+    return true
+  }
+
   subscribe(listener: GameEventListener): () => void {
     this.listeners.add(listener)
     const snapshot = this.getSnapshot()
@@ -685,7 +893,7 @@ export class GameEngine {
         total: this.cylinder.total,
         live: this.cylinder.liveRemaining,
         blank: this.cylinder.blankRemaining,
-        revealed: this.revealed,
+        revealed: this.revealedBy.player,
       },
       turn:
         this.phase === 'playerTurn'
@@ -700,6 +908,14 @@ export class GameEngine {
       unlockedItems: this.unlockedItems(),
       supplyOptions: this.phase === 'supply' ? [...this.supplyOptions] : [],
       inputLocked: this.inputLocked,
+      paused: this.paused,
+      runRounds: this.runRounds,
+      supplyDeadline: this.phase === 'supply' ? this.supplyDeadline : null,
+      deckRemaining:
+        this.currentLevel().deckPolicy === 'persistent' ? this.deck.length : null,
+      cardChoice: this.cardChoice
+        ? { kind: this.cardChoice.kind, cards: [...this.cardChoice.cards] }
+        : null,
       log: [...this.logLines],
     }
   }
@@ -719,7 +935,7 @@ export class GameEngine {
     this.damageBonus = 0
     this.hourglassActive = false
     this.holeRevealed = false
-    this.revealed = null
+    this.clearReveals()
     this.pendingShot = 'player'
     const level = this.currentLevel()
     this.player = new ActorRuntime('player', level.playerHp)
@@ -740,6 +956,13 @@ export class GameEngine {
     const chambers = this.cylinder.reload()
     this.log(`—— 第 ${index + 1} 层 · ${level.title} ——`)
     this.log(`「${level.name}」把一枚生锈的转轮推到你面前。`)
+    // 进入新层即是一个可继续的检查点：血袋与补给已按本层重置
+    this.dispatch({
+      type: 'checkpoint',
+      levelIndex: index,
+      carryOver: [...this.player.items],
+      runRounds: this.runRounds,
+    })
     this.dispatch({
       type: 'reload',
       live: chambers.filter((chamber) => chamber === 'live').length,
@@ -754,18 +977,35 @@ export class GameEngine {
   private async startRound(token: number): Promise<void> {
     if (!this.alive(token)) return
     this.round += 1
+    this.runRounds += 1
     this.phase = 'dealing'
-    this.revealed = null
+    this.clearReveals()
     this.pendingShot = 'player'
     // 走火遗恨是「永久叠加」的，直到有人真的中弹才清零，因此这里不重置
     this.hourglassActive = false
     this.holeRevealed = false
+    this.player.itemsUsedThisTurn = 0
+    this.boss.itemsUsedThisTurn = 0
+    this.cardChoice = null
+    this.cardChoiceResolver = null
+    this.player.cutterUsedThisRound = false
+    this.boss.cutterUsedThisRound = false
+    this.player.sealedThisRound = false
+    this.boss.sealedThisRound = false
     this.player.hand = evaluateHand([])
     this.player.standing = false
     this.boss.hand = evaluateHand([])
     this.boss.standing = false
     this.ensureCylinder()
-    this.deck = shuffle(createDeck(), this.rng)
+    // 第 3 层整层共用一副牌靴：牌数不足 8 张才重洗，让「算牌」真正跨局成立
+    if (this.currentLevel().deckPolicy === 'persistent') {
+      if (this.deck.length < 8) {
+        this.deck = shuffle(createDeck(), this.rng)
+        this.log('牌靴见底，发牌人重新洗牌。')
+      }
+    } else {
+      this.deck = shuffle(createDeck(), this.rng)
+    }
     this.log(`—— 第 ${this.round} 回合 ——`)
     if (this.damageBonus > 0) {
       this.log(`走火遗恨未散：本回合实弹伤害 +${this.damageBonus}。`)
@@ -951,6 +1191,11 @@ export class GameEngine {
     return true
   }
 
+  /** 注入场景演出闸门；传 null 恢复立即发牌（测试与无场景环境） */
+  setPresentationGate(gate: (() => Promise<void>) | null): void {
+    this.presentationGate = gate
+  }
+
   /** 跳过处决悬念停顿，立即揭晓枪响结果；只在处决演出进行中有效 */
   skipExecution(): boolean {
     if (this.phase !== 'execution' || this.executionSkip === null) return false
@@ -984,29 +1229,31 @@ export class GameEngine {
     if (!this.alive(token)) return
 
     this.cylinder.fire()
-    this.revealed = null
-    // 基础 2 点；黑杰克 +1；碾压（手牌 ≥20）+1；走火遗恨 +N；锯子整体翻倍
+    this.clearReveals()
+    // 基础 2 点；黑杰克 +1；碾压（手牌 ≥20）+1；走火遗恨 +N；借据押注 +2；锯子整体翻倍
     const stacks = this.damageBonus
-    const base = 2 + (blackjack ? 1 : 0) + (overwhelmed ? 1 : 0) + stacks
+    // 借据：赢下的实弹 +2，输掉时挨的实弹 +1
+    const iouBonus =
+      !selfShot && chamber === 'live'
+        ? (attacker.iou > 0 ? 2 : 0) + (target.iou > 0 ? 1 : 0)
+        : 0
+    const base = 2 + (blackjack ? 1 : 0) + (overwhelmed ? 1 : 0) + stacks + iouBonus
     const rawDamage = chamber === 'live' ? (sawed ? base * 2 : base) : 0
-    // 诱饵只挡「别人打你」，护心镜挡任何来源的实弹；两者都只挡一发
-    let blocked: 'shield' | 'decoy' | null = null
-    if (rawDamage > 0) {
-      if (!selfShot && target.decoy > 0) {
-        target.decoy = 0
-        blocked = 'decoy'
-      } else if (target.shield > 0) {
-        target.shield = 0
-        blocked = 'shield'
-      }
+    // 护心镜挡任何来源的实弹，只挡一发
+    let blocked: 'shield' | null = null
+    if (rawDamage > 0 && target.shield > 0) {
+      target.shield = 0
+      blocked = 'shield'
     }
     const damage = blocked === null ? rawDamage : 0
     let reward: ItemId | null = null
     if (chamber === 'live') {
       target.hp = Math.max(0, target.hp - damage)
-      // 有人真的中弹了，走火遗恨清零；锯子的加成也只在实弹时耗尽
-      this.damageBonus = 0
-      attacker.sawBoost = 0
+      // 只有真的扣到血，走火遗恨与锯子加成才会耗尽；被护心镜完全挡下时保留
+      if (damage > 0) {
+        this.damageBonus = 0
+        attacker.sawBoost = 0
+      }
     } else if (selfShot) {
       // 空膛对己：弹壳掉进黑暗，换回一件道具
       reward = this.giveRandomItem(attacker)
@@ -1016,14 +1263,13 @@ export class GameEngine {
     const victim = selfShot ? '自己' : actorLabel(target.id)
     if (chamber === 'live' && blocked === 'shield') {
       this.log(`${who}扣下扳机：实弹。${victim}的护心镜应声碎裂，伤害被完全挡下。`)
-    } else if (chamber === 'live' && blocked === 'decoy') {
-      this.log(`${who}扣下扳机：实弹。${victim}身前的替身被击中，本尊毫发无伤。`)
     } else if (chamber === 'live') {
       const tags: string[] = []
       if (blackjack) tags.push('黑杰克')
       if (overwhelmed) tags.push('碾压')
       if (sawed) tags.push('锯短枪管')
       if (stacks > 0) tags.push(`走火遗恨 +${stacks}`)
+      if (iouBonus > 0) tags.push(`借据 +${iouBonus}`)
       const tag = tags.length > 0 ? `（${tags.join(' · ')}）` : ''
       this.log(`${who}扣下扳机：实弹${tag}。${victim}承受 ${damage} 点伤害。`)
     } else if (reward) {
@@ -1053,12 +1299,18 @@ export class GameEngine {
     this.publish()
     await this.wait(900)
     if (!this.alive(token)) return
+    // 等枪完全放平、镜头回到桌面机位，再开始下一回合发牌
+    if (this.presentationGate) {
+      await this.presentationGate()
+      if (!this.alive(token)) return
+    }
     void this.startRound(token)
   }
 
   /** 对手的枪口选择：已知空膛且道具槽没满就对自己开枪换道具，否则打玩家 */
   private chooseBossTarget(): ActorId {
-    if (this.revealed === 'blank' && this.boss.items.length < MAX_ITEMS) return 'boss'
+    // 自射换道具是对局道具经济的一部分，Boss 同样保留这项赌博
+    if (this.revealedBy.boss === 'blank' && this.boss.items.length < MAX_ITEMS) return 'boss'
     return 'player'
   }
 
@@ -1111,7 +1363,11 @@ export class GameEngine {
     this.supplyOptions = options
     this.supplyChoice = null
     this.phase = 'supply'
-    this.log('门前的桌上摆着三件补给，你只能带走一件。')
+    this.log(
+      options.length >= 3
+        ? '门前的桌上摆着三件补给，你只能带走一件。'
+        : `门前的桌上摆着 ${options.length} 件补给，你只能带走一件。`,
+    )
     this.dispatch({ type: 'supplyOffer', options: [...options] })
     this.publish()
     await this.waitSupplyPick()
@@ -1129,24 +1385,32 @@ export class GameEngine {
   }
 
   private rollSupplyOptions(): ItemId[] {
-    return shuffle(this.unlockedItems(), this.rng).slice(0, SUPPLY_OPTION_COUNT)
+    // 第 1 层只摆两件，避免开局补给堆叠；之后仍三选一
+    const count = this.levelIndex === 0 ? 2 : SUPPLY_OPTION_COUNT
+    return shuffle(this.unlockedItems(), this.rng).slice(0, count)
   }
 
   private waitSupplyPick(): Promise<void> {
     return new Promise<void>((resolve) => {
       const finish = () => {
-        if (this.supplyTimer !== null) {
-          clearTimeout(this.supplyTimer)
-          this.timers.delete(this.supplyTimer)
-          this.supplyTimer = null
+        if (this.supplyDelay !== null) {
+          this.delays.delete(this.supplyDelay)
+          this.supplyDelay = null
         }
+        this.supplyDeadline = null
         this.supplyResolver = null
         resolve()
       }
+      const delay = this.track(
+        new PausableDelay(SUPPLY_PICK_MS, () => {
+          this.supplyDelay = null
+          finish()
+        }),
+      )
+      this.supplyDelay = delay
       this.supplyResolver = finish
-      const id = setTimeout(finish, SUPPLY_PICK_MS)
-      this.supplyTimer = id
-      this.timers.add(id)
+      this.supplyDeadline = this.paused ? null : Date.now() + SUPPLY_PICK_MS
+      if (!this.paused) delay.start()
     })
   }
 
@@ -1163,8 +1427,14 @@ export class GameEngine {
         this.ensureCylinder()
         const chamber = this.cylinder.current
         if (!chamber) return this.reject('弹仓里空无一物。')
-        this.revealed = chamber
-        detail = chamber === 'live' ? '窥见实弹。' : '窥见空膛。'
+        this.revealedBy[actor.id] = chamber
+        // Boss 的窥视不能写进日志，否则等于把膛内读数告诉了玩家
+        detail =
+          actor.id === 'player'
+            ? chamber === 'live'
+              ? '窥见实弹。'
+              : '窥见空膛。'
+            : '它窥视了枪膛，指节停了一瞬。'
         this.dispatch({ type: 'chamberRevealed', actor: actor.id, chamber })
         break
       }
@@ -1215,18 +1485,86 @@ export class GameEngine {
         detail = '护心镜展开：下一次实弹伤害将被完全挡下。'
         break
       }
-      case 'decoy': {
-        if (actor.decoy > 0) return this.reject('诱饵已经放好了。')
-        actor.decoy = 1
-        detail = '替身就位：对手下一次对你开枪会落空。'
+      case 'cutter': {
+        if (actor.hand.busted) return this.reject('已经爆牌，裁牌也救不回来。')
+        if (actor.cutterUsedThisRound) return this.reject('这一手已经裁过牌了。')
+        if (actor.hand.cards.length === 0) return this.reject('手里没有可以裁掉的牌。')
+        if (actor.id === 'player') {
+          // 玩家自选一张：进入待选状态，resolveCardChoice 结算
+          this.cardChoice = { kind: 'cutter', cards: [...actor.hand.cards] }
+          detail = '亮出裁纸刀，选择要裁掉的一张牌。'
+          break
+        }
+        // Boss 没有交互：裁掉点数最高的一张
+        let cutIndex = 0
+        let cutRank = -1
+        actor.hand.cards.forEach((cardValue, i) => {
+          const rank = cardValue.rank === 1 ? 11 : cardValue.rank
+          if (rank > cutRank) {
+            cutRank = rank
+            cutIndex = i
+          }
+        })
+        const old = actor.hand.cards[cutIndex]
+        if (!old) return this.reject('手里没有可以裁掉的牌。')
+        actor.hand = evaluateHand(actor.hand.cards.filter((_, i) => i !== cutIndex))
+        if (actor.id === 'boss') actor.hand = withHoleCard(actor.hand, !this.holeRevealed)
+        actor.cutterUsedThisRound = true
+        detail = `裁掉 ${formatCard(old)}，现为 ${actor.hand.total} 点。`
+        this.dispatch({ type: 'cardCuttered', actor: actor.id, old })
+        break
+      }
+      case 'iou': {
+        if (actor.iou > 0) return this.reject('借据已经签过了。')
+        actor.iou = 1
+        detail = '借据落印：本局你赢下的实弹 +2，输掉时打向你的实弹 +1。'
+        this.dispatch({ type: 'iouSigned', actor: actor.id })
+        break
+      }
+      case 'seal': {
+        if (actor.sealedThisRound) return this.reject('这一手已经贴过封条了。')
+        if (this.boss.hand.cards.length === 0) return this.reject('桌上还没有可以封的牌。')
+        // 封牌是公开动作：先亮出底牌，再让玩家从明牌里任选一张
+        const wasHidden = !this.holeRevealed
+        this.holeRevealed = true
+        this.boss.hand = withHoleCard(this.boss.hand, false)
+        if (wasHidden) {
+          const hole = this.boss.hand.cards[1]
+          if (hole) this.log(`它亮出底牌 ${formatCard(hole)}。`)
+        }
+        const visible = this.boss.hand.visible.filter((cardValue): cardValue is Card => cardValue !== null)
+        if (visible.length === 0) return this.reject('对手没有可以封的明牌。')
+        if (actor.id === 'player') {
+          this.cardChoice = { kind: 'seal', cards: visible }
+          detail = '封条已经蘸好朱砂，选择对手的一张明牌。'
+          break
+        }
+        const sealed = visible[0]
+        if (!sealed) return this.reject('对手没有可以封的明牌。')
+        const remaining = this.boss.hand.cards.filter((cardValue) => cardValue !== sealed)
+        this.boss.hand = withHoleCard(evaluateHand(remaining), false)
+        actor.sealedThisRound = true
+        detail = `封条贴上 ${formatCard(sealed)}，对手现为 ${this.boss.hand.total} 点。`
+        this.dispatch({ type: 'cardSealed', actor: actor.id, card: sealed })
+        break
+      }
+      case 'monocle': {
+        if (this.deck.length === 0) return this.reject('牌靴里没有可以窥看的牌。')
+        const peek = this.deck.slice(-3).reverse()
+        if (actor.id === 'player') {
+          detail = `牌靴顶部依次是 ${peek.map((cardValue) => formatCard(cardValue)).join('、')}。`
+        } else {
+          detail = '它扶了一下单片眼镜，记下了牌序。'
+        }
+        this.dispatch({ type: 'deckPeeked', actor: actor.id, cards: peek })
         break
       }
       case 'hammer': {
         this.ensureCylinder()
         if (this.cylinder.current === null) return this.reject('弹仓里空无一物。')
         if (!this.cylinder.forceLive()) return this.reject('膛内已是实弹，无需再砸。')
-        // 放大镜已经窥见的读数必须跟着改，否则桌面信息自相矛盾
-        if (this.revealed !== null) this.revealed = 'live'
+        // 重锤是公开动作：只有已经窥视过的人，读数需要跟着改成实弹
+        this.markRevealsLive()
         detail = '重锤落下：空膛被砸成了实弹。'
         break
       }
@@ -1253,7 +1591,7 @@ export class GameEngine {
         }
         this.boss.hand = withHoleCard(this.boss.hand, true)
         const chambers = this.cylinder.reload()
-        this.revealed = null
+        this.clearReveals()
         const live = chambers.filter((chamber) => chamber === 'live').length
         const blank = chambers.filter((chamber) => chamber === 'blank').length
         detail = `献出 1 点生命。手牌重发为 ${this.player.hand.total} 对 ${this.boss.hand.total}，弹仓重装 ${live} 实 ${blank} 空。`
@@ -1267,6 +1605,7 @@ export class GameEngine {
 
     if (detail === null) return false
     actor.items.splice(index, 1)
+    actor.itemsUsedThisTurn += 1
     this.log(`${actorLabel(actor.id)}使用了【${ITEM_CATALOG[item].name}】。${detail}`)
     this.dispatch({ type: 'itemUsed', actor: actor.id, item, detail })
     this.publish()
@@ -1287,33 +1626,24 @@ export class GameEngine {
     // ---- 胆小看守者：保守保命 ----
     if (personality === 'cautious') {
       if (has('sedative') && me.hp < me.maxHp) return 'sedative'
-      // 手里捏着实弹又必须开枪时，先举起护心镜最稳
-      if (has('aegis') && me.shield === 0 && this.cylinder.current === 'live' && loses) {
-        return 'aegis'
-      }
       if (canSaw && has('saw') && liveRate > 0.7 && me.hand.total >= 15 && !loses) return 'saw'
-      if (has('magnifier') && this.revealed === null && this.cylinder.remaining <= 2) {
+      if (has('magnifier') && this.revealedBy.boss === null && this.cylinder.remaining <= 2) {
         return 'magnifier'
       }
-      if (has('handcuffs') && !foe.skipTurn && foe.hand.total >= 18) return 'handcuffs'
       return null
     }
 
     // ---- 狂热老千：激进赌徒 ----
     if (personality === 'gambler') {
       if (has('sedative') && me.hp < me.maxHp) return 'sedative'
-      if (has('decoy') && me.decoy === 0 && loses) return 'decoy'
       if (has('handcuffs') && !foe.skipTurn && !foe.hand.busted) return 'handcuffs'
       if (has('magnet') && behind && foe.hand.total >= 8) return 'magnet'
       if (canSaw && has('saw') && me.hand.total >= 16 && liveRate >= 0.4) return 'saw'
-      // 已知空膛 → 砸成实弹，这一枪就落在对手身上
-      if (has('hammer') && this.cylinder.current === 'blank' && !loses) return 'hammer'
-      if (has('magnifier') && this.revealed === null) return 'magnifier'
+      if (has('magnifier') && this.revealedBy.boss === null) return 'magnifier'
       return null
     }
 
     // ---- 机械典狱长：冷酷算牌 ----
-    // 沙漏是玩家专属：Boss 落后时开沙漏再立刻停牌等于一键必胜，玩家无从补救
     // 下一发必为实弹且自己大概率输牌 → 用匕首强行续命
     if (has('dagger') && this.cylinder.remaining > 0 && liveRate >= 1 && loses && me.hp > 1) {
       return 'dagger'
@@ -1322,14 +1652,13 @@ export class GameEngine {
     if (has('aegis') && me.shield === 0 && this.cylinder.current === 'live' && loses) {
       return 'aegis'
     }
-    if (has('decoy') && me.decoy === 0 && loses) return 'decoy'
     if (has('handcuffs') && !foe.skipTurn && !foe.hand.busted && foe.hand.total >= 16) {
       return 'handcuffs'
     }
     if (has('magnet') && behind && foe.hand.total >= 9) return 'magnet'
     if (canSaw && has('saw') && me.hand.total >= 17 && !loses && liveRate > 0.5) return 'saw'
     if (has('hammer') && this.cylinder.current === 'blank' && !loses) return 'hammer'
-    if (has('magnifier') && this.revealed === null) return 'magnifier'
+    if (has('magnifier') && this.revealedBy.boss === null) return 'magnifier'
     return null
   }
 
@@ -1353,27 +1682,37 @@ export class GameEngine {
 
   private bossTarget(profile: BossProfile, personality: BossPersonality): number {
     if (this.player.hand.busted) return 0
+    const mine = this.boss.hand.total
+    const theirs = this.player.hand.total
+    const visible = this.playerVisibleTotal()
     let target = profile.standAt
 
-    // 狂热老千：点数低于玩家明牌时，即使 17 点也继续要牌
-    if (personality === 'gambler' && !this.player.standing) {
-      const playerVisible = this.playerVisibleTotal()
-      if (this.boss.hand.total < playerVisible) {
-        target = Math.max(target, Math.min(21, playerVisible + 1))
+    if (personality === 'cautious') {
+      // 谨慎：玩家停牌后，只要玩家 ≤17 就追到 +1；玩家 ≥18 保持 15 认输
+      if (this.player.standing) {
+        const tooGreedy = theirs > 17
+        if (!tooGreedy) target = Math.max(target, Math.min(21, theirs + 1))
       }
-    }
-    // 机械典狱长：按剩余牌堆的爆牌概率粗调停牌线（±1~3），不是逐张精算
-    if (personality === 'executioner') {
+    } else if (personality === 'gambler') {
+      // 赌徒：玩家高牌时真赌 21；自己已是高牌而玩家低时停牌；其余追 +1
+      if (this.player.standing) {
+        if (theirs >= 18 && mine <= 16) target = 21
+        else if (theirs <= 16 && mine >= 17) target = mine
+        else target = Math.max(target, Math.min(21, theirs + 1))
+      } else if (mine < visible) {
+        target = Math.max(target, Math.min(21, visible + 1))
+      }
+    } else {
+      // 算牌：先按牌靴爆牌概率修正，再决定追分或止损
+      const risk = this.bustRisk()
       target += this.executionerAdjustment()
-    }
-    if (this.player.standing) {
-      // 谨慎的看守者不敢追高分：玩家停牌在 18 点以上时它直接认输，不硬摸
-      const tooGreedy = personality === 'cautious' && this.player.hand.total + 1 > 18
-      if (!tooGreedy) target = Math.max(target, Math.min(21, this.player.hand.total + 1))
+      if (risk > 0.62) target = Math.min(target, mine)
+      else if (risk < 0.25) target = Math.max(target, 21)
+      else if (this.player.standing) target = Math.max(target, Math.min(21, theirs + 1))
     }
     // 沙漏生效时点数小者胜：再摸一张只会把自己推高，立即停牌才是最优
     if (this.hourglassActive && !this.player.hand.busted) return 0
-    return target
+    return Math.max(0, Math.min(21, target))
   }
 
   /** 玩家明牌点数（不含扣住的底牌） */
@@ -1384,8 +1723,16 @@ export class GameEngine {
 
   /** 估计剩余牌堆里「再摸一张会爆」的概率，换算成停牌线的微调 */
   private executionerAdjustment(): number {
+    const risk = this.bustRisk()
+    if (risk > 0.62) return -3
+    if (risk > 0.45) return -1
+    if (risk < 0.25) return 1
+    return 0
+  }
+
+  private bustRisk(): number {
     const total = 21 - this.boss.hand.total
-    if (total <= 0) return 0
+    if (total <= 0) return 1
     let bust = 0
     let count = 0
     for (const card of this.deck) {
@@ -1393,11 +1740,7 @@ export class GameEngine {
       if (card.rank > total) bust += 1
     }
     if (count === 0) return 0
-    const risk = bust / count
-    if (risk > 0.62) return -3
-    if (risk > 0.45) return -1
-    if (risk < 0.25) return 1
-    return 0
+    return bust / count
   }
 
   private dealTo(actor: ActorRuntime): void {
@@ -1427,7 +1770,7 @@ export class GameEngine {
   private ensureCylinder(): void {
     if (this.cylinder.remaining > 0) return
     const chambers = this.cylinder.reload()
-    this.revealed = null
+    this.clearReveals()
     const live = chambers.filter((chamber) => chamber === 'live').length
     const blank = chambers.filter((chamber) => chamber === 'blank').length
     this.log(`弹仓打空，重新装填：${live} 实 ${blank} 空，顺序已打乱。`)
@@ -1447,7 +1790,7 @@ export class GameEngine {
   }
 
   private giveSupply(actor: ActorRuntime, count: number): void {
-    const pool = shuffle(this.unlockedItems(), this.rng)
+    const pool = shuffle([...this.itemPoolFor(actor)], this.rng)
     const drawn: ItemId[] = []
     for (let i = 0; i < count && i < pool.length; i += 1) {
       const item = pool[i]
@@ -1466,12 +1809,27 @@ export class GameEngine {
 
   private giveRandomItem(actor: ActorRuntime): ItemId | null {
     if (actor.items.length >= MAX_ITEMS) return null
-    const pool = this.unlockedItems()
+    const pool = this.itemPoolFor(actor)
     const item = pool[Math.floor(this.rng() * pool.length)]
     if (!item) return null
     actor.items.push(item)
     this.dispatch({ type: 'itemDrawn', actor: actor.id, item })
     return item
+  }
+
+  private itemPoolFor(actor: ActorRuntime): readonly ItemId[] {
+    if (actor.id === 'player') return this.unlockedItems()
+    return BOSS_ITEM_POOLS[this.currentLevel().personality]
+  }
+
+  private clearReveals(): void {
+    this.revealedBy.player = null
+    this.revealedBy.boss = null
+  }
+
+  private markRevealsLive(): void {
+    if (this.revealedBy.player !== null) this.revealedBy.player = 'live'
+    if (this.revealedBy.boss !== null) this.revealedBy.boss = 'live'
   }
 
   private viewOf(actor: ActorRuntime): ActorView {
@@ -1489,7 +1847,8 @@ export class GameEngine {
       skipTurn: actor.skipTurn,
       sawBoost: actor.sawBoost,
       shield: actor.shield,
-      decoy: actor.decoy,
+      iou: actor.iou,
+      itemsUsedThisTurn: actor.itemsUsedThisTurn,
     }
   }
 
@@ -1530,13 +1889,15 @@ export class GameEngine {
 
   private lockInput(ms: number): void {
     if (ms <= 0) return
-    this.clearInputLockTimer()
+    this.clearInputDelay()
     this.inputLocked = true
     this.publish()
-    this.inputUnlockTimer = setTimeout(() => {
-      this.inputUnlockTimer = null
+    const delay = this.track(new PausableDelay(ms, () => {
+      this.inputDelay = null
       this.unlockInput()
-    }, ms)
+    }))
+    this.inputDelay = delay
+    if (!this.paused) delay.start()
   }
 
   private unlockInput(): void {
@@ -1545,10 +1906,34 @@ export class GameEngine {
     this.publish()
   }
 
-  private clearInputLockTimer(): void {
-    if (this.inputUnlockTimer === null) return
-    clearTimeout(this.inputUnlockTimer)
-    this.inputUnlockTimer = null
+  private clearInputDelay(): void {
+    if (this.inputDelay === null) return
+    this.delays.delete(this.inputDelay)
+    this.inputDelay.cancel()
+    this.inputDelay = null
+  }
+
+  pause(): void {
+    if (this.paused || this.destroyed) return
+    this.paused = true
+    for (const delay of this.delays) delay.pause()
+    if (this.supplyDelay !== null) this.supplyRemainingMs = this.supplyDelay.leftover
+    this.supplyDeadline = null
+    this.publish()
+  }
+
+  resume(): void {
+    if (!this.paused || this.destroyed) return
+    this.paused = false
+    for (const delay of this.delays) delay.resume()
+    if (this.supplyDelay !== null) {
+      this.supplyDeadline = Date.now() + this.supplyRemainingMs
+    }
+    this.publish()
+  }
+
+  get isPaused(): boolean {
+    return this.paused
   }
 
   private reject(message: string): false {
@@ -1560,13 +1945,20 @@ export class GameEngine {
     return !this.destroyed && token === this.generation
   }
 
+  private track(delay: PausableDelay): PausableDelay {
+    this.delays.add(delay)
+    return delay
+  }
+
   private wait(ms: number): Promise<void> {
     return new Promise<void>((resolve) => {
-      const id = setTimeout(() => {
-        this.timers.delete(id)
-        resolve()
-      }, Math.max(0, ms))
-      this.timers.add(id)
+      const delay = this.track(
+        new PausableDelay(ms, () => {
+          this.delays.delete(delay)
+          resolve()
+        }),
+      )
+      if (!this.paused) delay.start()
     })
   }
 
@@ -1574,30 +1966,37 @@ export class GameEngine {
   private waitExecution(ms: number): Promise<void> {
     return new Promise<void>((resolve) => {
       const finish = () => {
-        if (this.executionTimer !== null) {
-          clearTimeout(this.executionTimer)
-          this.timers.delete(this.executionTimer)
-          this.executionTimer = null
+        if (this.executionDelay !== null) {
+          this.delays.delete(this.executionDelay)
+          this.executionDelay = null
         }
         this.executionSkip = null
         resolve()
       }
+      const delay = this.track(
+        new PausableDelay(ms, () => {
+          this.executionDelay = null
+          finish()
+        }),
+      )
+      this.executionDelay = delay
       this.executionSkip = finish
-      const id = setTimeout(finish, Math.max(0, ms))
-      this.executionTimer = id
-      this.timers.add(id)
+      if (!this.paused) delay.start()
     })
   }
 
   private cancelTimers(): void {
-    for (const id of this.timers) clearTimeout(id)
-    this.timers.clear()
-    this.executionTimer = null
+    for (const delay of [...this.delays]) delay.cancel()
+    this.delays.clear()
+    this.inputDelay = null
+    this.executionDelay = null
     this.executionSkip = null
-    this.clearInputLockTimer()
     this.inputLocked = false
+    this.cardChoice = null
+    this.cardChoiceResolver = null
     // 取消 supply 等待时也要放行挂起的 offerSupply，否则 Promise 永久悬空
-    this.supplyTimer = null
+    this.supplyDelay = null
+    this.supplyDeadline = null
     const supplyFinish = this.supplyResolver
     this.supplyResolver = null
     supplyFinish?.()

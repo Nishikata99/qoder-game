@@ -3,7 +3,7 @@ import type { ActorId, GameEvent, GameSnapshot, ItemId } from '../game/GameEngin
 import type { GameEngine } from '../game/GameEngine'
 import { SceneManager } from '../scene/SceneManager'
 import type { ItemHoverPayload } from '../scene/SceneManager'
-import type { SceneLoadProgress } from '../scene/SceneManager'
+import type { BossPoseCue, SceneLoadProgress } from '../scene/SceneManager'
 import { itemFlavor } from '../narrative/copy'
 
 export interface GameCanvasProps {
@@ -11,6 +11,7 @@ export interface GameCanvasProps {
   readonly snapshot: GameSnapshot | null
   readonly onItemUse?: (actor: ActorId, item: ItemId) => void
   readonly onHoverChange?: (payload: ItemHoverPayload | null) => void
+  readonly onBossPoseCue?: (cue: BossPoseCue) => void
   readonly onSceneReady?: (scene: SceneManager) => void
   readonly onLoadProgress?: (progress: SceneLoadProgress) => void
   readonly onLoadError?: (key: string, error: unknown) => void
@@ -21,6 +22,7 @@ export function GameCanvas({
   snapshot,
   onItemUse,
   onHoverChange,
+  onBossPoseCue,
   onSceneReady,
   onLoadProgress,
   onLoadError,
@@ -28,16 +30,16 @@ export function GameCanvas({
   const hostRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sceneRef = useRef<SceneManager | null>(null)
-  const callbacksRef = useRef({ onItemUse, onHoverChange, onLoadProgress, onLoadError })
+  const callbacksRef = useRef({ onItemUse, onHoverChange, onBossPoseCue, onLoadProgress, onLoadError })
   const readyRef = useRef(onSceneReady)
   const [error, setError] = useState<string | null>(null)
   const setErrorRef = useRef(setError)
 
   useEffect(() => {
-    callbacksRef.current = { onItemUse, onHoverChange, onLoadProgress, onLoadError }
+    callbacksRef.current = { onItemUse, onHoverChange, onBossPoseCue, onLoadProgress, onLoadError }
     readyRef.current = onSceneReady
     setErrorRef.current = setError
-  }, [onItemUse, onHoverChange, onSceneReady, onLoadProgress, onLoadError, setError])
+  }, [onItemUse, onHoverChange, onBossPoseCue, onSceneReady, onLoadProgress, onLoadError, setError])
 
   useEffect(() => {
     const host = hostRef.current
@@ -49,6 +51,7 @@ export function GameCanvas({
       manager = new SceneManager(host, canvas, {
         onItemHover: (payload) => callbacksRef.current.onHoverChange?.(payload),
         onItemClick: (actor, item) => callbacksRef.current.onItemUse?.(actor, item),
+        onBossPoseCue: (cue) => callbacksRef.current.onBossPoseCue?.(cue),
         onLoadProgress: (progress) => callbacksRef.current.onLoadProgress?.(progress),
         onLoadError: (key, err) => callbacksRef.current.onLoadError?.(key, err),
       })

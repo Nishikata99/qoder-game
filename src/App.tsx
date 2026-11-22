@@ -9,6 +9,7 @@ import { CorridorIntro } from './components/CorridorIntro'
 import { NarrativeOverlay } from './narrative/NarrativeOverlay'
 import type { ItemHoverPayload } from './scene/SceneManager'
 import type { QualityPreset, SceneManager } from './scene/SceneManager'
+import type { BossPoseCue } from './scene/SceneManager'
 import type { ActorId, ActorView, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
 import {
   GameEngine,
@@ -583,6 +584,30 @@ export default function App() {
 
   const devBridge = useMemo(() => new DevBridge(game), [game])
 
+  // 姿态段落音效：枪响已由 shot 事件播过，这里只补落地/撑起/直身/落稳
+  const handleBossPoseCue = useCallback(
+    (cue: BossPoseCue) => {
+      switch (cue) {
+        case 'down':
+          sound.playLowThump()
+          sound.playChairCreak()
+          break
+        case 'brace':
+          sound.playStitch()
+          break
+        case 'rise':
+          sound.playBossBreath()
+          break
+        case 'settle':
+          sound.playLowThump()
+          break
+        default:
+          break
+      }
+    },
+    [sound],
+  )
+
   const unlocked = useMemo(
     () => new Set<ItemId>(snapshot?.unlockedItems ?? []),
     [snapshot?.unlockedItems],
@@ -768,6 +793,7 @@ export default function App() {
             snapshot={snapshot}
             onItemUse={handleItemUse}
             onHoverChange={setHover}
+            onBossPoseCue={handleBossPoseCue}
             onSceneReady={(scene) => {
               sceneRef.current = scene
               applyQuality(scene, quality)

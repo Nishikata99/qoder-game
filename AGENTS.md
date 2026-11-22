@@ -112,7 +112,10 @@ src/
 - 运镜用 `setShot(shot, duration)`，不要直接改 `camera.position`。
 - **枪口朝向**：`gunAim` 是枪的瞄准枢轴，执行阶段由 `updateGunAim` 算 yaw/pitch 指向 `bossHitPoint()` 或镜头；枪口火光、膛内提示也挂在它下面。不要再动 `gunGroup.rotation.y` 摆枪。换 GLB 时占位枪要用 `removeFromParent()` 摘下（它挂在 `gunAim` 下，`gunGroup.remove` 摘不到，会叠成两把枪）。枪口火光位置从模型 `MuzzlePoint` 计算，装填时推拉 `PumpSlide`，不要再假设火光固定在 -1.06。
 - **中弹点不是常量**：`bossHitPoint(out)` 按当前关卡从 `BOSS_BUST_HEIGHTS` 换算（胸口约在整体高度 64% 处），换关后自动跟着半身像变高，不要再写死坐标。
-- 实弹命中 Boss 时 `spawnBlood(this.bossHitPoint(...))` 生成血珠 + 血雾 + 瞬时光，并触发 `knockBossDown()`：`bossKnock`（0..1）叠加在呼吸动画上把整个 `bossGroup` 压下去，停一拍再缓慢起身，用 generation 计数取消上一轮起身 tween。
+- 实弹命中 Boss 走 `BossPoseController`（`src/scene/BossPose.ts`）姿态状态机：`impact → collapse → prone → brace → push → rise → recover → idle`；致死命中停在 `deadProne` 直到切层/重开，普通命中约 3.0–3.5s 完整起身。采样值绕 `profile.pivotY` 虚拟枢轴旋转后反推平移，不要再写死整体下压/回弹的 tween。
+- 三关 profile 各自定义（`BOSS_POSE_PROFILES`）：L1 人形前扑 + 运行时肩/颈枢轴驱动手臂头部；L2 低位下沉前塌 + 跨段轻颤拖起，禁大角度侧滚；L3 绕 `Boss3_SuspensionRoot` 摆荡 + 自转 + 收轨抬起，禁地面俯仰。L2/L3 `allowArms=false`，不共用 L1 手臂逻辑。
+- 切层 / retry / restart 都经过 `phase = reloading`，`shouldRespawnBossPose()` 靠这一跳（外加层数变化、Boss 0 血复活）触发 `spawn()`；同层 retry 时层数与血量可能都不变，别只判断这两项。
+- 姿态段落音效走 `SceneCallbacks.onBossPoseCue`（`down/brace/rise/settle`），只在状态切换帧派发一次；枪响仍由 `shot` 事件负责，不要重复播。
 - **背景陈设放 `propsGroup`，不要塞 `roomGroup`**：`swapRoom()` 会清空 `roomGroup`，道具会跟着被删。`refreshProps()` 每次整组重建，旧克隆只 `remove` 不 dispose——几何与材质和 `models` 里的模板共享，销毁会把模板一起废掉。
 - 玩家中弹是纯 DOM 覆盖层：`.blood-splatter` 血斑 + `.vision-blur`（`backdrop-filter`，只糊画布，HUD 保持清晰），在 `App.tsx` 的 `handleEventSound` 里由实弹事件驱动；不要用后期处理去做模糊。
 - **Blender 程序化节点图无法导出到 glTF**：噪声/渐变接 Base Color 会被压成纯白。要么把颜色烘焙进顶点色（`COLOR_0`），要么只给 Principled 一个平涂 Base Color；后者导出为 `baseColorFactor`，**是线性色值**，游戏里还会再乘 0.42，按 `目标线性色 ÷ 0.42` 反推，否则会像白模。

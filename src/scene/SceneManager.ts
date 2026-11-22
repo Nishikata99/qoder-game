@@ -19,6 +19,7 @@ import {
   type ItemId,
 } from '../game/GameEngine'
 import { TextureFactory } from './TextureFactory'
+import { BOSS_POSE_PROFILES, BossPoseController, shouldRespawnBossPose, type BossPoseState } from './BossPose'
 
 export interface ItemHoverPayload {
   readonly actor: ActorId
@@ -38,9 +39,14 @@ export interface SceneLoadProgress {
 export interface SceneCallbacks {
   readonly onItemHover?: (payload: ItemHoverPayload | null) => void
   readonly onItemClick?: (actor: ActorId, item: ItemId) => void
+  /** Boss 姿态段落提示，用于音效对齐；只报语义节点，不报每帧采样 */
+  readonly onBossPoseCue?: (cue: BossPoseCue) => void
   onLoadProgress?: (progress: SceneLoadProgress) => void
   onLoadError?: (key: string, error: unknown) => void
 }
+
+/** down = 塌倒落地（进入趴伏），brace = 撑起，rise = 直身，settle = 落稳 */
+export type BossPoseCue = 'down' | 'brace' | 'rise' | 'settle'
 
 export type QualityPreset = 'high' | 'balanced' | 'low'
 
@@ -385,6 +391,15 @@ const BOSS_FLASH_LIFE = 0.16
  */
 const BOSS_FLASH_PEAK = 0.09
 
+/** 姿态状态切换到音效提示；只在离散节点响一次，不按帧触发 */
+const BOSS_POSE_CUES: Partial<Record<BossPoseState, BossPoseCue>> = {
+  prone: 'down',
+  deadProne: 'down',
+  brace: 'brace',
+  rise: 'rise',
+  recover: 'settle',
+}
+
 /**
  * 处决推近：机位稳定后沿视线前推的距离（米）。
  * 枪在近景，推得越远枪身放大得越快；0.24 附近 Boss 的五官还在画面里，枪也没压过去
@@ -482,6 +497,7 @@ export class SceneManager {
   private reducedMotion = false
   private readonly onMotionPreferenceChange = (event: MediaQueryListEvent): void => {
     this.reducedMotion = event.matches
+    this.bossPose.setReducedMotion(event.matches)
     if (event.matches) {
       this.shakeTime = 0
       this.gunShakeAfterAim = false
@@ -545,9 +561,25 @@ export class SceneManager {
   private readonly narrativeGroup = new THREE.Group()
   private towelMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial> | null = null
   private introHands: THREE.Group | null = null
-  /** 0..1 的倒地量，叠加在呼吸动画上：命中时冲到 1 再缓慢回到 0 */
-  private bossKnock = 0
-  private knockGeneration = 0
+  /** Boss 倒地/起身：纯逻辑状态机只产出姿态采样，Three 对象映射留在 updateBoss */
+  private readonly bossPose = new BossPoseController()
+  private readonly bossPosePivot = new THREE.Vector3()
+  private readonly bossPosePivotRotated = new THREE.Vector3()
+  private readonly bossPoseOffset = new THREE.Vector3()
+  private readonly bossPoseEuler = new THREE.Euler()
+  /** GLB 头部节点的静止旋转，姿态动画只在其上叠加 */
+  private readonly bossHeadRest = new THREE.Euler()
+  /** L1 的头部/双臂是烘焙世界坐标，必须包运行时枢轴才能绕关节转 */
+  private bossArmLNode: THREE.Object3D | null = null
+  private bossArmRNode: THREE.Object3D | null = null
+  private readonly bossArmLRest = new THREE.Euler()
+  private readonly bossArmRRest = new THREE.Euler()
+  private bossPosePaused = false
+  /** 血袋特写期间冻结姿态，避免起身在镜头外白白播完 */
+  private bossPoseHold = false
+  /** 上一帧姿态状态，用于派发离散的音效提示 */
+  private lastBossPoseState: BossPoseState = 'idle'
+
 
   private readonly roomGroup = new THREE.Group()
   private readonly tableGroup = new THREE.Group()
@@ -737,6 +769,7 @@ export class SceneManager {
 
     if (this.motionQuery) {
       this.reducedMotion = this.motionQuery.matches
+      this.bossPose.setReducedMotion(this.reducedMotion)
       this.motionQuery.addEventListener('change', this.onMotionPreferenceChange)
       this.listenerCleanup.push(() =>
         this.motionQuery?.removeEventListener('change', this.onMotionPreferenceChange),
@@ -761,10 +794,94 @@ export class SceneManager {
     this.timer.connect(document)
     this.tick = this.tick.bind(this)
     this.rafId = requestAnimationFrame(this.tick)
+    this.installBossPoseDebug()
+  }
+
+  /** 仅开发期：手动推进/查看姿态时间线，生产构建会被 DEV 常量摇掉 */
+  private installBossPoseDebug(): void {
+    if (!devStatsEnabled) return
+    const controller = this.bossPose
+    const host = window as unknown as { __bossPoseDebug?: unknown }
+    host.__bossPoseDebug = {
+      state: () => controller.state(),
+      sample: () => controller.sample(),
+      hit: (damage = 2, hpAfter = 1) =>
+        controller.triggerHit({
+          damage,
+          hpAfter,
+          maxHp: this.lastSnapshot?.boss.maxHp ?? Math.max(1, hpAfter),
+          level: this.currentLevelIndex,
+        }),
+      defeat: () => controller.triggerDefeat(this.currentLevelIndex),
+      spawn: () => controller.spawn(this.currentLevelIndex),
+      reset: () => controller.reset(),
+      seek: (seconds: number) => {
+        let left = Math.max(0, seconds)
+        while (left > 1e-6) {
+          const step = Math.min(1 / 60, left)
+          controller.update(step)
+          left -= step
+        }
+      },
+      setProfile: (level: number) => controller.setProfile(level),
+      modelLevel: () => this.activeBossMaskLevel,
+      loadedLevels: () => this.bossModelByLevel.map((model) => Boolean(model)),
+      currentLevel: () => this.currentLevelIndex,
+      shot: () => this.shot,
+      pause: (value = true) => {
+        this.bossPosePaused = value
+      },
+      ready: () => Boolean(this.bossGroup.getObjectByName('BossBustGLB')),
+      /** 量模型真实几何与相机投影，用于校准各关枢轴/下沉参数 */
+      metrics: () => {
+        const model = this.bossGroup.getObjectByName('BossBustGLB')
+        if (!model) return null
+        const box = new THREE.Box3().setFromObject(model)
+        this.camera.updateMatrixWorld()
+        const ndc = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity }
+        const corner = new THREE.Vector3()
+        for (let i = 0; i < 8; i += 1) {
+          corner.set(
+            i & 1 ? box.max.x : box.min.x,
+            i & 2 ? box.max.y : box.min.y,
+            i & 4 ? box.max.z : box.min.z,
+          )
+          corner.project(this.camera)
+          ndc.minX = Math.min(ndc.minX, corner.x)
+          ndc.maxX = Math.max(ndc.maxX, corner.x)
+          ndc.minY = Math.min(ndc.minY, corner.y)
+          ndc.maxY = Math.max(ndc.maxY, corner.y)
+          ndc.minZ = Math.min(ndc.minZ, corner.z)
+          ndc.maxZ = Math.max(ndc.maxZ, corner.z)
+        }
+        const nodes: Array<{ name: string; type: string; pos: number[] }> = []
+        model.traverse((object) => {
+          if (!object.name) return
+          nodes.push({ name: object.name, type: object.type, pos: object.position.toArray().map((v) => Number(v.toFixed(3))) })
+        })
+        return {
+          world: {
+            min: box.min.toArray(),
+            max: box.max.toArray(),
+            size: box.getSize(new THREE.Vector3()).toArray(),
+          },
+          nodes,
+          ndc,
+          wrapper: model.position.toArray(),
+          group: this.bossGroup.position.toArray(),
+          rot: [this.bossGroup.rotation.x, this.bossGroup.rotation.y, this.bossGroup.rotation.z],
+          camera: this.camera.position.toArray(),
+          sample: this.bossPose.sample(),
+        }
+      },
+    }
   }
 
   applySnapshot(snapshot: GameSnapshot): void {
     if (this.disposed) return
+    if (shouldRespawnBossPose(this.lastSnapshot, snapshot)) {
+      this.bossPose.spawn(snapshot.levelIndex)
+    }
     this.lastSnapshot = snapshot
     this.applyLevel(snapshot.levelIndex)
     this.syncCards(snapshot)
@@ -1251,6 +1368,7 @@ export class SceneManager {
     const shouldSync = this.bloodCloseupActor !== null
     this.bloodCloseupActor = null
     this.bloodCloseupDrain = false
+    this.bossPoseHold = false
     this.pendingResolutionShot = null
     if (shouldSync && this.lastSnapshot) this.syncBlood(this.lastSnapshot)
   }
@@ -1266,6 +1384,27 @@ export class SceneManager {
     })
   }
 
+  /** 等 Boss 塌倒并趴稳（起身段开始）再切特写；超时兜底，避免慢渲染或调试图冻结时卡死 */
+  private waitBossCollapsed(generation: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const startedAt = performance.now()
+      const poll = () => {
+        const aborted = this.disposed || generation !== this.bloodCloseupGeneration
+        const state = this.bossPose.state()
+        const settled = state === 'brace' || state === 'deadProne' || state === 'idle'
+        if (aborted || settled || performance.now() - startedAt > 8000) {
+          this.bloodCloseupTimer = null
+          this.bloodCloseupTimerResolve = null
+          resolve(!aborted)
+          return
+        }
+        this.bloodCloseupTimer = window.setTimeout(poll, 50)
+      }
+      this.bloodCloseupTimerResolve = resolve
+      poll()
+    })
+  }
+
   private bloodDrainSettled(actor: ActorId): boolean {
     const rack = this.bloodRacks.get(actor)
     const snapshot = this.lastSnapshot
@@ -1276,7 +1415,14 @@ export class SceneManager {
 
   private async runBloodCloseup(actor: ActorId, hpAfter: number, generation: number): Promise<void> {
     const shot: CameraShot = actor === 'player' ? 'bloodPlayer' : 'bloodBoss'
-    if (!await this.waitBloodCloseup(actor === 'player' ? 1600 : 250, generation)) return
+    if (actor === 'boss') {
+      // 先在桌面机位让塌倒播到趴伏，再切特写；特写期间冻结姿态，
+      // 否则起身会在镜头外全部播完，回位时看起来像没被打中过
+      if (!await this.waitBossCollapsed(generation)) return
+      this.bossPoseHold = true
+    } else if (!await this.waitBloodCloseup(1600, generation)) {
+      return
+    }
     this.setShot(shot, 0.55)
     if (!await this.waitBloodCloseup(750, generation)) return
     this.bloodCloseupDrain = true
@@ -1289,6 +1435,7 @@ export class SceneManager {
     this.pendingResolutionShot = null
     this.bloodCloseupActor = null
     this.bloodCloseupDrain = false
+    this.bossPoseHold = false
     if (resolution) {
       this.setShot(resolution.shot, resolution.duration)
       return
@@ -1342,7 +1489,12 @@ export class SceneManager {
       } else {
         this.flashBoss()
         this.spawnBlood(origin)
-        this.knockBossDown()
+        this.bossPose.triggerHit({
+          damage: payload.damage,
+          hpAfter: payload.hpAfter,
+          maxHp: this.lastSnapshot?.boss.maxHp ?? Math.max(1, payload.hpAfter),
+          level: this.currentLevelIndex,
+        })
       }
     }
 
@@ -1393,32 +1545,6 @@ export class SceneManager {
     }
     this.bossFlashMaterials = []
     this.bossFlashLife = 0
-  }
-
-  /** 命中：先被压下去，停顿一拍，再慢慢撑起来 */
-  private knockBossDown(): void {
-    this.knockGeneration += 1
-    const generation = this.knockGeneration
-    this.tween({
-      duration: 0.24,
-      onUpdate: (t) => {
-        if (generation !== this.knockGeneration) return
-        this.bossKnock = easeOutCubic(t)
-      },
-    })
-    this.tween({
-      duration: 2.6,
-      delay: 0.9,
-      onUpdate: (t) => {
-        if (generation !== this.knockGeneration) return
-        // 前 30% 还趴着，之后才缓缓起身
-        this.bossKnock = 1 - easeInOutCubic(clamp01((t - 0.3) / 0.7))
-      },
-      onComplete: () => {
-        if (generation !== this.knockGeneration) return
-        this.bossKnock = 0
-      },
-    })
   }
 
   playReload(): void {
@@ -1509,6 +1635,10 @@ export class SceneManager {
     this.envTexture?.dispose()
     this.models.clear()
     this.itemModelTemplates.clear()
+    if (devStatsEnabled) {
+      const host = window as unknown as { __bossPoseDebug?: unknown }
+      delete host.__bossPoseDebug
+    }
     this.composer.dispose()
     this.renderer.dispose()
   }
@@ -2309,15 +2439,38 @@ export class SceneManager {
     this.lampRig.rotation.x = Math.cos(this.elapsed * 0.72) * 0.025
   }
 
+  /** 姿态状态只在切换的帧派发一次 cue；音效方不需要每帧采样 */
+  private emitBossPoseCue(): void {
+    const state = this.bossPose.state()
+    if (state === this.lastBossPoseState) return
+    this.lastBossPoseState = state
+    const cue = BOSS_POSE_CUES[state]
+    if (cue) this.callbacks.onBossPoseCue?.(cue)
+  }
+
   private updateBoss(dt: number): void {
     const t = this.elapsed
     // 呼吸：三个不成整数比的正弦叠加，周期压在 4~6 秒，避免机械重复感
     const breath = Math.sin(t * 1.32) * 0.018 + Math.sin(t * 0.61 + 1.7) * 0.010
-    const knock = this.bossKnock
-    this.bossGroup.position.y = breath - knock * 0.72
-    // 吸气时胸口微微前压，呼气抬回；中弹时整个上半身后仰并侧倾
-    this.bossGroup.rotation.x = -breath * 0.55 - knock * 0.82
-    this.bossGroup.rotation.z = knock * 0.2
+
+    if (!this.bossPosePaused && !this.bossPoseHold) this.bossPose.update(dt)
+    this.emitBossPoseCue()
+    const pose = this.bossPose.sample()
+    const profile = BOSS_POSE_PROFILES[this.currentLevelIndex] ?? BOSS_POSE_PROFILES[0]
+    const bodyPitch = -breath * 0.55 + pose.pitch
+    const bodyRoll = pose.roll
+
+    // 绕虚拟枢轴旋转：先把枢轴点转到新姿态，再反推平移量，避免整尊半身像绕脚底甩动
+    this.bossPoseEuler.set(bodyPitch, pose.yaw, bodyRoll)
+    this.bossPosePivot.set(0, profile.pivotY, 0)
+    this.bossPosePivotRotated.copy(this.bossPosePivot).applyEuler(this.bossPoseEuler)
+    this.bossPoseOffset.copy(this.bossPosePivot).sub(this.bossPosePivotRotated)
+    this.bossGroup.rotation.set(bodyPitch, pose.yaw, bodyRoll)
+    this.bossGroup.position.set(
+      0,
+      breath + pose.y + this.bossPoseOffset.y,
+      BOSS_Z + pose.z + this.bossPoseOffset.z,
+    )
 
     if (this.bossFlashLife > 0) {
       this.bossFlashLife = Math.max(0, this.bossFlashLife - dt)
@@ -2341,16 +2494,35 @@ export class SceneManager {
       pitch = pitch * (1 - env) - 0.03 * env
     }
 
+    const headYaw = yaw * pose.lookWeight
+    const headPitch = pitch * pose.lookWeight + pose.headPitch
     if (this.bossHeadNode) {
-      this.bossHeadNode.rotation.y = yaw
-      this.bossHeadNode.rotation.x = pitch
+      this.bossHeadNode.rotation.set(
+        this.bossHeadRest.x + headPitch,
+        this.bossHeadRest.y + headYaw,
+        this.bossHeadRest.z + pose.headRoll,
+      )
     } else {
       // 程序化 Boss 兜底：沿用旧的可动头部
-      this.bossParts.head.rotation.y = yaw
-      this.bossParts.head.rotation.x = pitch
+      this.bossParts.head.rotation.set(headPitch, headYaw, pose.headRoll)
       const maskBob = Math.sin(t * 1.6) * 0.004
       this.bossParts.mask.position.y = (this.bossParts.mask.userData.baseY as number) + maskBob
       this.bossParts.maskBack.position.y = (this.bossParts.maskBack.userData.baseY as number) + maskBob
+    }
+
+    if (this.bossArmLNode) {
+      this.bossArmLNode.rotation.set(
+        this.bossArmLRest.x - pose.armL * 0.3,
+        this.bossArmLRest.y,
+        this.bossArmLRest.z - pose.armL * 0.28,
+      )
+    }
+    if (this.bossArmRNode) {
+      this.bossArmRNode.rotation.set(
+        this.bossArmRRest.x - pose.armR * 0.3,
+        this.bossArmRRest.y,
+        this.bossArmRRest.z + pose.armR * 0.28,
+      )
     }
   }
 
@@ -3420,6 +3592,7 @@ export class SceneManager {
     // 模型自带完整躯干，底座在自身 y=0：直接按世界高度缩放，底座落到桌沿下方
     const bustHeight = BOSS_BUST_HEIGHTS[levelIndex] ?? BOSS_BUST_HEIGHTS[0]
     const wrapper = this.placeModel(model, bustHeight, new THREE.Vector3(0, 0, 0), 0, 'height')
+    if (levelIndex === 0) this.wrapL1LimbPivots(wrapper)
     wrapper.name = 'BossBustGLB'
     wrapper.position.set(
       0,
@@ -3431,12 +3604,41 @@ export class SceneManager {
     // 头部单独取出来做「盯视」动画；模型面朝 +Z，rotation.y 即为左右转
     const head = wrapper.getObjectByName('BossHead')
     this.bossHeadNode = head instanceof THREE.Object3D ? head : null
+    this.bossHeadRest.set(0, 0, 0)
+    if (this.bossHeadNode) this.bossHeadRest.copy(this.bossHeadNode.rotation)
+    this.bossArmLNode = wrapper.getObjectByName('Arm.L') ?? null
+    this.bossArmRNode = wrapper.getObjectByName('Arm.R') ?? null
+    this.bossArmLRest.set(0, 0, 0)
+    this.bossArmRRest.set(0, 0, 0)
+    if (this.bossArmLNode) this.bossArmLRest.copy(this.bossArmLNode.rotation)
+    if (this.bossArmRNode) this.bossArmRRest.copy(this.bossArmRNode.rotation)
 
     // 半身像含完整头部与双肩，隐藏程序化面具与躯干
     this.bossParts.mask.visible = false
     this.bossParts.maskBack.visible = false
     this.bossParts.head.visible = false
     this.setProgrammaticBodyVisible(false)
+  }
+
+  /** L1 的 GLB 把顶点烘在模型空间：包一层枢轴，几何世界位置保持不变 */
+  private wrapL1LimbPivots(wrapper: THREE.Group): void {
+    const clone = wrapper.children[0]
+    if (!clone) return
+    const pivots: Array<[string, THREE.Vector3]> = [
+      ['BossHead', new THREE.Vector3(0, 2.07, 0.02)],
+      ['Arm.L', new THREE.Vector3(-0.6, 1.74, 0.18)],
+      ['Arm.R', new THREE.Vector3(0.6, 1.74, 0.18)],
+    ]
+    for (const [name, point] of pivots) {
+      const node = clone.getObjectByName(name)
+      if (!node || node.parent !== clone) continue
+      const pivot = new THREE.Group()
+      pivot.name = `${name}.Pivot`
+      pivot.position.copy(point)
+      clone.add(pivot)
+      pivot.add(node)
+      node.position.sub(point)
+    }
   }
 
   /** 半身像模式下隐藏手搓的躯干、帽子、衣领、手臂与剪影板 */

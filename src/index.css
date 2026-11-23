@@ -312,6 +312,13 @@ body {
 
 /* ---------- Narrative overlay ---------- */
 
+.cutscene-canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  max-width: 100%;
+  max-height: 100%;
+}
+
 .narrative-bar {
   transition: height 900ms cubic-bezier(0.4, 0, 0.2, 1);
 }

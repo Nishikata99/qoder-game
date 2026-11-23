@@ -953,12 +953,13 @@ export default function App() {
           <GameCanvas
             engine={game}
             snapshot={snapshot}
-            tableActionsAllowed={canAct && !snapshot?.paused && !narrativeActive && modal === null && !devOpen}
+            tableActionsAllowed={canAct && !snapshot?.paused && !narrativeActive && modal === null}
+            supplyRevealAllowed={!narrativeActive}
             onTableAction={(action) => {
               const current = game.getSnapshot()
               if (current.phase !== 'playerTurn' || current.paused || current.inputLocked ||
                 current.player.skipTurn || current.cardChoice || narrativeRef.current ||
-                directorRef.current || modal !== null || devOpen) return false
+                directorRef.current || modal !== null) return false
               finishFirstTurnHint()
               return action === 'hit' ? game.hit() : game.stand()
             }}

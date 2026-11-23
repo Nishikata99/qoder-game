@@ -10,6 +10,7 @@ export interface GameCanvasProps {
   readonly engine: GameEngine
   readonly snapshot: GameSnapshot | null
   readonly tableActionsAllowed: boolean
+  readonly supplyRevealAllowed: boolean
   readonly onTableAction: (action: TableAction) => boolean
   readonly onItemUse?: (actor: ActorId, item: ItemId) => void
   readonly onSupplyPick?: (item: ItemId) => void
@@ -24,6 +25,7 @@ export function GameCanvas({
   engine,
   snapshot,
   tableActionsAllowed,
+  supplyRevealAllowed,
   onTableAction,
   onItemUse,
   onSupplyPick,
@@ -82,9 +84,10 @@ export function GameCanvas({
 
   useEffect(() => {
     sceneRef.current?.setTableActionsAllowed(tableActionsAllowed)
+    sceneRef.current?.setSupplyRevealAllowed(supplyRevealAllowed)
     if (!snapshot) return
     sceneRef.current?.applySnapshot(snapshot)
-  }, [snapshot, tableActionsAllowed])
+  }, [snapshot, tableActionsAllowed, supplyRevealAllowed])
 
   useEffect(() => {
     return engine.subscribe((event, eventSnapshot) => {

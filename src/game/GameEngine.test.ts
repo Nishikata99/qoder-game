@@ -352,15 +352,20 @@ describe('层间补给三选一', () => {
     expect(engine.getSnapshot().phase).toBe('supply')
   })
 
-  it('超时未选则自动带走第一件，不会卡死在补给阶段', async () => {
+  it('补给不设时限：等再久也不会自动拿走，点选后才开门', async () => {
     const { engine, probe } = newEngine({ levels })
     await toSupplyOffer(engine, probe)
-    const first = engine.getSnapshot().supplyOptions[0] as ItemId
-    await settleUntil(() => engine.getSnapshot().phase !== 'supply')
+    const options = engine.getSnapshot().supplyOptions
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(engine.getSnapshot().phase).toBe('supply')
+    expect(engine.getSnapshot().supplyOptions).toEqual(options)
+
+    const picked = options[0] as ItemId
+    expect(engine.chooseSupply(picked)).toBe(true)
     await settleUntil(() => engine.getSnapshot().phase === 'playerTurn')
     const snapshot = engine.getSnapshot()
     expect(snapshot.levelIndex).toBe(1)
-    expect(snapshot.player.items).toContain(first)
+    expect(snapshot.player.items).toContain(picked)
   })
 
   it('非 supply 阶段调用会被拒绝', async () => {

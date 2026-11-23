@@ -3,11 +3,13 @@
  * 依据 docs/NARRATIVE-REWORK-PLAN.md（小棠血契版）。
  */
 
-/** 三层 Boss 与地点：LEVELS 里的 name/title 是引擎数据，这里只做展示层替换 */
+/** 三层是同一个人：名字固定，只有地点逐层变化 */
+export const BOSS_NAME = '验血官'
+
 export const LEVEL_NARRATIVE: ReadonlyArray<{ name: string; title: string }> = [
-  { name: '验血官', title: '一层 · 验血厅' },
-  { name: '赖账犬', title: '二层 · 欠收账房' },
-  { name: '缝账人', title: '三层 · 补针刑台' },
+  { name: BOSS_NAME, title: '一层 · 验血厅' },
+  { name: BOSS_NAME, title: '二层 · 欠收账房' },
+  { name: BOSS_NAME, title: '三层 · 补针刑台' },
 ]
 
 export function bossName(levelIndex: number): string {
@@ -39,11 +41,11 @@ export function itemFlavor(itemId: string): string | undefined {
   return ITEM_FLAVOR[itemId]
 }
 
-/** 旧 Boss 名 → 新 Boss 名：引擎日志与快照里带的是旧名，展示时统一替换 */
+/** 旧 Boss 名 → 统一后的名字：引擎日志与快照里带的是旧名，展示时统一替换 */
 const LEGACY_BOSS_NAMES: ReadonlyArray<readonly [string, string]> = [
-  ['锈蚀看门人', '验血官'],
-  ['赌命收账人', '赖账犬'],
-  ['深渊执刑者', '缝账人'],
+  ['锈蚀看门人', BOSS_NAME],
+  ['赌命收账人', BOSS_NAME],
+  ['深渊执刑者', BOSS_NAME],
 ]
 
 /** 叙事向日志条目的替换；纯机制日志（伤害数字、道具使用、装填）保持引擎原文 */

@@ -12,6 +12,7 @@ export type Phase =
   | 'roundEnd'
   | 'levelClear'
   | 'supply'
+  | 'bossSupply'
   | 'gameOver'
   | 'victory'
 
@@ -254,12 +255,14 @@ export interface GameSnapshot {
   readonly unlockedItems: readonly ItemId[]
   /** supply 阶段的三选一候选；其他阶段为空数组 */
   readonly supplyOptions: readonly ItemId[]
+  /** Boss 的补给候选；supply / bossSupply 阶段展示在它的托盘里 */
+  readonly bossSupplyOptions: readonly ItemId[]
+  /** Boss 本次门前挑中的道具；仅 bossSupply 阶段（镜头切过去时它已经拿定） */
+  readonly bossSupplyPick: ItemId | null
   readonly inputLocked: boolean
   readonly paused: boolean
   /** 本场跨层累计回合数；round 仍是每层回合 */
   readonly runRounds: number
-  /** 补给阶段剩余毫秒；非补给或暂停时为 null */
-  readonly supplyDeadline: number | null
   /** 第 3 层牌靴剩余张数；其他层为 null */
   readonly deckRemaining: number | null
   /** 裁纸刀/封条使用后等待玩家点选一张牌 */
@@ -323,6 +326,7 @@ export type GameEvent =
       readonly items: readonly ItemId[]
     }
   | { readonly type: 'supplyOffer'; readonly options: readonly ItemId[] }
+  | { readonly type: 'bossSupply'; readonly pick: ItemId }
   | {
       readonly type: 'checkpoint'
       readonly levelIndex: number
@@ -370,10 +374,16 @@ export const MAX_ITEMS = 8
 export const PLAYER_ITEM_CAP = 3
 const LOG_LIMIT = 80
 const SUPPLY_OPTION_COUNT = 3
-/** 门前补给停留时长；超时自动抓取第一件，避免玩家离开后整局卡死 */
-const SUPPLY_PICK_MS = 12_000
 /** 清层横幅先播完，再摆出三选一 */
 const SUPPLY_DELAY_MS = 2600
+/** 玩家选完后切到 Boss 托盘：等它沉盘、挑完、再升回来 */
+const BOSS_SUPPLY_BEAT_MS = 3000
+/** Boss 门前挑补给的偏好顺序；没人格内可选项时退回随机 */
+const BOSS_SUPPLY_PRIORITY: Readonly<Record<BossPersonality, readonly ItemId[]>> = {
+  cautious: ['sedative', 'magnifier', 'saw'],
+  gambler: ['handcuffs', 'magnet', 'sedative', 'saw', 'magnifier'],
+  executioner: ['dagger', 'aegis', 'sedative', 'handcuffs', 'magnet', 'saw', 'hammer', 'magnifier'],
+}
 const SUIT_SYMBOLS: Readonly<Record<CardSuit, string>> = {
   spade: '♠',
   heart: '♥',
@@ -632,10 +642,9 @@ export class GameEngine {
   private inputDelay: PausableDelay | null = null
   private executionDelay: PausableDelay | null = null
   private executionSkip: (() => void) | null = null
-  private supplyDelay: PausableDelay | null = null
-  private supplyRemainingMs = 0
-  private supplyDeadline: number | null = null
   private supplyOptions: ItemId[] = []
+  private bossSupplyOptions: ItemId[] = []
+  private bossSupplyPick: ItemId | null = null
   private supplyChoice: ItemId | null = null
   private supplyResolver: (() => void) | null = null
   /** 裁纸刀/封条等待点选的牌；暂停/换层/销毁时清空 */
@@ -643,6 +652,7 @@ export class GameEngine {
   private cardChoiceResolver: (() => void) | null = null
   /** 层间三选一选中的道具：beginLevel 会重建 Actor，必须先寄存再注入 */
   private carryOver: ItemId[] = []
+  private carryOverBoss: ItemId[] = []
   private readonly listeners = new Set<GameEventListener>()
   private readonly delays = new Set<PausableDelay>()
   private readonly cylinder: Cylinder
@@ -700,6 +710,9 @@ export class GameEngine {
     this.runRounds = 0
     this.paused = false
     this.carryOver = [...carryOver]
+    this.carryOverBoss = []
+    this.bossSupplyOptions = []
+    this.bossSupplyPick = null
     this.logLines = []
     this.log('你从门缝里退回上一层，血袋重新注满。')
     void this.beginLevel(index, this.generation)
@@ -734,8 +747,11 @@ export class GameEngine {
     this.holeRevealed = false
     this.logLines = []
     this.supplyOptions = []
+    this.bossSupplyOptions = []
+    this.bossSupplyPick = null
     this.supplyChoice = null
     this.carryOver = []
+    this.carryOverBoss = []
     this.publish()
     this.start()
   }
@@ -907,10 +923,12 @@ export class GameEngine {
       hourglassActive: this.hourglassActive,
       unlockedItems: this.unlockedItems(),
       supplyOptions: this.phase === 'supply' ? [...this.supplyOptions] : [],
+      bossSupplyOptions:
+        this.phase === 'supply' || this.phase === 'bossSupply' ? [...this.bossSupplyOptions] : [],
+      bossSupplyPick: this.phase === 'bossSupply' ? this.bossSupplyPick : null,
       inputLocked: this.inputLocked,
       paused: this.paused,
       runRounds: this.runRounds,
-      supplyDeadline: this.phase === 'supply' ? this.supplyDeadline : null,
       deckRemaining:
         this.currentLevel().deckPolicy === 'persistent' ? this.deck.length : null,
       cardChoice: this.cardChoice
@@ -953,6 +971,17 @@ export class GameEngine {
     }
     this.giveSupply(this.player, level.supply)
     this.giveSupply(this.boss, level.supply)
+    if (this.carryOverBoss.length > 0) {
+      const carried = this.carryOverBoss
+      this.carryOverBoss = []
+      for (const item of carried) {
+        if (this.boss.items.length >= MAX_ITEMS) break
+        this.boss.items.push(item)
+      }
+      this.log(
+        `它也把门前的补给带了进来：${carried.map((item) => `【${ITEM_CATALOG[item].name}】`).join('')}。`,
+      )
+    }
     const chambers = this.cylinder.reload()
     this.log(`—— 第 ${index + 1} 层 · ${level.title} ——`)
     this.log(`「${level.name}」把一枚生锈的转轮推到你面前。`)
@@ -1349,8 +1378,8 @@ export class GameEngine {
   }
 
   /**
-   * 清层后先让横幅播完，再摆出三件补给。
-   * 等待期间玩家可以离开页面：超时自动抓走第一件，避免整局永久停在 supply。
+   * 清层后先让横幅播完，再摆出三件补给；玩家挑好才开门，不设时限。
+   * 玩家选完后镜头切到 Boss 托盘，看它挑一件带入下一层。
    */
   private async offerSupply(token: number): Promise<void> {
     await this.wait(SUPPLY_DELAY_MS)
@@ -1360,8 +1389,11 @@ export class GameEngine {
       void this.beginLevel(this.levelIndex + 1, token)
       return
     }
+    const bossOptions = this.rollBossSupplyOptions(options.length)
     this.supplyOptions = options
     this.supplyChoice = null
+    this.bossSupplyOptions = bossOptions
+    this.bossSupplyPick = null
     this.phase = 'supply'
     this.log(
       options.length >= 3
@@ -1372,13 +1404,27 @@ export class GameEngine {
     this.publish()
     await this.waitSupplyPick()
     if (!this.alive(token) || this.phase !== 'supply') return
-    const picked = this.supplyChoice ?? options[0] ?? null
+    const picked = this.consumeSupplyChoice()
     this.supplyOptions = []
-    this.supplyChoice = null
     if (picked) {
       this.carryOver.push(picked)
       this.log(`你把【${ITEM_CATALOG[picked].name}】别在腰间，推开了下一道生锈的铁门。`)
     }
+    if (bossOptions.length > 0) {
+      const bossPick = this.pickBossSupply(bossOptions)
+      if (bossPick) {
+        this.bossSupplyPick = bossPick
+        this.phase = 'bossSupply'
+        this.dispatch({ type: 'bossSupply', pick: bossPick })
+        this.publish()
+        await this.wait(BOSS_SUPPLY_BEAT_MS)
+        if (!this.alive(token)) return
+        this.carryOverBoss.push(bossPick)
+        this.log(`它把【${ITEM_CATALOG[bossPick].name}】收进斗篷，留给下一层。`)
+      }
+    }
+    this.bossSupplyOptions = []
+    this.bossSupplyPick = null
     this.generation += 1
     this.cancelTimers()
     void this.beginLevel(this.levelIndex + 1, this.generation)
@@ -1390,28 +1436,35 @@ export class GameEngine {
     return shuffle(this.unlockedItems(), this.rng).slice(0, count)
   }
 
+  /** Boss 的候选从自己人格的补给池里抽，和玩家一样只带走一件 */
+  private rollBossSupplyOptions(count: number): ItemId[] {
+    if (count <= 0) return []
+    const pool = BOSS_ITEM_POOLS[this.currentLevel().personality]
+    return shuffle([...pool], this.rng).slice(0, count)
+  }
+
+  private pickBossSupply(options: readonly ItemId[]): ItemId | null {
+    const priority = BOSS_SUPPLY_PRIORITY[this.currentLevel().personality]
+    for (const item of priority) {
+      if (options.includes(item)) return item
+    }
+    return options[Math.floor(this.rng() * options.length)] ?? null
+  }
+
+  /** 不设时限：一直等到玩家点选或按键，才继续开门 */
   private waitSupplyPick(): Promise<void> {
     return new Promise<void>((resolve) => {
-      const finish = () => {
-        if (this.supplyDelay !== null) {
-          this.delays.delete(this.supplyDelay)
-          this.supplyDelay = null
-        }
-        this.supplyDeadline = null
+      this.supplyResolver = () => {
         this.supplyResolver = null
         resolve()
       }
-      const delay = this.track(
-        new PausableDelay(SUPPLY_PICK_MS, () => {
-          this.supplyDelay = null
-          finish()
-        }),
-      )
-      this.supplyDelay = delay
-      this.supplyResolver = finish
-      this.supplyDeadline = this.paused ? null : Date.now() + SUPPLY_PICK_MS
-      if (!this.paused) delay.start()
     })
+  }
+
+  private consumeSupplyChoice(): ItemId | null {
+    const choice = this.supplyChoice
+    this.supplyChoice = null
+    return choice
   }
 
   private applyItem(actor: ActorRuntime, item: ItemId): boolean {
@@ -1917,8 +1970,6 @@ export class GameEngine {
     if (this.paused || this.destroyed) return
     this.paused = true
     for (const delay of this.delays) delay.pause()
-    if (this.supplyDelay !== null) this.supplyRemainingMs = this.supplyDelay.leftover
-    this.supplyDeadline = null
     this.publish()
   }
 
@@ -1926,9 +1977,6 @@ export class GameEngine {
     if (!this.paused || this.destroyed) return
     this.paused = false
     for (const delay of this.delays) delay.resume()
-    if (this.supplyDelay !== null) {
-      this.supplyDeadline = Date.now() + this.supplyRemainingMs
-    }
     this.publish()
   }
 
@@ -1995,8 +2043,6 @@ export class GameEngine {
     this.cardChoice = null
     this.cardChoiceResolver = null
     // 取消 supply 等待时也要放行挂起的 offerSupply，否则 Promise 永久悬空
-    this.supplyDelay = null
-    this.supplyDeadline = null
     const supplyFinish = this.supplyResolver
     this.supplyResolver = null
     supplyFinish?.()

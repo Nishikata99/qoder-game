@@ -27,12 +27,23 @@ function probeHorizontalOverflow(page: Page) {
       return false
     }
 
+    // sr-only 裁切的兜底控件子元素自身仍保留原始尺寸，跳过以免误报越界
+    const insideSrOnly = (el: Element) => {
+      let node: Element | null = el
+      while (node && node !== document.body) {
+        if (node.classList.contains('sr-only')) return true
+        node = node.parentElement
+      }
+      return false
+    }
+
     const offenders: { cls: string; text: string; left: number; right: number }[] = []
     for (const el of document.querySelectorAll<HTMLElement>('body *')) {
       const style = getComputedStyle(el)
       if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue
       const rect = el.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) continue
+      if (insideSrOnly(el)) continue
       if (rect.left >= -0.5 && rect.right <= vw + 0.5) continue
       if (insideScroller(el)) continue
       offenders.push({
@@ -104,7 +115,7 @@ for (const vp of VIEWPORTS) {
       await expect(rules).toBeHidden()
     })
 
-    test('牌桌操作栏与角落工具不越界也不重叠', async ({ page }) => {
+    test('桌沿按键与角落工具不越界也不重叠', async ({ page }) => {
       await page.goto('./')
 
       const start = page.getByRole('button', { name: '走进走廊', exact: true })
@@ -117,29 +128,114 @@ for (const vp of VIEWPORTS) {
       await rightDoor.waitFor({ timeout: 60_000 })
       await rightDoor.evaluate((el) => (el as HTMLElement).click())
 
-      // 等引擎发完牌进入玩家回合。CI 的 SwiftShader 比本地更慢，
-      // dt clamp 0.05 会进一步拖长分镜，超时按最坏渲染档位留余量
-      const hit = page.getByRole('button', { name: /要牌/ })
-      const stand = page.getByRole('button', { name: /停牌/ })
-      await expect(hit).toBeEnabled({ timeout: 300_000 })
+      // 要牌/停牌已改为场景内实体按键：投影到屏幕后再断言，
+      // 不再取 DOM 按钮的 boundingBox（那只是无障碍兜底，恒在屏外裁切）
+      await page.waitForFunction(
+        () => (window as unknown as { __scene?: { canUseTableActions(): boolean } }).__scene?.canUseTableActions(),
+        undefined,
+        { timeout: 300_000 },
+      )
 
-      for (const locator of [hit, stand]) {
-        await expectInsideViewport(page, locator, 'xy')
+      const keyRects = await page.evaluate(() => {
+        interface Vec {
+          clone(): Vec
+          set(x: number, y: number, z: number): Vec
+          applyMatrix4(matrix: unknown): Vec
+          project(camera: unknown): { x: number; y: number }
+        }
+        interface Root {
+          updateWorldMatrix(updateParents: boolean, updateChildren: boolean): void
+          position: Vec
+          matrixWorld: unknown
+        }
+        const scene = (
+          window as unknown as {
+            __scene: {
+              getCamera(): unknown
+              actionButtons: Map<string, { root: Root }>
+            }
+          }
+        ).__scene
+        const cam = scene.getCamera()
+        return [...scene.actionButtons].map(([action, button]) => {
+          const root = button.root
+          root.updateWorldMatrix(true, true)
+          let left = Infinity
+          let right = -Infinity
+          let top = Infinity
+          let bottom = -Infinity
+          for (const sx of [-0.32, 0.32]) {
+            for (const sy of [-0.045, 0.1025]) {
+              for (const sz of [-0.22, 0.22]) {
+                const v = root.position.clone().set(sx, sy, sz)
+                v.applyMatrix4(root.matrixWorld)
+                const p = v.project(cam)
+                const x = ((p.x + 1) * window.innerWidth) / 2
+                const y = ((1 - p.y) * window.innerHeight) / 2
+                left = Math.min(left, x)
+                right = Math.max(right, x)
+                top = Math.min(top, y)
+                bottom = Math.max(bottom, y)
+              }
+            }
+          }
+          return { action, left, right, top, bottom, cx: (left + right) / 2, cy: (top + bottom) / 2 }
+        })
+      })
+      expect(keyRects.map((key) => key.action).sort()).toEqual(['hit', 'stand'])
+
+      const hintBox = await page.evaluate(() => {
+        const el = [...document.querySelectorAll('[aria-live="polite"]')].find((node) =>
+          node.textContent?.includes('桌沿键'),
+        )
+        if (!el) return null
+        const rect = el.getBoundingClientRect()
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
+      })
+
+      const overlaps = (
+        a: { left: number; right: number; top: number; bottom: number },
+        b: { left: number; right: number; top: number; bottom: number },
+      ) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
+
+      for (const key of keyRects) {
+        expect(key.left, `${key.action} 左边出界`).toBeGreaterThan(0)
+        expect(key.right, `${key.action} 右边出界`).toBeLessThan(vp.width)
+        expect(key.top, `${key.action} 上边出界`).toBeGreaterThan(0)
+        expect(key.bottom, `${key.action} 下边出界`).toBeLessThan(vp.height)
+        const tag = await page.evaluate(
+          ({ x, y }) => document.elementFromPoint(x, y)?.tagName,
+          { x: key.cx, y: key.cy },
+        )
+        expect(tag, `${key.action} 被 DOM 覆盖`).toBe('CANVAS')
       }
+      // 首回合提示贴在按键下方，不能盖住键面
+      if (hintBox) {
+        for (const key of keyRects) expect(overlaps(hintBox, key)).toBe(false)
+      }
+
+      // 提示条消失后角落工具才回到同一条底边：此时不得压住实体键
+      await page
+        .waitForFunction(
+          () =>
+            ![...document.querySelectorAll('[aria-live="polite"]')].some((node) =>
+              node.textContent?.includes('桌沿键'),
+            ),
+          undefined,
+          { timeout: 20_000 },
+        )
+        .catch(() => {})
 
       const cornerChip = page.getByRole('button', { name: '规则 / 图鉴' })
       const volumeChip = page.getByRole('button', { name: /音量/ })
       const slider = page.getByLabel('主音量')
       for (const locator of [cornerChip, volumeChip, slider]) {
         await expectInsideViewport(page, locator, 'xy')
+        const box = await locator.boundingBox()
+        if (!box) continue
+        const rect = { left: box.x, right: box.x + box.width, top: box.y, bottom: box.y + box.height }
+        for (const key of keyRects) expect(overlaps(rect, key), `${key.action} 被角落工具遮住`).toBe(false)
       }
-
-      // 角落工具曾经压在「停牌」上：抬到操作栏上方后两者不能再重叠
-      const [volumeBox, hitBox] = await Promise.all([
-        volumeChip.boundingBox(),
-        hit.boundingBox(),
-      ])
-      expect(volumeBox!.y + volumeBox!.height).toBeLessThanOrEqual(hitBox!.y)
 
       const report = await probeHorizontalOverflow(page)
       expect(report.docScrollWidth).toBeLessThanOrEqual(report.viewportWidth)

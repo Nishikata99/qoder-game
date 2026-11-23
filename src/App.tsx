@@ -20,7 +20,7 @@ import {
   evaluateHand,
   formatCard as formatCardLabel,
 } from './game/GameEngine'
-import { bossName, levelTitle, itemFlavor, narrativeLog } from './narrative/copy'
+import { bossName, levelTitle, narrativeLog } from './narrative/copy'
 import { useDialogFocus } from './components/useDialogFocus'
 
 interface RelayBanner {
@@ -400,6 +400,9 @@ export default function App() {
         case 'supplyOffer':
           sound.playItemUse()
           break
+        case 'bossSupply':
+          sound.playLowThump()
+          break
         case 'lootUnlocked':
           bannerId.current += 1
           setLoot({ id: bannerId.current, level: event.level, items: event.items })
@@ -522,12 +525,10 @@ export default function App() {
       const key = event.key.toLowerCase()
       if (key === 'h') {
         event.preventDefault()
-        setShowFirstTurnHint(false)
-        game.hit()
+        if (!event.repeat) sceneRef.current?.activateTableAction('hit')
       } else if (key === 's') {
         event.preventDefault()
-        setShowFirstTurnHint(false)
-        game.stand()
+        if (!event.repeat) sceneRef.current?.activateTableAction('stand')
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -776,13 +777,6 @@ export default function App() {
   const canAct = playerTurn && !locked && !inputLocked && !snapshot?.cardChoice
   const finished = phase === 'gameOver' || phase === 'victory'
   const level = snapshot?.level ?? (LEVELS[0] as (typeof LEVELS)[number])
-  const [, forceTick] = useState(0)
-
-  useEffect(() => {
-    if (phase !== 'supply' || snapshot?.paused) return
-    const id = window.setInterval(() => forceTick((n) => n + 1), 1000)
-    return () => window.clearInterval(id)
-  }, [phase, snapshot?.paused])
 
   return (
     <main className="relative h-full w-full overflow-hidden bg-abyss-950">
@@ -791,7 +785,17 @@ export default function App() {
           <GameCanvas
             engine={game}
             snapshot={snapshot}
+            tableActionsAllowed={canAct && !snapshot?.paused && !narrativeActive && modal === null && !devOpen}
+            onTableAction={(action) => {
+              const current = game.getSnapshot()
+              if (current.phase !== 'playerTurn' || current.paused || current.inputLocked ||
+                current.player.skipTurn || current.cardChoice || narrativeRef.current ||
+                directorRef.current || modal !== null || devOpen) return false
+              finishFirstTurnHint()
+              return action === 'hit' ? game.hit() : game.stand()
+            }}
             onItemUse={handleItemUse}
+            onSupplyPick={(item) => game.chooseSupply(item)}
             onHoverChange={setHover}
             onBossPoseCue={handleBossPoseCue}
             onSceneReady={(scene) => {
@@ -937,37 +941,7 @@ export default function App() {
               </div>
             ) : null}
           </div>
-        ) : (
-          <div className="flex items-center gap-3">
-            <MetalButton
-              tone="primary"
-              disabled={!canAct}
-              onClick={() => {
-                finishFirstTurnHint()
-                game.hit()
-              }}
-              hint={locked ? '手铐锁住了你的手腕' : undefined}
-            >
-              要牌{' '}
-              <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45 max-[420px]:hidden">
-                HIT · H
-              </span>
-            </MetalButton>
-            <MetalButton
-              tone="secondary"
-              disabled={!canAct}
-              onClick={() => {
-                finishFirstTurnHint()
-                game.stand()
-              }}
-            >
-              停牌{' '}
-              <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45 max-[420px]:hidden">
-                STAND · S
-              </span>
-            </MetalButton>
-          </div>
-        )}
+        ) : null}
 
         <div className="flex items-center gap-2 text-[9px] tracking-[0.2em] text-bone-200/30 uppercase">
           <span>
@@ -975,21 +949,24 @@ export default function App() {
               ? snapshot?.pendingShot === 'player'
                 ? targetHint(snapshot)
                 : ' ' 
-              : canAct
-                ? '选择要牌或停牌'
-                : locked && playerTurn
-                  ? '本回合被封锁'
-                  : inputLocked
-                    ? '…'
-                    : ' '}
+              : locked && playerTurn
+                ? '本回合被封锁'
+                : ' '}
           </span>
         </div>
       </div>
 
       {/* Corner utilities: volume + codex.
-          窄屏改成横排抬到操作栏上方，否则会和底部按钮叠在一起 */}
+          窄屏横排贴底避开桌沿按键；只有枪口选择阶段抬到操作栏上方，
+          首回合提示显示期间先让位（提示条占同一条底边） */}
       <div
-        className={`absolute right-4 bottom-4 flex flex-col items-end gap-2 transition-opacity duration-700 max-[420px]:right-3 max-[420px]:bottom-[6.25rem] max-[420px]:flex-row max-[420px]:items-center ${narrativeActive ? 'pointer-events-none opacity-0' : 'opacity-100'}`}
+        className={`absolute right-4 bottom-4 flex flex-col items-end gap-2 transition-opacity duration-700 max-[420px]:right-3 max-[420px]:flex-row max-[420px]:items-center ${
+          snapshot?.phase === 'targeting' && snapshot?.pendingShot === 'player'
+            ? 'max-[420px]:bottom-[6.25rem]'
+            : 'max-[420px]:bottom-4'
+        } ${showFirstTurnHint ? 'corner-tools--defer' : ''} ${
+          narrativeActive ? 'pointer-events-none opacity-0' : 'opacity-100'
+        }`}
       >
         <button
           type="button"
@@ -1069,55 +1046,42 @@ export default function App() {
         </div>
       ) : null}
 
-      {/* Supply pick: one item only, then the door opens. */}
+      {/* Supply pick: 候选道具摆在桌面左侧托盘里，点桌面上的道具即可带走。 */}
       {phase === 'supply' && snapshot ? (
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="层间补给"
-            className="max-h-[calc(100dvh-2rem)] w-full max-w-xl overflow-y-auto border border-rust-500/35 bg-abyss-900/95 p-5 shadow-2xl shadow-black/80"
-          >
-            <p className="text-[9px] tracking-[0.45em] text-rust-400/75 uppercase">before the next door</p>
-            <h2 className="mt-2 font-display text-2xl text-bone-200">门前的补给</h2>
-            <p className="mt-1 text-[11px] text-bone-200/45">
-              只能带走一件。第 1 层摆两件，之后三件；选中的道具会跟到下一层。
-            </p>
-            <p className="mt-1 text-[11px] tracking-[0.1em] text-rust-300/70">
-              {snapshot.paused
-                ? '已暂停 · 计时冻结'
-                : snapshot.supplyDeadline !== null
-                  ? `剩余 ${Math.max(0, Math.ceil((snapshot.supplyDeadline - Date.now()) / 1000))} 秒`
-                  : '稍候'}
-            </p>
-            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        <div className="pointer-events-none absolute inset-x-0 top-[8%] z-30 flex justify-center px-4">
+          <div className="flex flex-col items-center gap-1.5 border border-rust-500/30 bg-abyss-900/80 px-8 py-3 text-center shadow-lg shadow-black/60 backdrop-blur-sm">
+            <div className="flex items-baseline gap-3">
+              <span className="text-[9px] tracking-[0.45em] text-rust-400/75 uppercase">before the next door</span>
+              <span className="font-display text-lg text-bone-200">门前的补给</span>
+              <span className="text-[11px] tracking-[0.1em] text-rust-300/75">
+                {snapshot.paused ? '已暂停' : '挑好再开门'}
+              </span>
+            </div>
+            <div className="flex items-center gap-4 text-[11px] text-bone-200/70">
               {snapshot.supplyOptions.map((item, index) => (
-                <button
-                  key={item}
-                  type="button"
-                  onClick={() => game.chooseSupply(item)}
-                  className="group flex flex-col items-start gap-1 border border-white/8 bg-black/30 p-3 text-left transition-colors hover:border-rust-500/60 hover:bg-rust-500/10"
-                >
-                  <span className="flex w-full items-center justify-between">
-                    <span className="font-display text-2xl text-rust-400/85">
-                      {ITEM_CATALOG[item].glyph}
-                    </span>
-                    <span className="text-[9px] tracking-[0.25em] text-bone-200/25 uppercase">
-                      {index + 1}
-                    </span>
-                  </span>
-                  <span className="font-display text-sm text-bone-200">{ITEM_CATALOG[item].name}</span>
-                  <span className="text-[10px] leading-relaxed text-bone-200/50">
-                    {ITEM_CATALOG[item].summary}
-                  </span>
-                  <span className="text-[10px] leading-relaxed text-rust-300/60 italic">
-                    {itemFlavor(item)}
-                  </span>
-                </button>
+                <span key={item} className="flex items-center gap-1">
+                  <span className="text-[9px] tracking-[0.2em] text-rust-400/60">{index + 1}</span>
+                  <span className="font-display text-bone-200">{ITEM_CATALOG[item].name}</span>
+                </span>
               ))}
             </div>
-            <p className="mt-3 text-[9px] tracking-[0.2em] text-bone-200/25 uppercase">
-              快捷键 1 / 2 / 3 · 12 秒后自动带走第一件
+            <p className="text-[9px] tracking-[0.22em] text-bone-200/30 uppercase">
+              点击桌上托盘里的道具 · 或按 1 / 2 / 3
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Boss supply beat: 玩家选完后镜头切到它那侧的托盘，看它带走一件。 */}
+      {phase === 'bossSupply' && snapshot ? (
+        <div className="pointer-events-none absolute inset-x-0 top-[8%] z-30 flex justify-center px-4">
+          <div className="flex flex-col items-center gap-1.5 border border-rust-500/25 bg-abyss-900/75 px-8 py-2.5 text-center shadow-lg shadow-black/60 backdrop-blur-sm">
+            <div className="flex items-baseline gap-3">
+              <span className="text-[9px] tracking-[0.45em] text-rust-400/70 uppercase">same table, one more hand</span>
+              <span className="font-display text-base text-bone-200/90">它也伸手挑了一件</span>
+            </div>
+            <p className="text-[9px] tracking-[0.22em] text-bone-200/30 uppercase">
+              它把补给收进斗篷 · 下一层的门就快开了
             </p>
           </div>
         </div>
@@ -1310,18 +1274,19 @@ export default function App() {
         </div>
       ) : null}
 
+      {/* 提示条贴底，落在桌沿按键下方，不遮挡实体键 */}
       {showFirstTurnHint && snapshot && !narrativeActive ? (
         <div
           aria-live="polite"
-          className={`pointer-events-none absolute inset-x-0 z-20 flex justify-center px-4 ${clueLine ? 'bottom-24' : 'bottom-40'}`}
+          className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-3"
         >
-          <p className="max-w-md rounded-sm border border-rust-500/35 bg-black/90 px-4 py-2 text-center text-[11px] leading-relaxed tracking-[0.08em] text-bone-200/80 shadow-lg shadow-black/60">
-            你的回合：你 {snapshot.player.visibleHand.total} 点，对手明牌{' '}
+          <p className="rounded-sm border border-rust-500/35 bg-black/90 px-3 py-1.5 text-center text-[10px] leading-relaxed tracking-[0.08em] text-bone-200/80 shadow-lg shadow-black/60">
+            你 {snapshot.player.visibleHand.total} 点 · 明牌{' '}
             {snapshot.boss.visibleHand.visible.filter((card): card is Card => card !== null).reduce(
               (sum, card) => sum + (card.rank === 1 ? 11 : card.rank),
               0,
             )}{' '}
-            点。H 要牌 / S 停牌；赢下这轮才拿到枪。
+            点 · 点桌沿键或按 H / S
           </p>
         </div>
       ) : null}
@@ -1417,7 +1382,10 @@ export default function App() {
       ) : null}
 
       {clueLine && !narrativeActive ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-[16vh] z-20 flex justify-center px-6">
+        // 窄屏首回合：剧情行会横穿桌沿按键，让位给首次操作提示
+        <div
+          className={`pointer-events-none absolute inset-x-0 bottom-[16vh] z-20 flex justify-center px-6 ${showFirstTurnHint ? 'max-[420px]:opacity-0' : ''}`}
+        >
           <p className="clue-line narrative-subtitle max-w-xl text-center font-display text-base tracking-[0.18em] text-bone-200/85">
             {clueLine}
           </p>
@@ -1569,6 +1537,8 @@ function phaseLabel(phase: string): string {
       return '层已净空'
     case 'supply':
       return '挑选补给'
+    case 'bossSupply':
+      return '它挑补给'
     case 'gameOver':
       return '血契已收'
     case 'victory':

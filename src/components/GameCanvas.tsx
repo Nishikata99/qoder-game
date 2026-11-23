@@ -2,14 +2,17 @@ import { useEffect, useRef, useState } from 'react'
 import type { ActorId, GameEvent, GameSnapshot, ItemId } from '../game/GameEngine'
 import type { GameEngine } from '../game/GameEngine'
 import { SceneManager } from '../scene/SceneManager'
-import type { ItemHoverPayload } from '../scene/SceneManager'
+import type { ItemHoverPayload, TableAction } from '../scene/SceneManager'
 import type { BossPoseCue, SceneLoadProgress } from '../scene/SceneManager'
 import { itemFlavor } from '../narrative/copy'
 
 export interface GameCanvasProps {
   readonly engine: GameEngine
   readonly snapshot: GameSnapshot | null
+  readonly tableActionsAllowed: boolean
+  readonly onTableAction: (action: TableAction) => boolean
   readonly onItemUse?: (actor: ActorId, item: ItemId) => void
+  readonly onSupplyPick?: (item: ItemId) => void
   readonly onHoverChange?: (payload: ItemHoverPayload | null) => void
   readonly onBossPoseCue?: (cue: BossPoseCue) => void
   readonly onSceneReady?: (scene: SceneManager) => void
@@ -20,7 +23,10 @@ export interface GameCanvasProps {
 export function GameCanvas({
   engine,
   snapshot,
+  tableActionsAllowed,
+  onTableAction,
   onItemUse,
+  onSupplyPick,
   onHoverChange,
   onBossPoseCue,
   onSceneReady,
@@ -30,16 +36,16 @@ export function GameCanvas({
   const hostRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sceneRef = useRef<SceneManager | null>(null)
-  const callbacksRef = useRef({ onItemUse, onHoverChange, onBossPoseCue, onLoadProgress, onLoadError })
+  const callbacksRef = useRef({ onTableAction, onItemUse, onSupplyPick, onHoverChange, onBossPoseCue, onLoadProgress, onLoadError })
   const readyRef = useRef(onSceneReady)
   const [error, setError] = useState<string | null>(null)
   const setErrorRef = useRef(setError)
 
   useEffect(() => {
-    callbacksRef.current = { onItemUse, onHoverChange, onBossPoseCue, onLoadProgress, onLoadError }
+    callbacksRef.current = { onTableAction, onItemUse, onSupplyPick, onHoverChange, onBossPoseCue, onLoadProgress, onLoadError }
     readyRef.current = onSceneReady
     setErrorRef.current = setError
-  }, [onItemUse, onHoverChange, onBossPoseCue, onSceneReady, onLoadProgress, onLoadError, setError])
+  }, [onTableAction, onItemUse, onSupplyPick, onHoverChange, onBossPoseCue, onSceneReady, onLoadProgress, onLoadError, setError])
 
   useEffect(() => {
     const host = hostRef.current
@@ -49,8 +55,10 @@ export function GameCanvas({
     let manager: SceneManager | null = null
     try {
       manager = new SceneManager(host, canvas, {
+        onTableAction: (action) => callbacksRef.current.onTableAction(action),
         onItemHover: (payload) => callbacksRef.current.onHoverChange?.(payload),
         onItemClick: (actor, item) => callbacksRef.current.onItemUse?.(actor, item),
+        onSupplyPick: (item) => callbacksRef.current.onSupplyPick?.(item),
         onBossPoseCue: (cue) => callbacksRef.current.onBossPoseCue?.(cue),
         onLoadProgress: (progress) => callbacksRef.current.onLoadProgress?.(progress),
         onLoadError: (key, err) => callbacksRef.current.onLoadError?.(key, err),
@@ -73,9 +81,10 @@ export function GameCanvas({
   }, [])
 
   useEffect(() => {
+    sceneRef.current?.setTableActionsAllowed(tableActionsAllowed)
     if (!snapshot) return
     sceneRef.current?.applySnapshot(snapshot)
-  }, [snapshot])
+  }, [snapshot, tableActionsAllowed])
 
   useEffect(() => {
     return engine.subscribe((event, eventSnapshot) => {
@@ -138,8 +147,12 @@ export function GameCanvas({
         scene.setResolutionShot('victory', 1.4)
         break
       case 'supplyOffer':
-        // 补给面板是纯 DOM 覆盖层，机位停在清层后的远景，别跟着回合机位抖
-        scene.setResolutionShot('victory', 1.2)
+        // 补给在桌面左侧托盘里进行：切到托盘机位，候选道具由快照驱动升起
+        scene.setShot('supply', 1.2)
+        break
+      case 'bossSupply':
+        // 玩家选完，镜头切到左后侧的 Boss 托盘看它挑
+        scene.setShot('supplyBoss', 1.0)
         break
       case 'gameOver':
         scene.setResolutionShot(event.winner === 'boss' ? 'death' : 'victory', 1.6)
@@ -163,6 +176,12 @@ export function GameCanvas({
             'radial-gradient(ellipse 62% 58% at 50% 46%, rgba(0,0,0,0) 0%, rgba(0,0,0,0.28) 58%, rgba(0,0,0,0.82) 84%, rgba(0,0,0,0.96) 100%)',
         }}
       />
+      <div className="sr-only focus-within:not-sr-only focus-within:absolute focus-within:bottom-4 focus-within:left-1/2 focus-within:-translate-x-1/2 focus-within:flex focus-within:gap-4 focus-within:bg-black focus-within:p-3">
+        <button type="button" aria-keyshortcuts="H" disabled={!tableActionsAllowed}
+          onClick={() => sceneRef.current?.activateTableAction('hit')}>要牌</button>
+        <button type="button" aria-keyshortcuts="S" disabled={!tableActionsAllowed}
+          onClick={() => sceneRef.current?.activateTableAction('stand')}>停牌</button>
+      </div>
       {error ? (
         <div className="absolute inset-0 flex items-center justify-center bg-abyss-950/90 p-6 text-center">
           <div>
@@ -198,8 +217,8 @@ export function ItemTooltip({ payload }: { payload: ItemHoverPayload | null }) {
   }, [payload])
 
   if (!payload) return null
-  const owner = payload.actor === 'player' ? '你的道具' : '对手的道具'
-  const usable = payload.actor === 'player'
+  const owner = payload.supply ? '门前的补给' : payload.actor === 'player' ? '你的道具' : '对手的道具'
+  const usable = payload.supply || payload.actor === 'player'
   return (
     <div
       ref={ref}
@@ -212,7 +231,11 @@ export function ItemTooltip({ payload }: { payload: ItemHoverPayload | null }) {
       <p className="mt-1 text-[11px] leading-relaxed text-bone-200/45 italic">
         {itemFlavor(payload.item)}
       </p>
-      {!usable ? <p className="mt-1 text-[10px] text-bone-200/35">无法动用对手的道具</p> : null}
+      {payload.supply ? (
+        <p className="mt-1 text-[10px] text-rust-300/70">点击带走这一件</p>
+      ) : !usable ? (
+        <p className="mt-1 text-[10px] text-bone-200/35">无法动用对手的道具</p>
+      ) : null}
     </div>
   )
 }

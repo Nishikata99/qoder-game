@@ -56,7 +56,7 @@ export class DevBridge {
 
   winLevel(): void {
     const phase = this.engine.getSnapshot().phase
-    if (phase === 'idle' || phase === 'levelClear' || phase === 'supply') return
+    if (phase === 'idle' || phase === 'levelClear' || phase === 'supply' || phase === 'bossSupply') return
     if (phase === 'gameOver' || phase === 'victory') return
     this.internals.generation += 1
     this.internals.cancelTimers()

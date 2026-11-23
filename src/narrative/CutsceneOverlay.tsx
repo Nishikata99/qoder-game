@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SoundEngine } from '../audio/SoundEngine'
-import { Cutscene2D } from './Cutscene2D'
-import type { CutsceneLine, CutsceneSpec } from './cutsceneScript'
+import { Cutscene2D, type Playable2D, type PlayableLine } from './Cutscene2D'
 
 const CHAR_MS = 65
 const PAUSE_MS = 260
@@ -12,7 +11,7 @@ function TypedLine({
   line,
   director,
 }: {
-  readonly line: CutsceneLine
+  readonly line: PlayableLine
   readonly director: Cutscene2D
 }) {
   const ref = useRef<HTMLSpanElement | null>(null)
@@ -41,20 +40,23 @@ function TypedLine({
   return <span ref={ref} />
 }
 
-/**
- * 关卡间 2D 过场覆盖层：叠在引擎 reloading 之上（此期间引擎是被挂起的），
- * 播完由 onFinish 卸载，同时 director 已提前恢复引擎。
- */
+/** 结局模式：胜利不可跳（长按兜底），失败显示跳过按钮 */
+export type OverlayMode = 'transition' | 'ending'
+
 export function CutsceneOverlay({
   spec,
   sound,
+  mode = 'transition',
+  skippable = true,
   onResumeEngine,
   onFinish,
   onDirector,
 }: {
-  readonly spec: CutsceneSpec
+  readonly spec: Playable2D
   readonly sound: SoundEngine
-  readonly onResumeEngine: () => void
+  readonly mode?: OverlayMode
+  readonly skippable?: boolean
+  readonly onResumeEngine?: () => void
   readonly onFinish: () => void
   readonly onDirector: (director: Cutscene2D | null) => void
 }) {
@@ -62,8 +64,10 @@ export function CutsceneOverlay({
   const finishRef = useRef(onFinish)
   const resumeRef = useRef(onResumeEngine)
   const directorCbRef = useRef(onDirector)
+  const directorRef = useRef<Cutscene2D | null>(null)
+  const holdTimerRef = useRef<number | null>(null)
   const [director, setDirector] = useState<Cutscene2D | null>(null)
-  const [line, setLine] = useState<CutsceneLine | null>(null)
+  const [line, setLine] = useState<PlayableLine | null>(null)
 
   useEffect(() => {
     finishRef.current = onFinish
@@ -76,16 +80,17 @@ export function CutsceneOverlay({
     if (!el) return
     const instance = new Cutscene2D(el, spec, {
       sound,
-      onResumeEngine: () => resumeRef.current(),
+      onResumeEngine: mode === 'transition' ? () => resumeRef.current?.() : undefined,
       onFinish: () => finishRef.current(),
     })
+    directorRef.current = instance
     setDirector(instance)
     directorCbRef.current(instance)
     instance.start()
 
     // 字幕随导演时钟切换：从 rAF 里比对当前命中句
     let raf = 0
-    let current: CutsceneLine | null = null
+    let current: PlayableLine | null = null
     const watch = () => {
       raf = requestAnimationFrame(watch)
       const next = Cutscene2D.lineAt(spec, instance.now())
@@ -99,11 +104,44 @@ export function CutsceneOverlay({
     return () => {
       cancelAnimationFrame(raf)
       instance.dispose()
+      directorRef.current = null
       directorCbRef.current(null)
       setDirector(null)
       setLine(null)
     }
-  }, [spec, sound])
+  }, [spec, sound, mode])
+
+  // 不可跳过的结局（胜利）：长按 Space/Esc 3s 兜底，防设备卡死
+  const holdGuard = mode === 'ending' && !skippable
+
+  useEffect(() => {
+    if (!holdGuard) return
+    const startHold = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' && event.key !== ' ' && event.key !== 'Escape') return
+      if (holdTimerRef.current !== null) return
+      holdTimerRef.current = window.setTimeout(() => {
+        holdTimerRef.current = null
+        directorRef.current?.skip()
+      }, 3000)
+    }
+    const endHold = () => {
+      if (holdTimerRef.current !== null) {
+        window.clearTimeout(holdTimerRef.current)
+        holdTimerRef.current = null
+      }
+    }
+    window.addEventListener('keydown', startHold)
+    window.addEventListener('keyup', endHold)
+    window.addEventListener('blur', endHold)
+    return () => {
+      window.removeEventListener('keydown', startHold)
+      window.removeEventListener('keyup', endHold)
+      window.removeEventListener('blur', endHold)
+      endHold()
+    }
+  }, [holdGuard])
+
+  const showSkipButton = mode === 'transition' ? true : skippable
 
   return (
     <div
@@ -121,9 +159,15 @@ export function CutsceneOverlay({
           {director && line ? <TypedLine key={line.at} line={line} director={director} /> : null}
         </p>
       </div>
-      <div className="pointer-events-none absolute inset-x-0 bottom-[3vh] flex justify-center">
-        <p className="text-[9px] tracking-[0.3em] text-bone-200/30 uppercase">空格跳过</p>
-      </div>
+      {showSkipButton ? (
+        <button
+          type="button"
+          onClick={() => directorRef.current?.skip()}
+          className="absolute right-4 bottom-[3vh] border border-white/12 bg-black/55 px-3 py-1.5 text-[10px] tracking-[0.3em] text-bone-200/55 uppercase backdrop-blur-sm hover:border-rust-500/50 hover:text-bone-200/85"
+        >
+          空格跳过
+        </button>
+      ) : null}
     </div>
   )
 }

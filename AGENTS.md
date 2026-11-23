@@ -83,6 +83,17 @@ src/
 - e2e：`?skipcutscene=1` 或自动化环境（`navigator.webdriver`）默认不挂载；本地手动验收加 `?cutscene=1` 强制播放。
 - 新增/改分镜只动 `cutsceneScript.ts`（cue 必须时间递增且落在 `duration` 内）；不要改 `GameEngine.ts`、`NarrativeDirector`、T2/T3 分镜。
 
+### 结局 2D 像素过场
+
+两段结局过场在 `src/narrative/endingScript.ts`，与关卡间过场共用 `Cutscene2D` 导演层和 `CutsceneOverlay` 覆盖层（`mode="ending"`，不恢复引擎）+ `pixelDraw.ts` 绘制工具。
+
+- **胜利**：3D `endingB`（既有，缝线透光→伸手→黑屏）播完后，`onFinish` 续接 2D「赎契」8.5s（牌桌残局→缝线透光→缝线裂开成走廊→灯下人抬手→灯灭）→ 结算屏。**不可跳过**：无跳过按钮，短按 Space/Esc 无效，长按 3s 才生效（防设备卡死）。
+- **失败**：玩家血袋见底 → 2D「补针」7.0s（名单空槽→手套捏针→刻痕扩散成你的轮廓→缝线缝死→拉远成整面墙）→ 结算屏。**可跳过**：Space/Esc/按钮，0.18s 淡出。
+- 两段都计入 `narrativeActive`（含 cutscene），结算屏 gate 用 `finished && !narrativeActive`，所以 2D 播完才出结算屏。
+- 胜利 3D→2D 靠 `endingThenCutsceneRef` 在 3D `onFinish` 里续接，衔接处两边都是全黑帧 + 缝线声，读不出是两套系统。
+- e2e 同样受 `?skipcutscene=1` / `navigator.webdriver` 控制；本地验收 `?cutscene=1` + `__cutsceneDebug.playEnding('win'|'lose')`。
+- `ENDING_B_BEATS`、`endingReach` 机位、`reachHand`/`sutureGlow` 全部保留继续使用，不是退役资产。
+
 ### 手牌点数（台面贴片，不进 HUD）
 
 点数由 `SceneManager.buildScorePlates` 的两块贴地 Canvas 贴片直接画在台呢上：`syncScores()` 按 `visibleHand.visible` 过滤暗牌后调 `evaluateHand`，只在「点数/软牌/黑杰克/爆牌/停牌/暗牌」组合变化时重绘并做一次缩放脉冲。HUD 的 `ActorPanel` 只剩状态与道具数，**血量由 3D 血袋显示，不要再往面板里加点数或血条**。贴片避开卡牌/道具/血袋架/牌堆：玩家在 `(0, 1.52)` 平贴台呢；Boss 在对面右侧 `(1.5, -1.15)`，按 `SCORE_PLATE_TILT` 立起 ~0.5rad 并 yaw 朝主镜头（`SCORE_PLATE_VIEW`），抬高半高让近边贴着台呢——远侧平贴会被透视压扁，读数极差；枪身占满中央横带，别把 Boss 贴片放回中间。两块都画一圈椭圆印刷线当台呢标记，暗牌显示 `+ ?`，爆牌以划叉标记。改位置/缩放/倾角都要按真实游戏镜头截图确认，不能只看俯视。

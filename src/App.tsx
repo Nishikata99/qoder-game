@@ -8,8 +8,9 @@ import { DevPanel } from './components/DevPanel'
 import { CorridorIntro } from './components/CorridorIntro'
 import { NarrativeOverlay } from './narrative/NarrativeOverlay'
 import { CutsceneOverlay } from './narrative/CutsceneOverlay'
-import { cutsceneFor, type CutsceneSpec } from './narrative/cutsceneScript'
-import type { Cutscene2D } from './narrative/Cutscene2D'
+import { cutsceneFor } from './narrative/cutsceneScript'
+import { ENDINGS, type EndingSpec } from './narrative/endingScript'
+import type { Cutscene2D, Playable2D } from './narrative/Cutscene2D'
 import type { ItemHoverPayload } from './scene/SceneManager'
 import type { QualityPreset, SceneManager } from './scene/SceneManager'
 import type { BossPoseCue } from './scene/SceneManager'
@@ -256,7 +257,8 @@ export default function App() {
   const [devOpen, setDevOpen] = useState(false)
   const [corridorState, setCorridorState] = useState<'idle' | 'playing' | 'done'>('idle')
   const [skipAvailable, setSkipAvailable] = useState(false)
-  const [cutscene, setCutscene] = useState<CutsceneSpec | null>(null)
+  const [cutscene, setCutscene] = useState<Playable2D | null>(null)
+  const [cutsceneKind, setCutsceneKind] = useState<'transition' | 'ending'>('transition')
   const [showFirstTurnHint, setShowFirstTurnHint] = useState(false)
   const firstTurnHintShownRef = useRef(false)
   const [paused, setPaused] = useState(false)
@@ -273,6 +275,8 @@ export default function App() {
   const sceneRef = useRef<SceneManager | null>(null)
   const directorRef = useRef<NarrativeDirector | null>(null)
   const narrativeModeRef = useRef<NarrativeMode | null>(null)
+  /** 胜利结局：3D endingB 播完后要接的 2D 续篇（一次性） */
+  const endingThenCutsceneRef = useRef<(() => void) | null>(null)
   const noticeTimer = useRef<number | null>(null)
   const relayTimer = useRef<number | null>(null)
   const lootTimer = useRef<number | null>(null)
@@ -286,6 +290,9 @@ export default function App() {
   const finishedRef = useRef(false)
   const cutsceneDirectorRef = useRef<Cutscene2D | null>(null)
   const cutsceneActiveRef = useRef(false)
+  const cutsceneNextRef = useRef<(() => void) | null>(null)
+  const cutsceneKindRef = useRef<'transition' | 'ending'>('transition')
+  const cutsceneSkippableRef = useRef(true)
 
   /**
    * 关卡间 2D 过场只叠在 beginLevel 的 reloading 黑场上，播完自动卸载，不改引擎时序。
@@ -308,6 +315,9 @@ export default function App() {
     // checkpoint 时引擎已进入 reloading，但 beginLevel 的 2.6s 计时马上就要开始；
     // 暂停把它挂起（delay 尚未 start），过场尾部再恢复，避免过场被黑窗截断。
     game.pause()
+    setCutsceneKind('transition')
+    cutsceneKindRef.current = 'transition'
+    cutsceneSkippableRef.current = true
     setCutscene(spec)
   }, [game])
 
@@ -322,12 +332,38 @@ export default function App() {
     cutsceneDirectorRef.current = null
     // 兜底：任何异常路径下都不让引擎留在挂起状态
     if (game.isPaused) game.resume()
+    // 结局：播完后若还有下一步（胜利→2D 续篇），交给挂起的回调
+    const next = cutsceneNextRef.current
+    cutsceneNextRef.current = null
+    if (next) {
+      setCutscene(null)
+      next()
+      return
+    }
     setCutscene(null)
   }, [game])
 
   const skipCutscene = useCallback(() => {
     cutsceneDirectorRef.current?.skip()
   }, [])
+
+  /** 开一段结局 2D（引擎已终局，不 pause/resume） */
+  const beginEnding = useCallback(
+    (id: EndingSpec['id'], onDone?: () => void) => {
+      if (cutsceneDisabledRef.current) {
+        onDone?.()
+        return
+      }
+      cutsceneActiveRef.current = true
+      cutsceneNextRef.current = onDone ?? null
+      const spec = ENDINGS[id]
+      cutsceneKindRef.current = 'ending'
+      cutsceneSkippableRef.current = spec.skippable
+      setCutsceneKind('ending')
+      setCutscene(spec)
+    },
+    [],
+  )
 
   const togglePause = useCallback(
     (next: boolean) => {
@@ -555,10 +591,12 @@ export default function App() {
         return
       }
       const snap = snapshotRef.current
-      // 2D 过场期间：空格/Esc 跳过，其余游戏键全部吞掉（引擎此时在 reloading，本就不该有输入）
+      // 2D 过场期间吞掉所有游戏键。
+      // 关卡间过场与失败结局：Space/Esc 跳过；胜利结局不可跳过（长按兜底在覆盖层里处理）。
       if (cutsceneActiveRef.current) {
+        event.preventDefault()
+        if (cutsceneKindRef.current === 'ending' && !cutsceneSkippableRef.current) return
         if (event.code === 'Space' || event.key === ' ' || event.key === 'Escape') {
-          event.preventDefault()
           skipCutscene()
         }
         return
@@ -765,9 +803,15 @@ export default function App() {
     // directorRef 在 beginNarrative 里同步赋值；narrativeRef 要等一次渲染才同步。
     // 同一帧内「开叙事 + 来事件」时只看 narrativeRef 会误判成空闲
     const narrativeBusy = narrativeRef.current !== null || directorRef.current !== null
-    // 结局 B：赢下第三章 → 团聚·吞噬即重逢；结算屏等导演层播完再出现
+    // 胜利：3D endingB（缝线透光→伸手→黑屏）在前，播完接 2D「赎契」续篇；两段都不可跳过
     if (event.type === 'gameOver' && event.winner === 'player' && !narrativeBusy) {
+      endingThenCutsceneRef.current = () => beginEnding('win')
       beginNarrative('endingB')
+      return
+    }
+    // 失败：直接 2D「补针」，可跳过
+    if (event.type === 'gameOver' && event.winner === 'boss' && !narrativeBusy) {
+      beginEnding('lose')
       return
     }
     if (event.type === 'levelClear' && !narrativeBusy) {
@@ -823,6 +867,10 @@ export default function App() {
         setNarrative(null)
         directorRef.current = null
         narrativeModeRef.current = null
+        // 胜利结局：3D 段播完，接 2D 续篇（若本次是胜利分支）
+        const cont = endingThenCutsceneRef.current
+        endingThenCutsceneRef.current = null
+        if (cont) window.setTimeout(cont, 0)
       },
     })
     directorRef.current = director
@@ -838,7 +886,8 @@ export default function App() {
     director.skip()
   }
 
-  const narrativeActive = narrative !== null
+  // 2D 过场（关卡间/结局）与叙事导演层都会占满画面，HUD 与各种提示要一起让位
+  const narrativeActive = narrative !== null || cutscene !== null
 
   // DEV 专用验证口：生产构建被 import.meta.env.DEV 摇掉，不随游戏发布
   if (import.meta.env.DEV) {
@@ -849,6 +898,7 @@ export default function App() {
     }
     ;(window as unknown as { __cutsceneDebug?: unknown }).__cutsceneDebug = {
       play: (levelIndex: number) => beginCutscene(levelIndex, true),
+      playEnding: (id: EndingSpec['id']) => beginEnding(id),
       skip: () => skipCutscene(),
       active: () => cutsceneActiveRef.current,
       seek: (seconds: number) => {
@@ -1521,7 +1571,9 @@ export default function App() {
         <CutsceneOverlay
           spec={cutscene}
           sound={sound}
-          onResumeEngine={resumeEngineAfterCutscene}
+          mode={cutsceneKind}
+          skippable={cutsceneKind === 'ending' ? (cutscene as EndingSpec).skippable : true}
+          onResumeEngine={cutsceneKind === 'transition' ? resumeEngineAfterCutscene : undefined}
           onFinish={finishCutscene}
           onDirector={(director) => {
             cutsceneDirectorRef.current = director

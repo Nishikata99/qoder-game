@@ -1,22 +1,29 @@
 import type { SoundEngine } from '../audio/SoundEngine'
-import {
-  CUTSCENE_HEIGHT,
-  CUTSCENE_WIDTH,
-  RELOAD_TAIL,
-  type CutsceneLine,
-  type CutsceneSpec,
-} from './cutsceneScript'
+import { PIXEL_HEIGHT, PIXEL_WIDTH, type Ctx } from './pixelDraw'
 
 /** 淡入/淡出时长（秒） */
 const FADE_IN = 0.5
 const FADE_OUT = 0.45
-/** 跳过时的收尾淡出，必须 ≤200ms */
+/** 跳过时的收尾淡出 */
 const SKIP_FADE = 0.18
+
+/** 关卡间过场与结局过场共有的播放契约 */
+export interface Playable2D {
+  readonly duration: number
+  readonly lines: readonly { readonly text: string; readonly at: number; readonly end: number }[]
+  readonly cues: readonly { readonly at: number; readonly sfx: string }[]
+  readonly draw: (ctx: Ctx, t: number) => void
+}
 
 export interface CutsceneDeps {
   readonly sound: SoundEngine
-  /** 过场已推进到"引擎可以开跑"的时点：恢复引擎，让装弹/发牌在淡出期完成 */
-  readonly onResumeEngine: () => void
+  /**
+   * 关卡间过场：过场尾部提前恢复引擎，让装弹/发牌落在淡出窗口。
+   * 结局过场不传（引擎已终局，无计时可恢复）。
+   */
+  readonly onResumeEngine?: () => void
+  /** 距结束多少秒时恢复引擎；默认 2.6s（与 beginLevel 的黑窗一致） */
+  readonly resumeTail?: number
   readonly onFinish: () => void
 }
 
@@ -29,7 +36,7 @@ export interface CutsceneDeps {
 export class Cutscene2D {
   private readonly canvas: HTMLCanvasElement
   private readonly ctx: CanvasRenderingContext2D
-  private readonly spec: CutsceneSpec
+  private readonly spec: Playable2D
   private readonly deps: CutsceneDeps
 
   private rafId: number | null = null
@@ -43,15 +50,15 @@ export class Cutscene2D {
   private resumed = false
   private readonly onResize: () => void
 
-  constructor(canvas: HTMLCanvasElement, spec: CutsceneSpec, deps: CutsceneDeps) {
+  constructor(canvas: HTMLCanvasElement, spec: Playable2D, deps: CutsceneDeps) {
     this.canvas = canvas
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('2D context unavailable')
     this.ctx = ctx
     this.spec = spec
     this.deps = deps
-    canvas.width = CUTSCENE_WIDTH
-    canvas.height = CUTSCENE_HEIGHT
+    canvas.width = PIXEL_WIDTH
+    canvas.height = PIXEL_HEIGHT
     ctx.imageSmoothingEnabled = false
     this.onResize = () => this.fit()
     this.fit()
@@ -66,10 +73,10 @@ export class Cutscene2D {
     if (rect.width <= 0 || rect.height <= 0) return
     const scale = Math.max(
       1,
-      Math.floor(Math.min(rect.width / CUTSCENE_WIDTH, rect.height / CUTSCENE_HEIGHT)),
+      Math.floor(Math.min(rect.width / PIXEL_WIDTH, rect.height / PIXEL_HEIGHT)),
     )
-    this.canvas.style.width = `${CUTSCENE_WIDTH * scale}px`
-    this.canvas.style.height = `${CUTSCENE_HEIGHT * scale}px`
+    this.canvas.style.width = `${PIXEL_WIDTH * scale}px`
+    this.canvas.style.height = `${PIXEL_HEIGHT * scale}px`
   }
 
   now(): number {
@@ -114,7 +121,7 @@ export class Cutscene2D {
     this.rafId = requestAnimationFrame(this.tick)
   }
 
-  /** 跳过后仍在 SKIP_FADE 内淡到黑再交还，避免硬切；同时立刻恢复引擎 */
+  /** 跳过后仍在 SKIP_FADE 内淡到黑再交还，避免硬切 */
   skip(): void {
     if (!this.active || this.finished || this.skipAt !== null) return
     this.skipAt = this.time
@@ -164,10 +171,11 @@ export class Cutscene2D {
     this.render(this.time)
   }
 
-  /** 提前 RELOAD_TAIL 秒恢复引擎：装弹横幅与发牌正好落在淡出窗口里 */
+  /** 提前把引擎唤醒（仅关卡间过场用；结局无 onResumeEngine 时直接跳过） */
   private maybeResumeEngine(): void {
-    if (this.resumed) return
-    const threshold = this.spec.duration - RELOAD_TAIL
+    if (this.resumed || !this.deps.onResumeEngine) return
+    const tail = this.deps.resumeTail ?? 2.6
+    const threshold = this.spec.duration - tail
     if (this.skipAt === null && this.time < threshold) return
     this.resumed = true
     this.deps.onResumeEngine()
@@ -194,14 +202,14 @@ export class Cutscene2D {
   private render(t: number): void {
     const ctx = this.ctx
     ctx.save()
-    ctx.clearRect(0, 0, CUTSCENE_WIDTH, CUTSCENE_HEIGHT)
+    ctx.clearRect(0, 0, PIXEL_WIDTH, PIXEL_HEIGHT)
     this.spec.draw(ctx, t)
     ctx.restore()
 
     const alpha = this.blackAt(t)
     if (alpha > 0) {
       ctx.fillStyle = `rgba(0,0,0,${alpha})`
-      ctx.fillRect(0, 0, CUTSCENE_WIDTH, CUTSCENE_HEIGHT)
+      ctx.fillRect(0, 0, PIXEL_WIDTH, PIXEL_HEIGHT)
     }
   }
 
@@ -220,14 +228,14 @@ export class Cutscene2D {
   }
 
   /** 当前应显示的字幕（按 at/end 命中，仅一条） */
-  static lineAt(spec: CutsceneSpec, t: number): CutsceneLine | null {
+  static lineAt(spec: Playable2D, t: number): Playable2D['lines'][number] | null {
     for (const line of spec.lines) {
       if (t >= line.at && t < line.end) return line
     }
     return null
   }
 
-  private playSfx(sfx: CutsceneSpec['cues'][number]['sfx']): void {
+  private playSfx(sfx: string): void {
     const sound = this.deps.sound
     switch (sfx) {
       case 'doorLock':
@@ -262,3 +270,6 @@ export class Cutscene2D {
     }
   }
 }
+
+/** 供覆盖层复用：把一句话的首字时间算出来（打字机从 at 起笔） */
+export type PlayableLine = Playable2D['lines'][number]

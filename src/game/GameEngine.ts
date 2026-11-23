@@ -802,7 +802,9 @@ export class GameEngine {
 
   useItem(item: ItemId): boolean {
     if (this.cardChoice) return this.reject('先选好要裁/要封的牌。')
-    if (this.phase !== 'playerTurn') {
+    // 21 点这轮已经分出胜负、你持枪选枪口时，仍然来得及用道具
+    const shotWindow = this.phase === 'targeting' && this.pendingShot === 'player'
+    if (this.phase !== 'playerTurn' && !shotWindow) {
       return this.reject('现在不是使用道具的时机。')
     }
     if (this.inputLocked) {

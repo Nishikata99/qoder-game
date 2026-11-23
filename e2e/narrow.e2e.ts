@@ -119,14 +119,14 @@ for (const vp of VIEWPORTS) {
       await page.goto('./')
 
       const start = page.getByRole('button', { name: '走进走廊', exact: true })
-      await expect(start).toBeVisible({ timeout: 30_000 })
-      await expectInsideViewport(page, start, 'xy')
+      // 走廊入口已改为点画面进入：DOM 按钮只是读屏兜底（sr-only），不参与布局越界检查
+      await expect(start).toBeAttached({ timeout: 30_000 })
       await dismissGuide(page)
-      await start.click()
+      await start.evaluate((el) => (el as HTMLElement).click())
 
-      const rightDoor = page.getByRole('button', { name: '右门' })
-      await rightDoor.waitFor({ timeout: 60_000 })
-      await rightDoor.evaluate((el) => (el as HTMLElement).click())
+      const leftDoor = page.getByRole('button', { name: '左门 · 血色底注' })
+      await leftDoor.waitFor({ timeout: 60_000 })
+      await leftDoor.evaluate((el) => (el as HTMLElement).click())
 
       // 要牌/停牌已改为场景内实体按键：投影到屏幕后再断言，
       // 不再取 DOM 按钮的 boundingBox（那只是无障碍兜底，恒在屏外裁切）

@@ -18,12 +18,13 @@ test('首见入场不可跳过；已看过后出现跳过入口', async ({ page 
     await page.getByRole('button', { name: '知道了' }).click()
     await expect(guide).toBeHidden()
   }
-  await start.click()
+  await start.evaluate((el) => (el as HTMLElement).click())
 
-  // 走廊序章：约 11s 前进结束后出现门按钮（软件渲染时钟半速会更长），点右门进黑场与入场
-  const rightDoor = page.getByRole('button', { name: '右门' })
-  await rightDoor.waitFor({ timeout: 60_000 })
-  await rightDoor.evaluate((el) => (el as HTMLElement).click())
+  // 走廊序章：约 11s 前进结束后出现门按钮（软件渲染时钟半速会更长）；无存档时右门封死，
+  // 点左门新开一局，黑场后切入入场
+  const leftDoor = page.getByRole('button', { name: '左门 · 血色底注' })
+  await leftDoor.waitFor({ timeout: 60_000 })
+  await leftDoor.evaluate((el) => (el as HTMLElement).click())
 
   const overlay = page.getByTestId('narrative-overlay')
   await expect(overlay).toBeVisible()
@@ -57,11 +58,11 @@ test('已看过后重新进入：出现跳过本段，点击直接交出控制�
 
   const start = page.getByRole('button', { name: '走进走廊', exact: true })
   await expect(start).toBeVisible({ timeout: 30_000 })
-  await start.click()
+  await start.evaluate((el) => (el as HTMLElement).click())
 
-  const rightDoor = page.getByRole('button', { name: '右门' })
-  await rightDoor.waitFor({ timeout: 60_000 })
-  await rightDoor.evaluate((el) => (el as HTMLElement).click())
+  const leftDoor = page.getByRole('button', { name: '左门 · 血色底注' })
+  await leftDoor.waitFor({ timeout: 60_000 })
+  await leftDoor.evaluate((el) => (el as HTMLElement).click())
 
   const skip = page.getByRole('button', { name: '跳过本段' })
   await expect(skip).toBeVisible({ timeout: 30_000 })

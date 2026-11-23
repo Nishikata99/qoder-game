@@ -375,6 +375,22 @@ describe('层间补给三选一', () => {
 })
 
 describe('道具效果', () => {
+  it('选枪口阶段仍可使用道具，对手持枪时不行', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    setTargeting(probe, [10, 9], [10, 5], 'live')
+    probe.player.items = ['monocle']
+    expect(engine.useItem('monocle')).toBe(true)
+    expect(engine.getSnapshot().player.items).not.toContain('monocle')
+
+    probe.player.items = ['aegis']
+    probe.player.itemsUsedThisTurn = 0
+    probe.inputLocked = false
+    probe.pendingShot = 'boss'
+    expect(engine.useItem('aegis')).toBe(false)
+    expect(engine.getSnapshot().player.items).toContain('aegis')
+  })
+
   it('护心镜完全挡下一次实弹伤害后碎裂', async () => {
     const { engine, probe } = newEngine({ itemLockMs: 0 })
     await toPlayerTurn(engine)

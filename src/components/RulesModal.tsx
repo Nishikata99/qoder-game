@@ -53,7 +53,7 @@ const RULES: ReadonlyArray<{ title: string; body: string }> = [
   },
   {
     title: '快捷键',
-    body: 'H 要牌、S 停牌；持枪时 F 或 1 射向它、R 或 2 射向自己。快捷键与按钮共用同一套阶段校验。',
+    body: 'H 要牌、S 停牌；持枪时先点桌上的枪，再点对手的血袋射向它、点自己的血袋对自己开枪（也可按 F/1、R/2）。',
   },
 ]
 

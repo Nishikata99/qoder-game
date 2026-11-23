@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ActorId, GameEvent, GameSnapshot, ItemId } from '../game/GameEngine'
 import type { GameEngine } from '../game/GameEngine'
 import { SceneManager } from '../scene/SceneManager'
-import type { ItemHoverPayload, TableAction } from '../scene/SceneManager'
+import type { GunHoverPayload, ItemHoverPayload, TableAction } from '../scene/SceneManager'
 import type { BossPoseCue, SceneLoadProgress } from '../scene/SceneManager'
 import { itemFlavor } from '../narrative/copy'
 
@@ -14,7 +14,9 @@ export interface GameCanvasProps {
   readonly onTableAction: (action: TableAction) => boolean
   readonly onItemUse?: (actor: ActorId, item: ItemId) => void
   readonly onSupplyPick?: (item: ItemId) => void
+  readonly onTargetPick?: (target: ActorId) => void
   readonly onHoverChange?: (payload: ItemHoverPayload | null) => void
+  readonly onGunHoverChange?: (payload: GunHoverPayload | null) => void
   readonly onBossPoseCue?: (cue: BossPoseCue) => void
   readonly onSceneReady?: (scene: SceneManager) => void
   readonly onLoadProgress?: (progress: SceneLoadProgress) => void
@@ -29,7 +31,9 @@ export function GameCanvas({
   onTableAction,
   onItemUse,
   onSupplyPick,
+  onTargetPick,
   onHoverChange,
+  onGunHoverChange,
   onBossPoseCue,
   onSceneReady,
   onLoadProgress,
@@ -38,16 +42,16 @@ export function GameCanvas({
   const hostRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sceneRef = useRef<SceneManager | null>(null)
-  const callbacksRef = useRef({ onTableAction, onItemUse, onSupplyPick, onHoverChange, onBossPoseCue, onLoadProgress, onLoadError })
+  const callbacksRef = useRef({ onTableAction, onItemUse, onSupplyPick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onLoadProgress, onLoadError })
   const readyRef = useRef(onSceneReady)
   const [error, setError] = useState<string | null>(null)
   const setErrorRef = useRef(setError)
 
   useEffect(() => {
-    callbacksRef.current = { onTableAction, onItemUse, onSupplyPick, onHoverChange, onBossPoseCue, onLoadProgress, onLoadError }
+    callbacksRef.current = { onTableAction, onItemUse, onSupplyPick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onLoadProgress, onLoadError }
     readyRef.current = onSceneReady
     setErrorRef.current = setError
-  }, [onTableAction, onItemUse, onSupplyPick, onHoverChange, onBossPoseCue, onSceneReady, onLoadProgress, onLoadError, setError])
+  }, [onTableAction, onItemUse, onSupplyPick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onSceneReady, onLoadProgress, onLoadError, setError])
 
   useEffect(() => {
     const host = hostRef.current
@@ -59,8 +63,10 @@ export function GameCanvas({
       manager = new SceneManager(host, canvas, {
         onTableAction: (action) => callbacksRef.current.onTableAction(action),
         onItemHover: (payload) => callbacksRef.current.onHoverChange?.(payload),
+        onGunHover: (payload) => callbacksRef.current.onGunHoverChange?.(payload),
         onItemClick: (actor, item) => callbacksRef.current.onItemUse?.(actor, item),
         onSupplyPick: (item) => callbacksRef.current.onSupplyPick?.(item),
+        onTargetPick: (target) => callbacksRef.current.onTargetPick?.(target),
         onBossPoseCue: (cue) => callbacksRef.current.onBossPoseCue?.(cue),
         onLoadProgress: (progress) => callbacksRef.current.onLoadProgress?.(progress),
         onLoadError: (key, err) => callbacksRef.current.onLoadError?.(key, err),
@@ -239,6 +245,41 @@ export function ItemTooltip({ payload }: { payload: ItemHoverPayload | null }) {
       ) : !usable ? (
         <p className="mt-1 text-[10px] text-bone-200/35">无法动用对手的道具</p>
       ) : null}
+    </div>
+  )
+}
+
+export function GunTooltip({ payload }: { payload: GunHoverPayload | null }) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
+
+  useEffect(() => {
+    if (!payload || !ref.current) {
+      setPos(null)
+      return
+    }
+    const rect = ref.current.getBoundingClientRect()
+    const margin = 8
+    let left = payload.x + 16
+    let top = payload.y + 16
+    if (left + rect.width > window.innerWidth - margin) left = payload.x - rect.width - 16
+    if (top + rect.height > window.innerHeight - margin) top = payload.y - rect.height - 16
+    left = Math.max(margin, Math.min(left, window.innerWidth - rect.width - margin))
+    top = Math.max(margin, Math.min(top, window.innerHeight - rect.height - margin))
+    setPos({ left, top })
+  }, [payload])
+
+  if (!payload) return null
+  return (
+    <div
+      ref={ref}
+      className="pointer-events-none fixed z-50 max-w-80 rounded-sm border border-rust-500/40 bg-abyss-900/95 px-3 py-2 shadow-lg shadow-black/60 backdrop-blur-sm"
+      style={{ left: pos?.left ?? payload.x + 16, top: pos?.top ?? payload.y + 16 }}
+    >
+      <p className="font-display text-sm text-bone-200">
+        点击枪 · 决定枪口朝向（对手 / 自己）
+      </p>
+      <p className="mt-1 text-[11px] leading-relaxed text-bone-200/45">随后点任一方的血袋扣下扳机</p>
     </div>
   )
 }

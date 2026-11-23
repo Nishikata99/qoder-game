@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { SoundEngine } from './audio/SoundEngine'
-import { GameCanvas, ItemTooltip } from './components/GameCanvas'
+import { GameCanvas, GunTooltip, ItemTooltip } from './components/GameCanvas'
 import { RulesModal, type ModalTab } from './components/RulesModal'
 import { NarrativeDirector, type NarrativeMode, type NarrativeVisual } from './narrative/NarrativeDirector'
 import { DevBridge } from './game/DevBridge'
@@ -11,7 +11,7 @@ import { CutsceneOverlay } from './narrative/CutsceneOverlay'
 import { cutsceneFor } from './narrative/cutsceneScript'
 import { ENDINGS, type EndingSpec } from './narrative/endingScript'
 import type { Cutscene2D, Playable2D } from './narrative/Cutscene2D'
-import type { ItemHoverPayload } from './scene/SceneManager'
+import type { GunHoverPayload, ItemHoverPayload } from './scene/SceneManager'
 import type { QualityPreset, SceneManager } from './scene/SceneManager'
 import type { BossPoseCue } from './scene/SceneManager'
 import type { ActorId, ActorView, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
@@ -58,6 +58,7 @@ const NARRATIVE_SEEN: Readonly<Record<NarrativeMode, string>> = {
 }
 
 const FIRST_TURN_HINT_KEY = 'blood-ante.hint.firstTurn'
+const TARGET_HINT_KEY = 'blood-ante.hint.targetPick'
 const SETTINGS_KEY = 'blood-ante.settings.v1'
 const CHECKPOINT_KEY = 'blood-ante.checkpoint.v1'
 const CUTSCENE_SEEN_KEY = 'blood-ante.cutsceneSeen.v1'
@@ -216,6 +217,22 @@ function markFirstTurnHintSeen(): void {
   }
 }
 
+function hasSeenTargetHint(): boolean {
+  try {
+    return window.localStorage.getItem(TARGET_HINT_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function markTargetHintSeen(): void {
+  try {
+    window.localStorage.setItem(TARGET_HINT_KEY, '1')
+  } catch {
+    // 隐私模式：最多重复提示一次
+  }
+}
+
 /** 开发期可用 ?seed=12345 复现同一局的发牌序列；生产构建始终使用 Math.random */
 function resolveRng(): (() => number) | undefined {
   if (!import.meta.env.DEV) return undefined
@@ -236,6 +253,7 @@ export default function App() {
   const snapshotRef = useRef<GameSnapshot | null>(null)
   snapshotRef.current = snapshot
   const [hover, setHover] = useState<ItemHoverPayload | null>(null)
+  const [gunHover, setGunHover] = useState<GunHoverPayload | null>(null)
   const [muted, setMuted] = useState(() => readSettings().muted ?? false)
   const [volume, setVolume] = useState(() => {
     const stored = readSettings().volume
@@ -261,6 +279,8 @@ export default function App() {
   const [cutsceneKind, setCutsceneKind] = useState<'transition' | 'ending'>('transition')
   const [showFirstTurnHint, setShowFirstTurnHint] = useState(false)
   const firstTurnHintShownRef = useRef(false)
+  const [showTargetHint, setShowTargetHint] = useState(false)
+  const targetHintShownRef = useRef(false)
   const [paused, setPaused] = useState(false)
   const [checkpoint, setCheckpoint] = useState<StoredCheckpoint | null>(() => readCheckpoint())
   const [loadProgress, setLoadProgress] = useState<{ loaded: number; total: number } | null>(null)
@@ -712,6 +732,16 @@ export default function App() {
     setShowFirstTurnHint(false)
   }, [])
 
+  useEffect(() => {
+    if (!snapshot || snapshot.phase !== 'targeting' || snapshot.pendingShot !== 'player') return
+    if (targetHintShownRef.current || hasSeenTargetHint()) return
+    targetHintShownRef.current = true
+    markTargetHintSeen()
+    setShowTargetHint(true)
+    // 同首回合提示：不清理定时器，避免 StrictMode 二次挂载立刻收掉；时长与 clue-line 动画对齐
+    window.setTimeout(() => setShowTargetHint(false), 6000)
+  }, [snapshot?.phase, snapshot?.pendingShot])
+
   const devBridge = useMemo(() => new DevBridge(game), [game])
 
   // 姿态段落音效：枪响已由 shot 事件播过，这里只补落地/撑起/直身/落稳
@@ -757,9 +787,21 @@ export default function App() {
     setCorridorState('done')
   }
 
-  /** 左门：整页切到蔓延子游戏的独立入口 */
-  function enterMoyan() {
-    window.location.assign(`${import.meta.env.BASE_URL}moyan.html`)
+  /** 右门存根牌：带存档时点它直接回到对应层，不再重走序章 */
+  function resumeFromCorridor() {
+    if (!checkpoint) return
+    void sound.unlock()
+    sound.setMasterVolume(muted ? 0 : volume)
+    if (!sound.isAmbientPlaying) sound.startAmbient()
+    void sound.startRoomTone(`${import.meta.env.BASE_URL}audio/room-tone.ogg`)
+    setCorridorState('done')
+    game.startAtLevel(checkpoint.levelIndex, checkpoint.carryOver)
+  }
+
+  /** 左门新开一局：旧存档立即作废，避免重载后还能从右门续旧进度 */
+  function handleNewRun() {
+    clearCheckpoint()
+    setCheckpoint(null)
   }
 
   const pendingClueRef = useRef<string | null>(null)
@@ -918,7 +960,8 @@ export default function App() {
       return
     }
     if (!snapshot) return
-    if (snapshot.phase !== 'playerTurn') {
+    const shotWindow = snapshot.phase === 'targeting' && snapshot.pendingShot === 'player'
+    if (snapshot.phase !== 'playerTurn' && !shotWindow) {
       showNotice('现在不是使用道具的时机。')
       return
     }
@@ -965,7 +1008,9 @@ export default function App() {
             }}
             onItemUse={handleItemUse}
             onSupplyPick={(item) => game.chooseSupply(item)}
+            onTargetPick={(target) => game.chooseTarget(target)}
             onHoverChange={setHover}
+            onGunHoverChange={setGunHover}
             onBossPoseCue={handleBossPoseCue}
             onSceneReady={(scene) => {
               sceneRef.current = scene
@@ -989,23 +1034,10 @@ export default function App() {
             sound={sound}
             onStart={startGame}
             onIntroComplete={handleCorridorComplete}
-            onEnterMoyan={enterMoyan}
+            onNewRun={handleNewRun}
+            resumeLevel={checkpoint && !started ? checkpoint.levelIndex + 1 : null}
+            onResumeLevel={resumeFromCorridor}
           />
-        ) : null}
-        {corridorState === 'idle' && checkpoint && !started ? (
-          <div className="absolute inset-x-0 top-[46vh] z-50 flex justify-center">
-            <button
-              type="button"
-              className="metal-btn"
-              onClick={() => {
-                void sound.unlock()
-                setCorridorState('done')
-                game.startAtLevel(checkpoint.levelIndex, checkpoint.carryOver)
-              }}
-            >
-              继续第 {checkpoint.levelIndex + 1} 层（血袋重置）
-            </button>
-          </div>
         ) : null}
       </div>
 
@@ -1085,29 +1117,16 @@ export default function App() {
         style={{ paddingBottom: 'max(1.25rem, var(--safe-bottom))' }}
       >
         {narrativeActive ? null : !started ? null : phase === 'targeting' ? (
-          <div className="flex flex-col items-center gap-2">
-            <p className="text-[9px] tracking-[0.4em] text-rust-400/80 uppercase">
-              {snapshot?.pendingShot === 'player' ? '这一轮你夺得裁决权 · 选择枪口' : '它在决定枪口'}
-            </p>
+          <div className="sr-only focus-within:not-sr-only focus-within:absolute focus-within:bottom-4 focus-within:left-1/2 focus-within:-translate-x-1/2 focus-within:flex focus-within:gap-4 focus-within:bg-black focus-within:p-3">
             {snapshot?.pendingShot === 'player' ? (
-              <div className="flex items-center gap-3">
-                <MetalButton tone="primary" onClick={() => game.chooseTarget('boss')}>
-                  射向它{' '}
-                  <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45 max-[420px]:hidden">
-                    FIRE · F
-                  </span>
-                </MetalButton>
-                <MetalButton
-                  tone="secondary"
-                  onClick={() => game.chooseTarget('player')}
-                  hint="对自己开枪：空膛可摸一件道具，实弹则你自己受伤"
-                >
-                  射向自己{' '}
-                  <span className="ml-1 text-[8px] tracking-[0.3em] opacity-45 max-[420px]:hidden">
-                    RISK · R
-                  </span>
-                </MetalButton>
-              </div>
+              <>
+                <button type="button" onClick={() => game.chooseTarget('boss')}>
+                  射向它
+                </button>
+                <button type="button" onClick={() => game.chooseTarget('player')}>
+                  射向自己
+                </button>
+              </>
             ) : null}
           </div>
         ) : null}
@@ -1467,6 +1486,14 @@ export default function App() {
         </div>
       ) : null}
 
+      {showTargetHint && !showFirstTurnHint && snapshot && !narrativeActive ? (
+        <div className="pointer-events-none absolute inset-0 z-20 -translate-y-10 flex items-center justify-center px-6">
+          <p className="clue-line narrative-subtitle max-w-2xl text-center font-display text-[15px] leading-relaxed tracking-[0.18em] text-bone-100/90">
+            点枪拿起裁决权，再点任一方的血袋扣下扳机
+          </p>
+        </div>
+      ) : null}
+
       {notice ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-32 flex justify-center">
           <p className="rounded-sm border border-white/8 bg-black/70 px-4 py-1.5 text-[10px] tracking-[0.15em] text-bone-200/65">
@@ -1604,6 +1631,7 @@ export default function App() {
       ) : null}
 
       <ItemTooltip payload={hover} />
+      <GunTooltip payload={narrativeActive ? null : gunHover} />
     </main>
   )
 }

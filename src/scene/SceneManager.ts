@@ -34,6 +34,11 @@ export interface ItemHoverPayload {
   readonly supply?: boolean
 }
 
+export interface GunHoverPayload {
+  readonly x: number
+  readonly y: number
+}
+
 export interface SceneLoadProgress {
   readonly loaded: number
   readonly total: number
@@ -55,6 +60,10 @@ export interface SceneCallbacks {
   readonly onTableAction?: (action: TableAction) => boolean
   readonly onItemHover?: (payload: ItemHoverPayload | null) => void
   readonly onItemClick?: (actor: ActorId, item: ItemId) => void
+  /** 选枪口阶段：点枪进入选择，再点双方血袋架决定枪口朝向 */
+  readonly onTargetPick?: (target: ActorId) => void
+  /** 选枪口前悬停枪身：浮窗跟随光标，点枪后才开始选目标 */
+  readonly onGunHover?: (payload: GunHoverPayload | null) => void
   /** 层间补给：点中托盘里的候选道具即选定 */
   readonly onSupplyPick?: (item: ItemId) => void
   /** Boss 姿态段落提示，用于音效对齐；只报语义节点，不报每帧采样 */
@@ -854,6 +863,23 @@ export class SceneManager {
   private levelLookIndex = 0
   private currentLevelIndex = 0
   private lastSnapshot: GameSnapshot | null = null
+  /** 玩家持枪选目标时，桌面拾取改为「先点枪，再点双方血袋架」 */
+  private targetPickActive = false
+  /** 点过枪之后血袋架才可点；进入时架子闪一次并留一层微光 */
+  private targetArmed = false
+  private targetArmedAt = 0
+  private targetArmedHover: ActorId | null = null
+  /** 选枪口期间被改色的血袋架材质，退出时逐项还原 */
+  private targetArmedMaterials: Array<{
+    material: THREE.MeshStandardMaterial
+    emissive: THREE.Color
+    intensity: number
+    actor: ActorId
+  }> = []
+  /** 血袋架拾取盒：按整架包围盒外扩，袋与袋之间的空隙也能点中 */
+  private readonly shotTargetBoxes = new Map<ActorId, THREE.Box3>()
+  private gunHovered = false
+  private readonly pickHit = new THREE.Vector3()
   private disposed = false
   private readonly onPointerMove: (event: PointerEvent) => void
   private readonly onPointerLeave: () => void
@@ -983,6 +1009,8 @@ export class SceneManager {
       this.actionHovered = null
       this.actionPressed = null
       this.pointerDownAt = null
+      this.targetArmedHover = null
+      this.setGunHover(false)
       this.canvas.style.cursor = ''
     }
     this.onPointerDown = (event) => {
@@ -1094,6 +1122,14 @@ export class SceneManager {
       this.bossPose.spawn(BOSS_VISUAL_LEVEL)
     }
     this.lastSnapshot = snapshot
+    const wasTargetPickActive = this.targetPickActive
+    this.targetPickActive =
+      snapshot.phase === 'targeting' && snapshot.pendingShot === 'player' && !snapshot.paused
+    if (!this.targetPickActive) this.disarmTargetPick()
+    else if (!wasTargetPickActive) {
+      this.disarmTargetPick()
+      this.refreshShotTargetBoxes()
+    }
     this.applyLevel(snapshot.levelIndex)
     this.syncCards(snapshot)
     this.syncItems(snapshot)
@@ -1942,6 +1978,7 @@ export class SceneManager {
     this.canvas.removeEventListener('pointerdown', this.onPointerDown)
     this.canvas.removeEventListener('pointerup', this.onPointerUp)
     this.callbacks.onItemHover?.(null)
+    this.callbacks.onGunHover?.(null)
     for (const entry of this.items.values()) this.disposeObject(entry.group)
     this.items.clear()
     for (const entry of this.supplyItems.values()) this.disposeObject(entry.group)
@@ -1983,6 +2020,7 @@ export class SceneManager {
     entry.group.add(content)
     // 程序化几何的归一化旋转会落在旧外层上，替换后必须回到道具自己的摆放姿态
     this.applyItemPose(entry.group, entry.item, entry.actor)
+    this.attachItemPickProxy(entry.group, content)
     entry.spawnTarget = 1
     entry.spawnScale = 1
     entry.group.scale.setScalar(ITEM_SCALE * entry.hoverScale)
@@ -2589,6 +2627,7 @@ export class SceneManager {
     this.updateGunAim(dt)
     if (this.gunMotionActive) this.keepGunAboveTable()
     this.updateGunShake(dt)
+    this.updateArmedRacks()
     this.updateItems(dt)
     this.updateCards(dt)
     this.updateCamera(dt)
@@ -3661,7 +3700,10 @@ export class SceneManager {
   private updateActionButtons(dt: number): void {
     const enabled = this.canUseTableActions()
     if (!enabled) this.actionPressed = null
-    this.canvas.style.cursor = this.actionHovered && enabled ? 'pointer' : ''
+    // 选枪口阶段由目标拾取接管指针样式，这里不能每帧覆盖
+    if (!this.targetPickActive) {
+      this.canvas.style.cursor = this.actionHovered && enabled ? 'pointer' : ''
+    }
     for (const [action, button] of this.actionButtons) {
       const pressed = this.elapsed < button.pressedUntil || this.actionPressed === action
       const hovered = enabled && this.actionHovered === action
@@ -5268,6 +5310,7 @@ export class SceneManager {
     group.userData.key = key
     // 挂进升降组：和格子一起沉浮，不再原地缩放出现
     tray.lift.add(group)
+    this.attachItemPickProxy(group, content)
     const entry: ItemEntry = {
       group,
       actor: tray.actor,
@@ -5373,6 +5416,7 @@ export class SceneManager {
     group.userData.item = item
     group.userData.key = key
     this.itemRoot.add(group)
+    this.attachItemPickProxy(group, content)
     const entry: ItemEntry = {
       group,
       actor,
@@ -5394,6 +5438,42 @@ export class SceneManager {
       },
     })
     return entry
+  }
+
+  /**
+   * 拾取用整体包围盒：手锯、镜圈这类带镂空的模型逐网格射线很难点中，
+   * 用一个不可见的盒子把整件道具包起来参与拾取，随道具一起缩放/浮动。
+   */
+  private attachItemPickProxy(group: THREE.Group, content: THREE.Object3D): void {
+    // 逐网格把包围盒换算进 group 本地：直接对世界盒乘逆矩阵会把 45° 摆角重新胀成对角线
+    group.updateWorldMatrix(true, true)
+    const inv = group.matrixWorld.clone().invert()
+    const box = new THREE.Box3()
+    const local = new THREE.Matrix4()
+    const part = new THREE.Box3()
+    content.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return
+      child.geometry.computeBoundingBox()
+      const bounds = child.geometry.boundingBox
+      if (!bounds) return
+      local.multiplyMatrices(inv, child.matrixWorld)
+      box.union(part.copy(bounds).applyMatrix4(local))
+    })
+    // 略微外扩，轮廓边缘也算命中；仍小于 0.54 的格子，不会串到邻格
+    box.expandByVector(new THREE.Vector3(0.01, 0.01, 0.01))
+    const size = box.getSize(new THREE.Vector3())
+    const center = box.getCenter(new THREE.Vector3())
+    const proxy = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        Math.max(size.x, 0.12),
+        Math.max(size.y, 0.06),
+        Math.max(size.z, 0.12),
+      ),
+      new THREE.MeshBasicMaterial({ visible: false }),
+    )
+    proxy.name = 'ItemPickProxy'
+    proxy.position.copy(center)
+    group.add(proxy)
   }
 
   private buildItemMesh(item: ItemId, group: THREE.Group, materials: THREE.MeshStandardMaterial[]): void {
@@ -5730,8 +5810,176 @@ export class SceneManager {
     }
   }
 
+  /** 选枪口：点过枪之后只有双方血袋架可点（整个架子连空隙都算），Boss 本体不再参与 */
+  private pickShotTargetNode(event: PointerEvent): { target: ActorId; node: THREE.Object3D } | null {
+    const rect = this.canvas.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) return null
+    this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+    this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+    this.raycaster.setFromCamera(this.pointer, this.camera)
+    let nearest: { target: ActorId; node: THREE.Object3D; distance: number } | null = null
+    for (const actor of ['player', 'boss'] as const) {
+      const box = this.shotTargetBoxes.get(actor)
+      const rack = this.bloodRacks.get(actor)
+      if (!box || !rack) continue
+      const hit = this.raycaster.ray.intersectBox(box, this.pickHit)
+      if (!hit) continue
+      const distance = hit.distanceTo(this.raycaster.ray.origin)
+      if (!nearest || distance < nearest.distance) {
+        nearest = { target: actor, node: rack.group, distance }
+      }
+    }
+    return nearest ? { target: nearest.target, node: nearest.node } : null
+  }
+
+  private refreshShotTargetBoxes(): void {
+    this.shotTargetBoxes.clear()
+    for (const actor of ['player', 'boss'] as const) {
+      const rack = this.bloodRacks.get(actor)
+      if (!rack) continue
+      const box = new THREE.Box3().setFromObject(rack.group)
+      box.expandByScalar(0.08)
+      this.shotTargetBoxes.set(actor, box)
+    }
+  }
+
+  private pickShotTarget(event: PointerEvent): ActorId | null {
+    return this.pickShotTargetNode(event)?.target ?? null
+  }
+
+  /** 枪身悬停/点击判定：直接打枪模型，斜放姿态下比外扩包围盒准 */
+  private isPointerOnGun(event: PointerEvent): boolean {
+    const holder =
+      this.gunShake.getObjectByName('ShotgunGLB') ?? this.gunShake.getObjectByName('GunPlaceholder')
+    if (!holder) return false
+    const rect = this.canvas.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) return false
+    this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+    this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+    this.raycaster.setFromCamera(this.pointer, this.camera)
+    return this.raycaster.intersectObject(holder, true).length > 0
+  }
+
+  private setGunHover(over: boolean, x = 0, y = 0): void {
+    if (this.gunHovered === over) {
+      if (over) this.callbacks.onGunHover?.({ x, y })
+      return
+    }
+    this.gunHovered = over
+    this.callbacks.onGunHover?.(over ? { x, y } : null)
+  }
+
+  /** 点枪：进入选枪口状态，两侧架子闪一次，枪身轻抬一下作为回应 */
+  private armTargetPick(): void {
+    if (!this.targetPickActive || this.targetArmed) return
+    this.targetArmed = true
+    this.targetArmedAt = this.elapsed
+    this.targetArmedHover = null
+    this.setGunHover(false)
+    this.canvas.style.cursor = ''
+    this.captureArmedRacks()
+    this.liftGunForTargeting()
+  }
+
+  /** 退出选枪口/重新进入前清干净：架子颜色还原、枪身浮窗收起 */
+  private disarmTargetPick(): void {
+    this.targetArmed = false
+    this.targetArmedHover = null
+    this.restoreArmedRacks()
+    this.setGunHover(false)
+  }
+
+  /** 记录双方架子的原发光并统一换成目标色，亮度每帧由 updateArmedRacks 写入 */
+  private captureArmedRacks(): void {
+    this.restoreArmedRacks()
+    for (const actor of ['player', 'boss'] as const) {
+      const rack = this.bloodRacks.get(actor)
+      if (!rack) continue
+      // 血袋是深红，深红自发光几乎看不出来：敌方用亮橙红，自己用冷白
+      const tint = new THREE.Color(actor === 'boss' ? 0xff5a33 : 0xbfe0f0)
+      const seen = new Set<THREE.Material>()
+      rack.group.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return
+        const materials = Array.isArray(child.material) ? child.material : [child.material]
+        for (const material of materials) {
+          if (!(material instanceof THREE.MeshStandardMaterial) || seen.has(material)) continue
+          seen.add(material)
+          this.targetArmedMaterials.push({
+            material,
+            emissive: material.emissive.clone(),
+            intensity: material.emissiveIntensity,
+            actor,
+          })
+          material.emissive.copy(tint)
+        }
+      })
+    }
+  }
+
+  private restoreArmedRacks(): void {
+    for (const entry of this.targetArmedMaterials) {
+      entry.material.emissive.copy(entry.emissive)
+      entry.material.emissiveIntensity = entry.intensity
+    }
+    this.targetArmedMaterials = []
+  }
+
+  /** 进入时闪一次，之后留一层微光；悬停的那一侧再提亮 */
+  private updateArmedRacks(): void {
+    if (!this.targetArmed || this.targetArmedMaterials.length === 0) return
+    const flash = clamp01(1 - (this.elapsed - this.targetArmedAt) / 0.8)
+    const flashBoost = flash * flash * 0.45
+    for (const entry of this.targetArmedMaterials) {
+      const base = entry.actor === 'boss' ? 0.1 : 0.08
+      const hover =
+        this.targetArmedHover === entry.actor ? (entry.actor === 'boss' ? 0.3 : 0.24) - base : 0
+      entry.material.emissiveIntensity = base + hover + flashBoost
+    }
+  }
+
+  /** 点枪回应的轻抬：落回原位后不改变 holster 高度 */
+  private liftGunForTargeting(): void {
+    if (this.gunMotionActive) return
+    const baseY = this.gunAim.position.y
+    const generation = this.gunRaiseGeneration
+    this.tween({
+      duration: this.reducedMotion ? 0.18 : 0.55,
+      onUpdate: (t) => {
+        if (generation !== this.gunRaiseGeneration) return
+        this.gunAim.position.y = baseY + Math.sin(Math.PI * t) * 0.05
+      },
+      onComplete: () => {
+        if (generation !== this.gunRaiseGeneration) return
+        this.gunAim.position.y = baseY
+      },
+    })
+  }
+
   private handlePointerMove(event: PointerEvent): void {
     if (this.disposed) return
+    if (this.targetPickActive) {
+      if (this.targetArmed) {
+        this.actionHovered = null
+        this.setHovered(null)
+        this.setSupplyHovered(null)
+        const hit = this.pickShotTargetNode(event)
+        this.targetArmedHover = hit?.target ?? null
+        this.canvas.style.cursor = hit ? 'pointer' : ''
+        return
+      }
+      if (this.isPointerOnGun(event)) {
+        const rect = this.canvas.getBoundingClientRect()
+        this.actionHovered = null
+        this.setHovered(null)
+        this.setSupplyHovered(null)
+        this.setGunHover(true, event.clientX - rect.left, event.clientY - rect.top)
+        this.canvas.style.cursor = 'pointer'
+        return
+      }
+      // 点枪之前只是「还没开始选目标」：清掉枪身浮窗，道具照常悬停/点击
+      this.setGunHover(false)
+      this.canvas.style.cursor = ''
+    }
     const rect = this.canvas.getBoundingClientRect()
     if (rect.width === 0 || rect.height === 0) return
     this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
@@ -5788,6 +6036,18 @@ export class SceneManager {
     if (!down) return
     const moved = Math.hypot(event.clientX - down.x, event.clientY - down.y)
     if (moved > 6) return
+    if (this.targetPickActive) {
+      if (this.targetArmed) {
+        const target = this.pickShotTarget(event)
+        if (target) this.callbacks.onTargetPick?.(target)
+        return
+      }
+      if (this.isPointerOnGun(event)) {
+        this.armTargetPick()
+        return
+      }
+      // 未点枪：继续走正常的台面点击，道具在选枪口前仍然可用
+    }
     this.handlePointerMove(event)
     if (this.actionHovered) {
       if (pressed === this.actionHovered) this.activateTableAction(this.actionHovered)
@@ -6086,6 +6346,7 @@ export class SceneManager {
         }
         rack = this.buildBloodRack(actor, maxHp, view.hp)
         this.bloodRacks.set(actor, rack)
+        this.refreshShotTargetBoxes()
       }
       for (let i = 0; i < rack.bags.length; i += 1) {
         const bag = rack.bags[i]

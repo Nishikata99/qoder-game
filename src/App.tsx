@@ -7,6 +7,9 @@ import { DevBridge } from './game/DevBridge'
 import { DevPanel } from './components/DevPanel'
 import { CorridorIntro } from './components/CorridorIntro'
 import { NarrativeOverlay } from './narrative/NarrativeOverlay'
+import { CutsceneOverlay } from './narrative/CutsceneOverlay'
+import { cutsceneFor, type CutsceneSpec } from './narrative/cutsceneScript'
+import type { Cutscene2D } from './narrative/Cutscene2D'
 import type { ItemHoverPayload } from './scene/SceneManager'
 import type { QualityPreset, SceneManager } from './scene/SceneManager'
 import type { BossPoseCue } from './scene/SceneManager'
@@ -56,6 +59,39 @@ const NARRATIVE_SEEN: Readonly<Record<NarrativeMode, string>> = {
 const FIRST_TURN_HINT_KEY = 'blood-ante.hint.firstTurn'
 const SETTINGS_KEY = 'blood-ante.settings.v1'
 const CHECKPOINT_KEY = 'blood-ante.checkpoint.v1'
+const CUTSCENE_SEEN_KEY = 'blood-ante.cutsceneSeen.v1'
+
+function readCutsceneSeen(): readonly number[] {
+  try {
+    const raw = window.localStorage.getItem(CUTSCENE_SEEN_KEY)
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return []
+    const seen = (parsed as Record<string, unknown>).seen
+    if (!Array.isArray(seen)) return []
+    return seen.filter((v): v is number => typeof v === 'number' && Number.isInteger(v))
+  } catch {
+    return []
+  }
+}
+
+function markCutsceneSeen(levelIndex: number): void {
+  try {
+    const seen = new Set(readCutsceneSeen())
+    seen.add(levelIndex)
+    window.localStorage.setItem(CUTSCENE_SEEN_KEY, JSON.stringify({ v: 1, seen: [...seen] }))
+  } catch {
+    // 写不进去就下次再看一遍，不阻塞流程
+  }
+}
+
+function clearCutsceneSeen(): void {
+  try {
+    window.localStorage.removeItem(CUTSCENE_SEEN_KEY)
+  } catch {
+    // 清不掉时下一轮重开会重播，不影响流程
+  }
+}
 
 interface StoredSettings {
   readonly muted: boolean
@@ -220,6 +256,7 @@ export default function App() {
   const [devOpen, setDevOpen] = useState(false)
   const [corridorState, setCorridorState] = useState<'idle' | 'playing' | 'done'>('idle')
   const [skipAvailable, setSkipAvailable] = useState(false)
+  const [cutscene, setCutscene] = useState<CutsceneSpec | null>(null)
   const [showFirstTurnHint, setShowFirstTurnHint] = useState(false)
   const firstTurnHintShownRef = useRef(false)
   const [paused, setPaused] = useState(false)
@@ -247,6 +284,50 @@ export default function App() {
   const bannerId = useRef(0)
   const startedRef = useRef(false)
   const finishedRef = useRef(false)
+  const cutsceneDirectorRef = useRef<Cutscene2D | null>(null)
+  const cutsceneActiveRef = useRef(false)
+
+  /**
+   * 关卡间 2D 过场只叠在 beginLevel 的 reloading 黑场上，播完自动卸载，不改引擎时序。
+   * e2e 要能被跳过：`?skipcutscene=1` 或自动化环境（navigator.webdriver）直接不挂载，
+   * 否则清层用例会被这 2.4s 额外耗时拖到超时。
+   */
+  const cutsceneDisabledRef = useRef(false)
+  if (typeof window !== 'undefined') {
+    const params = new URLSearchParams(window.location.search)
+    const automated = (window.navigator as { webdriver?: boolean }).webdriver === true
+    const forced = params.get('cutscene') === '1'
+    cutsceneDisabledRef.current = params.get('skipcutscene') === '1' || (automated && !forced)
+  }
+
+  const beginCutscene = useCallback((levelIndex: number, force = false) => {
+    if (cutsceneDisabledRef.current && !force) return
+    const spec = cutsceneFor(levelIndex)
+    if (!spec || cutsceneActiveRef.current) return
+    cutsceneActiveRef.current = true
+    // checkpoint 时引擎已进入 reloading，但 beginLevel 的 2.6s 计时马上就要开始；
+    // 暂停把它挂起（delay 尚未 start），过场尾部再恢复，避免过场被黑窗截断。
+    game.pause()
+    setCutscene(spec)
+  }, [game])
+
+  const resumeEngineAfterCutscene = useCallback(() => {
+    if (!cutsceneActiveRef.current) return
+    game.resume()
+  }, [game])
+
+  const finishCutscene = useCallback(() => {
+    if (!cutsceneActiveRef.current) return
+    cutsceneActiveRef.current = false
+    cutsceneDirectorRef.current = null
+    // 兜底：任何异常路径下都不让引擎留在挂起状态
+    if (game.isPaused) game.resume()
+    setCutscene(null)
+  }, [game])
+
+  const skipCutscene = useCallback(() => {
+    cutsceneDirectorRef.current?.skip()
+  }, [])
 
   const togglePause = useCallback(
     (next: boolean) => {
@@ -254,10 +335,12 @@ export default function App() {
         if (!startedRef.current || finishedRef.current) return
         game.pause()
         directorRef.current?.pause()
+        cutsceneDirectorRef.current?.pause()
         sound.suspend()
       } else {
         game.resume()
         directorRef.current?.resume()
+        cutsceneDirectorRef.current?.resume()
         sound.resume()
       }
       setPaused(next)
@@ -469,6 +552,14 @@ export default function App() {
         return
       }
       const snap = snapshotRef.current
+      // 2D 过场期间：空格/Esc 跳过，其余游戏键全部吞掉（引擎此时在 reloading，本就不该有输入）
+      if (cutsceneActiveRef.current) {
+        if (event.code === 'Space' || event.key === ' ' || event.key === 'Escape') {
+          event.preventDefault()
+          skipCutscene()
+        }
+        return
+      }
       // Esc：暂停/继续；弹窗或叙事期间交给它们自己处理
       if (event.key === 'Escape') {
         if (modal !== null || narrativeRef.current !== null) return
@@ -532,7 +623,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [game, togglePause, paused, modal])
+  }, [game, togglePause, paused, modal, skipCutscene])
 
   const hpRatio =
     snapshot && snapshot.player.maxHp > 0 ? snapshot.player.hp / snapshot.player.maxHp : 1
@@ -656,6 +747,14 @@ export default function App() {
       }
       writeCheckpoint(next)
       setCheckpoint(next)
+      // 关卡间 2D 过场：只在首次进入第 2/3 层时播；读档已看过的层不重播。
+      // 延一帧，让同 tick 的 reload 横幅先挂上，避免两层覆盖同时出现。
+      const seen = readCutsceneSeen()
+      if (event.levelIndex >= 1 && !seen.includes(event.levelIndex)) {
+        markCutsceneSeen(event.levelIndex)
+        const level = event.levelIndex
+        window.setTimeout(() => beginCutscene(level), 0)
+      }
       return
     }
     if (event.type === 'gameOver') {
@@ -708,8 +807,14 @@ export default function App() {
       sound,
       onVisual: setNarrative,
       onGameStart: () => {
-        if (mode === 'intro') game.start()
-        else game.restart()
+        if (mode === 'intro') {
+          clearCutsceneSeen()
+          game.start()
+        } else {
+          // restart 是全新一局：过场去重集合随之清空，第二/三层重新播
+          clearCutsceneSeen()
+          game.restart()
+        }
       },
       onFinish: () => {
         markNarrativeSeen(mode)
@@ -740,6 +845,19 @@ export default function App() {
       play: (mode: NarrativeMode) => beginNarrative(mode),
       scene: () => sceneRef.current,
       game,
+    }
+    ;(window as unknown as { __cutsceneDebug?: unknown }).__cutsceneDebug = {
+      play: (levelIndex: number) => beginCutscene(levelIndex, true),
+      skip: () => skipCutscene(),
+      active: () => cutsceneActiveRef.current,
+      seek: (seconds: number) => {
+        const director = cutsceneDirectorRef.current as
+          | (Cutscene2D & { debugSeek?: (t: number) => void })
+          | null
+        director?.debugSeek?.(seconds)
+      },
+      clearSeen: () => clearCutsceneSeen(),
+      seen: () => [...readCutsceneSeen()],
     }
   }
 
@@ -1296,6 +1414,13 @@ export default function App() {
                 <MetalButton
                   tone="secondary"
                   onClick={() => {
+                    // 死亡后从本层重来 = 重走这一层，过场重播；只有读档（继续第 N 层）才跳过
+                    const seen = readCutsceneSeen().filter((v) => v !== (snapshot?.levelIndex ?? 0))
+                    try {
+                      window.localStorage.setItem(CUTSCENE_SEEN_KEY, JSON.stringify({ v: 1, seen }))
+                    } catch {
+                      // 写不进去最多是少播一次，不阻塞重来
+                    }
                     if (game.retryLevel()) setCorridorState('done')
                   }}
                 >
@@ -1422,6 +1547,18 @@ export default function App() {
             {clueLine}
           </p>
         </div>
+      ) : null}
+
+      {cutscene ? (
+        <CutsceneOverlay
+          spec={cutscene}
+          sound={sound}
+          onResumeEngine={resumeEngineAfterCutscene}
+          onFinish={finishCutscene}
+          onDirector={(director) => {
+            cutsceneDirectorRef.current = director
+          }}
+        />
       ) : null}
 
       {narrative && directorRef.current ? (

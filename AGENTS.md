@@ -70,6 +70,19 @@ src/
 
 清层后不再自动进下一层：引擎先播 2.6s 横幅，再进入 `supply` 摆出 3 件候选（`supplyOptions`），玩家调 `chooseSupply(item)` 或 12s 超时自动取第一件。选中道具先存进 `carryOver`，因为 `beginLevel` 会重建双方 `ActorRuntime`——直接 push 会被覆盖。新增道具时记得它可能出现在候选里。
 
+### 关卡间 2D 像素过场
+
+进第 2、3 层前叠一段 2D 像素过场（`src/narrative/cutsceneScript.ts` 分镜 + `Cutscene2D.ts` rAF 导演 + `CutsceneOverlay.tsx` 覆盖层），全程 Canvas 程序化绘制，**不引入任何图片/视频**。
+
+- 切口：`checkpoint` 事件（`beginLevel` 内 dispatch，此时引擎已是 `reloading`、输入锁死）。过场开始即 `game.pause()` 挂起引擎（2.6s 计时尚未启动），到 `duration - 2.6s` 时 `game.resume()`，让装弹与发牌正好落在淡出窗口——**相位链不动，玩家只多等约 4.4s**。`duration` 需 ≥6s、≤8s（`cutsceneScript.test.ts` 断言）。
+- 第 1 层不播（入场 + 走廊已铺满），第 3 层 Boss 倒下进 `victory` 也不播。
+- 每段配 2 句字幕（`lines`，按 `at/end` 命中、不重叠），从导演时钟起笔打字；字幕带半透明背景板，避免被桌面前景的手/账页压住。
+- 去重：`blood-ante.cutsceneSeen.v1` 存 `{v:1, seen:[层 levelIndex]}`。正常推进播一次；**读档（继续第 N 层）不重播**；`restart`（全新一局）清空；**死亡后「从第 N 层重来」会重播**（把该层从集合移除）。
+- 跳过：过场期间 Space/Esc → `Cutscene2D.skip()`，0.18s 淡出后卸载。过场激活时其它游戏键全部吞掉。
+- 暂停：`togglePause` 同时 `pause/resume` 过场导演层，画面冻结。
+- e2e：`?skipcutscene=1` 或自动化环境（`navigator.webdriver`）默认不挂载；本地手动验收加 `?cutscene=1` 强制播放。
+- 新增/改分镜只动 `cutsceneScript.ts`（cue 必须时间递增且落在 `duration` 内）；不要改 `GameEngine.ts`、`NarrativeDirector`、T2/T3 分镜。
+
 ### 手牌点数（台面贴片，不进 HUD）
 
 点数由 `SceneManager.buildScorePlates` 的两块贴地 Canvas 贴片直接画在台呢上：`syncScores()` 按 `visibleHand.visible` 过滤暗牌后调 `evaluateHand`，只在「点数/软牌/黑杰克/爆牌/停牌/暗牌」组合变化时重绘并做一次缩放脉冲。HUD 的 `ActorPanel` 只剩状态与道具数，**血量由 3D 血袋显示，不要再往面板里加点数或血条**。贴片避开卡牌/道具/血袋架/牌堆：玩家在 `(0, 1.52)` 平贴台呢；Boss 在对面右侧 `(1.5, -1.15)`，按 `SCORE_PLATE_TILT` 立起 ~0.5rad 并 yaw 朝主镜头（`SCORE_PLATE_VIEW`），抬高半高让近边贴着台呢——远侧平贴会被透视压扁，读数极差；枪身占满中央横带，别把 Boss 贴片放回中间。两块都画一圈椭圆印刷线当台呢标记，暗牌显示 `+ ?`，爆牌以划叉标记。改位置/缩放/倾角都要按真实游戏镜头截图确认，不能只看俯视。

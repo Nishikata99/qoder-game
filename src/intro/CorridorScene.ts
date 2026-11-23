@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js'
@@ -147,7 +148,7 @@ export class CorridorScene {
   }
 
   start(): void {
-    new GLTFLoader().load(`${import.meta.env.BASE_URL}models/corridor.glb`, (gltf) => {
+    new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).load(`${import.meta.env.BASE_URL}models/corridor.glb`, (gltf) => {
       if (this.disposed) {
         this.disposeObject(gltf.scene)
         return

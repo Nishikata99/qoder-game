@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js'
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import { clone as cloneSkinnedObject } from 'three/addons/utils/SkeletonUtils.js'
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
@@ -637,6 +638,8 @@ export class SceneManager {
   private actionHovered: TableAction | null = null
   private actionPressed: TableAction | null = null
   private tableActionsAllowed = false
+  /** 层间叙事未结束时先不升起补给托盘，避免被透明黑层挡住却已在等待选择 */
+  private supplyRevealAllowed = true
   /** 补给候选道具单独成表：不参与 syncItems 的常规道具栏同步 */
   /** 玩家补给道具单独成表：不参与 syncItems 的常规道具栏同步，也用于悬停/点击 */
   private readonly supplyItems = new Map<string, ItemEntry>()
@@ -670,7 +673,7 @@ export class SceneManager {
   private readonly scratchVector = new THREE.Vector3()
   private readonly scratchHitPoint = new THREE.Vector3()
 
-  private readonly gltfLoader = new GLTFLoader()
+  private readonly gltfLoader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder)
   /** 已加载的模型模板；缺失表示加载失败或尚未完成，此时回退程序化几何 */
   private readonly models = new Map<ModelKey, THREE.Object3D>()
   private envTexture: THREE.Texture | null = null
@@ -3415,7 +3418,8 @@ export class SceneManager {
 
     // ===== ① 主聚光灯：吊灯向下，光锥覆盖桌面并延伸到 Boss 上半身 =====
     // 光锥角度必须 >50°：Boss 在灯位下方 55° 方向，锥体太窄它的脸会完全落在光外
-    const spot = new THREE.SpotLight(0xffc98c, 70, 18, 0.88, 0.78, 1.2)
+    // 第 1 层 applyLevel 因层号未变提前返回，默认灯色必须直接等于 LEVEL_LOOK[0].lamp
+    const spot = new THREE.SpotLight(0xffb066, 70, 18, 0.88, 0.78, 1.2)
     spot.position.set(0, LAMP_SHADE_BOT_Y - 0.05, -0.05)
     spot.castShadow = true
     spot.shadow.mapSize.set(2048, 2048)
@@ -3633,6 +3637,13 @@ export class SceneManager {
     this.tableActionsAllowed = allowed
   }
 
+  /** 叙事/过场层让出画面后才升起补给托盘 */
+  setSupplyRevealAllowed(allowed: boolean): void {
+    if (this.supplyRevealAllowed === allowed) return
+    this.supplyRevealAllowed = allowed
+    if (allowed && this.lastSnapshot) this.syncSupply(this.lastSnapshot)
+  }
+
   private canUseTableActions(): boolean {
     const snapshot = this.lastSnapshot
     return this.tableActionsAllowed && this.shot === 'table' && this.cameraBlend >= 1 &&
@@ -3653,10 +3664,11 @@ export class SceneManager {
     this.canvas.style.cursor = this.actionHovered && enabled ? 'pointer' : ''
     for (const [action, button] of this.actionButtons) {
       const pressed = this.elapsed < button.pressedUntil || this.actionPressed === action
-      const target = pressed ? 0.05 : enabled && this.actionHovered === action ? 0.085 : 0.075
+      const hovered = enabled && this.actionHovered === action
+      const target = pressed ? 0.05 : hovered ? 0.098 : 0.075
       button.cap.position.y += (target - button.cap.position.y) * Math.min(1, dt * 24)
-      button.face.emissiveIntensity = enabled ? 0.24 : 0.06
-      button.indicator.emissiveIntensity = enabled ? 1.4 : 0.02
+      button.face.emissiveIntensity = enabled ? (hovered ? 0.42 : 0.24) : 0.06
+      button.indicator.emissiveIntensity = enabled ? (hovered ? 2.6 : 1.4) : 0.02
     }
   }
 
@@ -5050,6 +5062,10 @@ export class SceneManager {
     options: readonly ItemId[],
     pick: ItemId | null,
   ): void {
+    if (!this.supplyRevealAllowed) {
+      this.closeSupplyTray(tray)
+      return
+    }
     if (options.length === 0) {
       this.closeSupplyTray(tray)
       return

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SoundEngine } from '../audio/SoundEngine'
 import { CorridorScene } from '../intro/CorridorScene'
+import { LongPressSkipIndicator } from './LongPressSkipIndicator'
 
 const CHAR_MS = 65
 const PAUSE_MS = 260
@@ -61,6 +62,7 @@ export function CorridorIntro({
   const startWalkRef = useRef<() => void>(() => {})
   const [ready, setReady] = useState(false)
   const [started, setStarted] = useState(false)
+  const [walking, setWalking] = useState(false)
   const [doorPhase, setDoorPhase] = useState(false)
   const [chosen, setChosen] = useState(false)
   const [hoveredDoor, setHoveredDoor] = useState<'L' | 'R' | null>(null)
@@ -88,6 +90,7 @@ export function CorridorIntro({
           completeRef.current()
         },
         onRequestStart: () => startWalkRef.current(),
+        onWalkStart: () => setWalking(true),
         onDoorHover: setHoveredDoor,
         onNewRun: () => newRunRef.current(),
         onResume: () => resumeRef.current(),
@@ -148,6 +151,9 @@ export function CorridorIntro({
         <div className="pointer-events-none absolute inset-x-0 bottom-[10vh] flex justify-center px-6">
           <p className="font-display text-base tracking-[0.26em] text-bone-200/80">{doorHint}</p>
         </div>
+      ) : null}
+      {walking && !doorPhase && !chosen ? (
+        <LongPressSkipIndicator active onComplete={() => sceneRef.current?.skip()} />
       ) : null}
       {/* 场景已接管指针；这些仅留给读屏与自动化测试 */}
       {ready && !started && !doorPhase ? (

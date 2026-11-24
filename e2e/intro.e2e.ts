@@ -1,5 +1,41 @@
 import { expect, test } from '@playwright/test'
 
+test('廊道行走支持长按空格跳过，松开后进度快速归零', async ({ page }) => {
+  await page.addInitScript(() => {
+    try {
+      window.localStorage.removeItem('blood-ante.checkpoint.v1')
+      window.localStorage.removeItem('blood-ante.guideSeen')
+    } catch {
+      // 隐私模式下无法清理，交给后续断言兜底
+    }
+  })
+  await page.goto('./')
+
+  const start = page.getByRole('button', { name: '走进走廊', exact: true })
+  await expect(start).toBeVisible({ timeout: 30_000 })
+  const guide = page.getByRole('dialog', { name: '开局说明' })
+  if ((await guide.count()) > 0) {
+    await page.getByRole('button', { name: '知道了' }).click()
+    await expect(guide).toBeHidden()
+  }
+  await start.evaluate((el) => (el as HTMLElement).click())
+
+  const indicator = page.getByTestId('corridor-hold-skip')
+  await expect(indicator).toBeVisible({ timeout: 15_000 })
+  await expect(indicator).toHaveAttribute('data-progress', '0')
+
+  await page.keyboard.down('Space')
+  await page.waitForTimeout(550)
+  expect(Number(await indicator.getAttribute('data-progress'))).toBeGreaterThan(10)
+  await page.keyboard.up('Space')
+  await expect.poll(async () => Number(await indicator.getAttribute('data-progress'))).toBeLessThan(5)
+
+  await page.keyboard.down('Space')
+  await expect(page.getByRole('button', { name: '左门 · 血色底注' })).toBeVisible({ timeout: 6_000 })
+  await page.keyboard.up('Space')
+  await expect(indicator).toHaveCount(0)
+})
+
 test('首见入场不可跳过；已看过后出现跳过入口', async ({ page }) => {
   await page.addInitScript(() => {
     // 首见：清掉已读标记，确保这一轮必须完整播放

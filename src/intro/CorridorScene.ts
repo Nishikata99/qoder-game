@@ -68,6 +68,8 @@ interface CorridorCallbacks {
   readonly onWalkLine: (text: string | null) => void
   /** ready 阶段点击画面：开始行走（组件负责解锁音频、启动引擎） */
   readonly onRequestStart: () => void
+  /** 音频解锁完成、行走正式开始 */
+  readonly onWalkStart: () => void
   /** 鼠标停在门上 / 移开 */
   readonly onDoorHover: (side: 'L' | 'R' | null) => void
   /** 左门：新开一局（清掉旧存档） */
@@ -208,6 +210,20 @@ export class CorridorScene {
     this.phaseTime = 0
     this.walkLineIndex = 0
     this.walkLineOpen = false
+    this.callbacks.onWalkStart()
+  }
+
+  /** 长按跳过行走段：落到双门选择，保留玩家对新局/续档的决定。 */
+  skip(): void {
+    if (this.disposed || this.phase !== 'walk') return
+    this.phase = 'choose'
+    this.phaseTime = 0
+    this.camera.position.set(0, 1.6, WALK_END_Z)
+    this.gazeX = 0
+    this.gazeY = 1.5
+    this.camera.lookAt(0, 1.5, -14)
+    this.callbacks.onWalkLine(null)
+    this.callbacks.onDoorPhase()
   }
 
   /** 左门 = 新开一局（沿用 CRT 故障开场），右门 = 有存档才可续玩，否则封死 */

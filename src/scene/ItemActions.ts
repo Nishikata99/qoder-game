@@ -645,6 +645,7 @@ export class ItemActions {
       const impact = span(t, 1.05, 1.35)
       tool.position.y += (0.52 * take * (1 - impact)) + Math.sin(span(t, 1.35, 1.8) * Math.PI) * 0.14
       tool.rotation.x = -0.55 * (1 - impact)
+      right.root.rotation.x = tool.rotation.x
       const flash = parts.get('impact') as THREE.Mesh
       const flashMat = flash.material as THREE.MeshBasicMaterial
       const burst = span(t, 1.3, 1.42) * (1 - span(t, 1.55, 1.75))

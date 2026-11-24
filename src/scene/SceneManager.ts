@@ -22,6 +22,7 @@ import {
 } from '../game/GameEngine'
 import { TextureFactory } from './TextureFactory'
 import { ItemActions, type ItemActionCue, type ItemActionStatus } from './ItemActions'
+import { itemActionCamera } from './itemActionConfig'
 import type { GameEvent } from '../game/GameEngine'
 import { BOSS_POSE_PROFILES, BossPoseController, shouldRespawnBossPose, type BossPoseState } from './BossPose'
 
@@ -1003,18 +1004,13 @@ export class SceneManager {
       prop: (item) => this.buildItemContent(item).content,
       hand: () => this.models.get('player_hand'),
       card: (actor, card) => this.findCardMesh(actor, card),
-      gunPoint: (part) => {
-        const muzzle = new THREE.Vector3()
-        const target = this.gunShake.getObjectByName('MuzzlePoint')
-        if (part === 'barrel' && target) this.gunShake.worldToLocal(target.getWorldPosition(muzzle))
-        return part === 'barrel' && target ? this.gunShake.localToWorld(muzzle) : GUN_PIVOT.clone()
-      },
-      focus: (point, actor) => this.focusItemAction(point, actor),
+      focus: (point, actor, item) => this.focusItemAction(point, actor, item),
       rest: () => this.setShot('table', 0.8),
       commit: () => this.flushItemEvents(),
       cue: (item, cue) => this.callbacks.onItemActionCue?.(item, cue),
       status: (status) => this.callbacks.onItemActionStatus?.(status),
       restHands: (visible) => { if (this.introHands) this.introHands.visible = visible },
+      reducedMotion: () => this.reducedMotion,
       saw: (actor) => this.presentSawCut(actor),
       reload: () => this.playReload(),
     })
@@ -2013,15 +2009,14 @@ export class SceneManager {
     if (pending) this.applySnapshot(pending)
   }
 
-  /** 道具演出机位：玩家侧从右前方看手，Boss 侧从玩家视角看其动作 */
-  private focusItemAction(point: THREE.Vector3, actor: ActorId): void {
+  /** 玩家侧道具特写；Boss 保持桌面机位，避免双方演出抢镜。 */
+  private focusItemAction(point: THREE.Vector3, actor: ActorId, item: ItemId): void {
     if (this.disposed || actor !== 'player') return
-    // 固定机距与俯角：各道具取景点前后高低不同，按偏移量摆机位会让靠前的护心镜
-    // 占满半屏、靠后的借据只剩一条边。方向固定后，道具在画框里的占比才一致
-    const direction = new THREE.Vector3(0.06, 0.5, 0.86).normalize()
-    const position = point.clone().addScaledVector(direction, 1.62)
-    const target = { position, lookAt: point, fov: 36 }
-    this.setCameraFraming(target, 0.55)
+    const framing = itemActionCamera(item)
+    const direction = new THREE.Vector3(0.06, 0.5, 0.86)
+    const position = point.clone().addScaledVector(direction.normalize(), framing.distance)
+    const target = { position, lookAt: point, fov: framing.fov }
+    this.setCameraFraming(target, this.reducedMotion ? 0.18 : 0.55)
   }
 
   /** 绕过 shot 表直接落一段一次性取景，收尾时由 setShot('table') 回位 */
@@ -2122,7 +2117,7 @@ export class SceneManager {
     }
     const handR = this.scene.getObjectByName(`${this.itemActions.activeName}-right`)
     const handL = this.scene.getObjectByName(`${this.itemActions.activeName}-left`)
-    const prop = root.children[0]
+    const prop = this.itemActions.getHero()
     const ndc = prop ? toNdc(prop) : null
     const parts: Record<string, unknown> = {}
     for (const child of root.children) {
@@ -2165,6 +2160,12 @@ export class SceneManager {
     }
   }
 
+  previewRenderMemory(): Record<string, number> {
+    return { ...this.renderer.info.memory }
+  }
+  cancelItemAction(): void {
+    this.itemActions.cancel()
+  }
   isItemActionBusy(): boolean {
     return this.itemActions.busy
   }

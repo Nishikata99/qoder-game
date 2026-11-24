@@ -3,8 +3,8 @@
  * 依据 docs/NARRATIVE-REWORK-PLAN.md（小棠血契版）。
  */
 
-/** 三层是同一个人：名字固定，只有地点逐层变化 */
-export const BOSS_NAME = '验血官'
+/** 三层是同一讨债人的收债流程：名字固定，只有地点逐层变化 */
+export const BOSS_NAME = '讨债人'
 
 export const LEVEL_NARRATIVE: ReadonlyArray<{ name: string; title: string }> = [
   { name: BOSS_NAME, title: '一层 · 验血厅' },
@@ -13,7 +13,7 @@ export const LEVEL_NARRATIVE: ReadonlyArray<{ name: string; title: string }> = [
 ]
 
 export function bossName(levelIndex: number): string {
-  return LEVEL_NARRATIVE[levelIndex]?.name ?? '缝账人'
+  return LEVEL_NARRATIVE[levelIndex]?.name ?? BOSS_NAME
 }
 
 export function levelTitle(levelIndex: number): string {
@@ -22,7 +22,7 @@ export function levelTitle(levelIndex: number): string {
 
 /** 道具机制说明沿用引擎 ITEM_CATALOG，叙事批注只追加在图鉴/悬浮提示里 */
 export const ITEM_FLAVOR: Readonly<Record<string, string>> = {
-  magnifier: '验血官挑针头用的旧镜片，能照穿铁锈里的死活。',
+  magnifier: '讨债人核血账用的旧镜片，能照穿铁锈里的死活。',
   sedative: '门厅发的廉价药剂，管身上还留着一道指甲掐痕。',
   saw: '锯短枪管，让下一枪的血债翻倍偿还。',
   magnet: '账房老千藏在袖口里的旧磁石，早被血浸锈了。',
@@ -33,7 +33,7 @@ export const ITEM_FLAVOR: Readonly<Record<string, string>> = {
   cutter: '账房裁账页的薄刃，裁下来的名字再没人认领。',
   iou: '一张按着血指印的欠据，签下的从来不是钱。',
   seal: '刑台封牌用的朱砂纸条，贴上就当作这张牌从未发过。',
-  monocle: '账房先生的单片眼镜，看得清牌靴，看不清人心。',
+  monocle: '讨债人核账用的单片眼镜，看得清牌靴，看不清人心。',
   hammer: '刑台边钉刻痕名单的铁锤，能把侥幸生生砸成死局。',
 }
 

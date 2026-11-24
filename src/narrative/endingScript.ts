@@ -20,6 +20,7 @@ import {
   span,
   type Ctx,
 } from './pixelDraw'
+import type { DialogueChannel } from './dialogue'
 
 export type EndingSfx =
   | 'lowThump'
@@ -39,12 +40,14 @@ export interface EndingLine {
   readonly text: string
   readonly at: number
   readonly end: number
+  readonly channel: DialogueChannel
 }
 
 export interface EndingSpec {
   readonly id: 'win' | 'lose'
   readonly duration: number
   readonly lines: readonly EndingLine[]
+  readonly dialogueAnchor?: { readonly x: number; readonly y: number }
   readonly cues: readonly EndingCue[]
   /** 胜利结局不可跳过，只有长按兜底 */
   readonly skippable: boolean
@@ -101,7 +104,7 @@ function drawRedemption(ctx: Ctx, t: number): void {
     ctx.restore()
   }
 
-  // ---- 缝账人残躯：瘫在桌沿，胸口缝线透光 ----
+  // ---- 讨债人残躯：瘫在桌沿，胸口缝线透光 ----
   const glowIn = span(t, 1.2, 2.6)
   const bodyAlpha = 1 - span(t, 5.0, 6.2)
   if (bodyAlpha > 0) {
@@ -464,9 +467,11 @@ export const ENDINGS: Readonly<Record<'win' | 'lose', EndingSpec>> = {
     duration: 8.5,
     skippable: false,
     lines: [
-      { text: '缝线里透出一点光——像有人把最后一口气缝了进去。', at: 1.6, end: 3.6 },
-      { text: '你摸到那道刻痕。不是疼，是认出来。', at: 3.9, end: 5.4 },
-      { text: '她一直在缝线里。等你把最后一针缝完。', at: 5.8, end: 7.6 },
+      { text: '哥？', at: 1.6, end: 2.4, channel: 'sister' },
+      { text: '小棠……我在。', at: 2.6, end: 3.6, channel: 'player' },
+      { text: '别碰线。先找到我的名字。', at: 3.9, end: 5.4, channel: 'sister' },
+      { text: '找到了。', at: 5.6, end: 6.2, channel: 'player' },
+      { text: '把最后一针缝完。', at: 6.4, end: 7.6, channel: 'sister' },
     ],
     cues: [
       { at: 0.05, sfx: 'lowThump' },
@@ -481,11 +486,13 @@ export const ENDINGS: Readonly<Record<'win' | 'lose', EndingSpec>> = {
   lose: {
     id: 'lose',
     duration: 7.0,
+    dialogueAnchor: { x: 205, y: 36 },
     skippable: true,
     lines: [
-      { text: '补针刑台没有出口。轮到你的名字了。', at: 1.4, end: 3.2 },
-      { text: '不用挣了。缝进去就不疼了。', at: 3.8, end: 5.2 },
-      { text: '名单还很长。下一位已经在门外了。', at: 5.8, end: 6.8 },
+      { text: '轮到你的名字了。', at: 1.4, end: 2.6, channel: 'enemy' },
+      { text: '小棠……', at: 2.8, end: 3.6, channel: 'player' },
+      { text: '不用挣了。缝进去就不疼了。', at: 3.8, end: 5.2, channel: 'enemy' },
+      { text: '名单还很长。下一位已经在门外了。', at: 5.6, end: 6.8, channel: 'enemy' },
     ],
     cues: [
       { at: 0.05, sfx: 'lowThump' },

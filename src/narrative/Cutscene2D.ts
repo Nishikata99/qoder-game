@@ -1,4 +1,5 @@
 import type { SoundEngine } from '../audio/SoundEngine'
+import type { DialogueChannel } from './dialogue'
 import { PIXEL_HEIGHT, PIXEL_WIDTH, type Ctx } from './pixelDraw'
 
 /** 淡入/淡出时长（秒） */
@@ -10,7 +11,13 @@ const SKIP_FADE = 0.18
 /** 关卡间过场与结局过场共有的播放契约 */
 export interface Playable2D {
   readonly duration: number
-  readonly lines: readonly { readonly text: string; readonly at: number; readonly end: number }[]
+  readonly lines: readonly {
+    readonly text: string
+    readonly at: number
+    readonly end: number
+    readonly channel: DialogueChannel
+  }[]
+  readonly dialogueAnchor?: { readonly x: number; readonly y: number }
   readonly cues: readonly { readonly at: number; readonly sfx: string }[]
   readonly draw: (ctx: Ctx, t: number) => void
 }

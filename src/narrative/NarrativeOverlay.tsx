@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { SoundEngine } from '../audio/SoundEngine'
 import type { NarrativeDirector, NarrativeVisual } from './NarrativeDirector'
+import { EnemyDialogueBox } from './EnemyDialogueBox'
 
 const CHAR_MS = 65
 const PAUSE_MS = 260
@@ -73,7 +74,7 @@ export function NarrativeOverlay({
         className="narrative-bar absolute inset-x-0 bottom-0 bg-black"
         style={{ height: visual.letterbox ? '9vh' : '0vh' }}
       />
-      {/* T3 账页：右侧滑入停两拍，销账记录即字幕，不另加旁白 */}
+      {/* T3 账页：右侧滑入停两拍，转记记录即字幕，不另加旁白 */}
       <div
         className="pointer-events-none absolute top-1/2 right-[7vw] w-56 p-5 font-display shadow-2xl transition-transform duration-700"
         style={{
@@ -82,7 +83,7 @@ export function NarrativeOverlay({
           color: '#2c2016',
         }}
       >
-        <p className="text-[0.6rem] tracking-[0.3em] opacity-60">账房 · 血契销账</p>
+        <p className="text-[0.6rem] tracking-[0.3em] opacity-60">账房 · 血债转记</p>
         <div className="mt-3 space-y-2 border-t border-[#5a4632]/40 pt-3">
           <div className="h-px bg-[#5a4632]/25" />
           <div className="h-px bg-[#5a4632]/25" />
@@ -94,7 +95,7 @@ export function NarrativeOverlay({
             </div>
             <div className="flex justify-between gap-2">
               <dt className="opacity-55">欠血</dt>
-              <dd>已抵</dd>
+              <dd>已付七袋</dd>
             </div>
             <div className="flex justify-between gap-2">
               <dt className="opacity-55">去向</dt>
@@ -103,9 +104,17 @@ export function NarrativeOverlay({
           </dl>
         </div>
       </div>
-      {subtitle ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-[12vh] flex justify-center px-6">
-          <p className="narrative-subtitle max-w-xl text-center font-display text-base tracking-[0.18em] text-bone-200/90">
+      {subtitle?.channel === 'enemy' ? (
+        <EnemyDialogueBox getAnchor={() => director.bossDialogueAnchor()}>
+          {subtitle.text.slice(0, typed)}
+        </EnemyDialogueBox>
+      ) : subtitle ? (
+        <div data-testid="bottom-dialogue" className="pointer-events-none absolute inset-x-0 bottom-[12vh] flex justify-center px-6">
+          <p
+            className={`narrative-subtitle max-w-xl text-center font-display text-base tracking-[0.18em] ${
+              subtitle.channel === 'sister' ? 'sister-dialogue text-amber-100/95' : 'text-bone-200/90'
+            }`}
+          >
             {subtitle.text.slice(0, typed)}
           </p>
         </div>

@@ -87,7 +87,8 @@ export type CameraShot =
   | 'table'
   | 'bloodPlayer'
   | 'bloodBoss'
-  | 'cylinder'
+  | 'bossHead'
+  | 'bulletTray'
   | 'magnify'
   | 'execute'
   | 'playerDown'
@@ -169,6 +170,23 @@ interface SupplyTrayView {
   /** Boss 镜头切过来时它可能还在升起：等升完再挑 */
   pendingPick: ItemId | null
   generation: number
+}
+
+interface BulletTrayEntry {
+  readonly group: THREE.Group
+  readonly shell: THREE.Mesh<THREE.CylinderGeometry, THREE.MeshStandardMaterial>
+  readonly tip: THREE.Mesh<THREE.SphereGeometry, THREE.MeshStandardMaterial>
+}
+
+interface BulletTrayView {
+  readonly root: THREE.Group
+  readonly lift: THREE.Group
+  readonly bullets: BulletTrayEntry[]
+  readonly light: THREE.PointLight
+  readonly liveMaterial: THREE.MeshStandardMaterial
+  readonly blankMaterial: THREE.MeshStandardMaterial
+  generation: number
+  active: boolean
 }
 
 /** 手铐锁链：挂在该侧身上的金属环组，随 skipTurn 出现/消失 */
@@ -297,14 +315,15 @@ const SCORE_PLATE_Y = TABLE_TOP + 0.004
 const SCORE_PLATE_W = 1.34
 const SCORE_PLATE_H = 0.46
 const SCORE_PLATE_POS: Readonly<Record<ActorId, THREE.Vector2>> = {
-  player: new THREE.Vector2(0, 1.52),
-  // 与玩家贴片关于桌心对称，正对后沿居中
-  boss: new THREE.Vector2(0, -1.52),
+  // 玩家贴片比 Boss 侧略靠桌心：近侧按键帽在透视里会盖住下缘
+  player: new THREE.Vector2(0, 1.3),
+  boss: new THREE.Vector2(0, -1.62),
 }
 /** Boss 侧离镜头远、视角更斜，贴片按比例放大才能与玩家侧同样好读 */
-const SCORE_PLATE_SCALE: Readonly<Record<ActorId, number>> = { player: 1, boss: 1.5 }
-/** 对面贴片立起一点正对镜头，否则远侧透视会把字压扁；0 = 平贴台呢 */
-const SCORE_PLATE_TILT: Readonly<Record<ActorId, number>> = { player: 0, boss: 0.5 }
+const SCORE_PLATE_SCALE: Readonly<Record<ActorId, number>> = { player: 1, boss: 1.55 }
+/** 对面贴片立起一点正对镜头，否则远侧透视会把字压扁；0 = 平贴台呢。
+ * 倾角不能太大：立牌太高会把对沿那组镜像按键整个挡住。 */
+const SCORE_PLATE_TILT: Readonly<Record<ActorId, number>> = { player: 0, boss: 0.28 }
 /** 游戏主镜头机位，用于让 Boss 贴片转向观众 */
 const SCORE_PLATE_VIEW = new THREE.Vector3(0, 3.62, 4.92)
 
@@ -453,6 +472,16 @@ const SUPPLY_TRAY = {
   plateThickness: 0.04,
 } as const
 
+const BULLET_TRAY = {
+  centerX: 1.85,
+  centerZ: 0,
+  columns: 4,
+  rows: 2,
+  spacing: 0.19,
+  slotSize: 0.16,
+  travel: 0.16,
+} as const
+
 type ItemTone = 'iron' | 'brass' | 'wood' | 'paper' | 'wax' | 'glass'
 
 /** 每种材质的受光参数；道具改用受光材质后，桌面灯会把轮廓和体积打出来 */
@@ -505,6 +534,20 @@ const MODEL_BASE = './models'
 const BOSS_BUST_HEIGHTS = [2.15, 1.7, 3.0] as const
 /** 二、三层暂时统一使用一层的人形半身像：模型、姿态档位、瞄准点与挂饰都跟这一层走 */
 const BOSS_VISUAL_LEVEL = 0
+const BOSS2_HEAD_TILT = 0.7
+const BOSS2_HEAD_TWITCH_LIFE = 0.58
+const BOSS2_HEAD_TWITCH_MIN_DELAY = 2.6
+const BOSS2_HEAD_TWITCH_MAX_DELAY = 3.4
+const BOSS2_HEAD_TWITCH_KEYS = [
+  [0, 0],
+  [0.08, 9],
+  [0.11, 9],
+  [0.16, -6],
+  [0.19, -6],
+  [0.24, 8],
+  [0.27, 8],
+  [0.34, 0],
+] as const
 /** 半身像胸口高度占整体高度的比例，用于换算瞄准点 */
 const BOSS_CHEST_RATIO = 0.64
 /** 半身像底座（斗篷下摆）压到桌面以下，被桌沿挡住，形成「坐在桌后」的错觉 */
@@ -512,6 +555,9 @@ const BOSS_BUST_BASE_Y = 0.26
 /** Boss 站在桌后：哥特桌放大后后沿 z=-2.74，斗篷前半 z≈-0.51 缩放后约 0.55m，
  * 所以中心必须在 -2.74-0.55-0.1≈-3.39 之后，否则会穿进桌沿 */
 const BOSS_Z = -3.4
+const BOSS3_INVERSION_LIFT = 1.84
+const BOSS3_HEAD_CLEARANCE = 0.55
+const SUSPENSION_LINK_COUNT = 34
 
 /** 密室顶棚高度（米）；吊灯摆动以这里为枢轴 */
 const CEILING_Y = 6.0
@@ -550,6 +596,7 @@ const BOSS_FLASH_PEAK = 0.09
 
 /** 姿态状态切换到音效提示；只在离散节点响一次，不按帧触发 */
 const BOSS_POSE_CUES: Partial<Record<BossPoseState, BossPoseCue>> = {
+  down: 'down',
   prone: 'down',
   deadProne: 'down',
   brace: 'brace',
@@ -656,6 +703,7 @@ export class SceneManager {
   private readonly bossSupplyItems = new Map<string, ItemEntry>()
   private supplyTrays: { player: SupplyTrayView; boss: SupplyTrayView } | null = null
   private supplyHovered: ItemEntry | null = null
+  private bulletTray: BulletTrayView | null = null
   private readonly disposableGeometries = new Set<THREE.BufferGeometry>()
   private readonly disposableMaterials = new Set<THREE.Material>()
   private readonly raycaster = new THREE.Raycaster()
@@ -681,6 +729,7 @@ export class SceneManager {
   private readonly resizeObserver: ResizeObserver
   private readonly scratchVector = new THREE.Vector3()
   private readonly scratchHitPoint = new THREE.Vector3()
+  private readonly bossDialogueVector = new THREE.Vector3()
 
   private readonly gltfLoader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder)
   /** 已加载的模型模板；缺失表示加载失败或尚未完成，此时回退程序化几何 */
@@ -740,18 +789,67 @@ export class SceneManager {
   private readonly bossPosePivotRotated = new THREE.Vector3()
   private readonly bossPoseOffset = new THREE.Vector3()
   private readonly bossPoseEuler = new THREE.Euler()
-  /** 头部骨骼的静止旋转，姿态动画在父空间左乘叠加 */
+  /** 头部骨骼的静止变换，姿态动画在父空间左乘叠加 */
   private readonly bossHeadRest = new THREE.Quaternion()
+  private readonly bossHeadRestPosition = new THREE.Vector3()
   /** 双臂骨骼（UpperArm.L/R）：静止约绕 X 转 180°，偏移必须在父空间左乘 */
   private bossArmLBone: THREE.Bone | null = null
   private bossArmRBone: THREE.Bone | null = null
+  private bossForearmLBone: THREE.Bone | null = null
+  private bossForearmRBone: THREE.Bone | null = null
+  private bossThighLBone: THREE.Bone | null = null
+  private bossThighRBone: THREE.Bone | null = null
+  private bossChestBone: THREE.Bone | null = null
+  private readonly bossThighLRest = new THREE.Quaternion()
+  private readonly bossThighRRest = new THREE.Quaternion()
   private readonly bossArmLRest = new THREE.Quaternion()
   private readonly bossArmRRest = new THREE.Quaternion()
+  private readonly bossForearmLRest = new THREE.Quaternion()
+  private readonly bossForearmRRest = new THREE.Quaternion()
+  private readonly bossArmLDirection = new THREE.Vector3()
+  private readonly bossArmRDirection = new THREE.Vector3()
+  private readonly bossHandLOffset = new THREE.Vector3()
+  private readonly bossHandROffset = new THREE.Vector3()
+  private readonly bossFootLOffset = new THREE.Vector3()
+  private readonly bossFootROffset = new THREE.Vector3()
+  private bossUpperArmLength = 0
+  private bossForearmLLength = 0
+  private bossForearmRLength = 0
+  private readonly bossHandContactL = new THREE.Vector3(-1.16, TABLE_TOP + 0.025, -2.28)
+  private readonly bossHandContactR = new THREE.Vector3(1.16, TABLE_TOP + 0.025, -2.28)
+  private readonly bossIkShoulder = new THREE.Vector3()
+  private readonly bossIkElbow = new THREE.Vector3()
+  private readonly bossIkDirection = new THREE.Vector3()
+  private readonly bossIkClampedTarget = new THREE.Vector3()
+  private readonly bossIkPole = new THREE.Vector3()
+  private readonly bossIkBend = new THREE.Vector3()
+  private readonly bossIkUpperDirection = new THREE.Vector3()
+  private readonly bossIkLowerDirection = new THREE.Vector3()
+  private readonly bossIkParentDirection = new THREE.Vector3()
+  private readonly bossIkOffsetQuat = new THREE.Quaternion()
+  private readonly bossIkUpperFk = new THREE.Quaternion()
+  private readonly bossIkForearmFk = new THREE.Quaternion()
+  private readonly bossIkUpperSolved = new THREE.Quaternion()
+  private readonly bossIkForearmSolved = new THREE.Quaternion()
+  private readonly bossIkParentQuat = new THREE.Quaternion()
   private readonly bossBoneOffset = new THREE.Euler()
   private readonly bossBoneQuat = new THREE.Quaternion()
+  private suspensionLift = 0
+  private suspensionWeight = 0
+  private suspensionChains: THREE.InstancedMesh[] = []
+  private readonly suspensionAnchors = [
+    new THREE.Vector3(-0.42, CEILING_Y - 0.12, BOSS_Z + 0.16),
+    new THREE.Vector3(0.42, CEILING_Y - 0.12, BOSS_Z + 0.16),
+  ]
+  private readonly suspensionUp = new THREE.Vector3(0, 1, 0)
+  private readonly suspensionAnchor = new THREE.Vector3()
+  private readonly suspensionFoot = new THREE.Vector3()
+  private readonly suspensionDirection = new THREE.Vector3()
+  private readonly suspensionDummy = new THREE.Object3D()
   private bossPosePaused = false
   /** 血袋特写期间冻结姿态，避免起身在镜头外白白播完 */
   private bossPoseHold = false
+  private bossPoseCameraHold = false
   private lastBossPoseState: BossPoseState = 'idle'
   /** 上一帧姿态状态，用于派发离散的音效提示 */
   private readonly bossLimbGroups = new Map<string, { base: THREE.Object3D; segments: THREE.Object3D[] }>()
@@ -846,6 +944,8 @@ export class SceneManager {
   private sparkLife = 0
   /** 受击闪白：记录 Boss 各材质原始自发光，衰减后原样还原 */
   private bossFlashLife = 0
+  private boss2HeadTwitchLife = 0
+  private boss2HeadTwitchCooldown = BOSS2_HEAD_TWITCH_MIN_DELAY + Math.random() * (BOSS2_HEAD_TWITCH_MAX_DELAY - BOSS2_HEAD_TWITCH_MIN_DELAY)
   private bossFlashMaterials: Array<{
     material: THREE.MeshStandardMaterial
     emissive: THREE.Color
@@ -972,6 +1072,7 @@ export class SceneManager {
     this.flash = gun.flash
     this.bloodBurst = this.buildBloodBurst()
     this.sparkBurst = this.buildSparkBurst()
+    this.buildSuspensionRig()
 
     const lighting = this.buildLighting()
     this.spot = lighting.spot
@@ -983,6 +1084,7 @@ export class SceneManager {
     this.buildDeckPile()
     this.buildItemGrid()
     this.buildSupplyTray()
+    this.buildBulletTray()
     this.buildScorePlates()
     this.buildActionButtons()
     this.buildNarrativeProps()
@@ -1044,12 +1146,15 @@ export class SceneManager {
     host.__bossPoseDebug = {
       state: () => controller.state(),
       sample: () => controller.sample(),
+      progress: () => controller.stateProgress(),
       hit: (damage = 2, hpAfter = 1) =>
         controller.triggerHit({
           damage,
           hpAfter,
           maxHp: this.lastSnapshot?.boss.maxHp ?? Math.max(1, hpAfter),
           level: BOSS_VISUAL_LEVEL,
+          controlled: this.currentLevelIndex === 1 && hpAfter > 0,
+          suspended: this.currentLevelIndex === 2 && hpAfter > 0,
         }),
       defeat: () => controller.triggerDefeat(BOSS_VISUAL_LEVEL),
       spawn: () => controller.spawn(BOSS_VISUAL_LEVEL),
@@ -1147,9 +1252,9 @@ export class SceneManager {
       this.gunShakeAfterAim = false
       if (this.gunShakeActive) this.stopGunShake()
     }
-    const realtimeBlend = shot === 'bloodPlayer' || shot === 'bloodBoss' || (shot === 'table' && this.isCloseupShot())
+    const realtimeBlend = shot === 'bloodPlayer' || shot === 'bloodBoss' || shot === 'bossHead' || (shot === 'table' && this.isCloseupShot())
     // 中弹恢复期间会连续切低位/坐起/桌面机位，这些 setShot 不能把恢复序列自己取消掉
-    const keepsCloseup = shot === 'bloodPlayer' || shot === 'bloodBoss' || this.playerRecoveryActive
+    const keepsCloseup = shot === 'bloodPlayer' || shot === 'bloodBoss' || shot === 'bossHead' || this.playerRecoveryActive || this.bossPoseCameraHold
     if (!keepsCloseup) this.cancelBloodCloseup()
     this.shot = shot
     const target = this.shotFraming(shot)
@@ -1503,12 +1608,26 @@ export class SceneManager {
           fov: 34,
         }
       }
-      case 'cylinder':
+      case 'bossHead': {
+        const lookAt = this.bossHeadBone
+          ? this.currentLevelIndex === 2
+            ? this.bossHeadBone.localToWorld(new THREE.Vector3(0, 0.11, 0.13))
+            : this.bossHeadBone.getWorldPosition(new THREE.Vector3())
+          : new THREE.Vector3(0, 2.2 + this.suspensionLift, BOSS_Z + 0.2)
         return {
-          position: new THREE.Vector3(0.62, 2.16, 1.75),
-          lookAt: new THREE.Vector3(0, 1.0, 0.04),
-          fov: 36,
+          position: lookAt.clone().add(new THREE.Vector3(0.04, 0.02, 1.35)),
+          lookAt,
+          fov: 38,
         }
+      }
+      case 'bulletTray': {
+        const lookAt = new THREE.Vector3(BULLET_TRAY.centerX, TABLE_TOP + 0.06, BULLET_TRAY.centerZ)
+        return {
+          position: lookAt.clone().add(new THREE.Vector3(0.18, 0.95, 1.3)),
+          lookAt,
+          fov: 34,
+        }
+      }
       case 'magnify':
         return {
           position: new THREE.Vector3(0.68, 2.02, 1.62),
@@ -1649,6 +1768,9 @@ export class SceneManager {
     this.bloodCloseupActor = null
     this.bloodCloseupDrain = false
     this.bossPoseHold = false
+    this.bossPoseCameraHold = false
+    this.bossPose.releasePlantHold()
+    this.bossPose.releaseStillHold()
     if (this.playerRecoveryActive) {
       this.playerRecoveryActive = false
       this.resetIntroHandsPose()
@@ -1676,7 +1798,7 @@ export class SceneManager {
       const poll = () => {
         const aborted = this.disposed || generation !== this.bloodCloseupGeneration
         const state = this.bossPose.state()
-        const settled = state === 'brace' || state === 'deadProne' || state === 'idle'
+        const settled = state === 'brace' || state === 'plant' || state === 'still' || state === 'deadProne' || state === 'idle'
         const proneEnough = state === 'prone' && this.elapsed - this.bossPoseStateStartedAt >= 1
         if (aborted || settled || proneEnough || performance.now() - startedAt > 8000) {
           this.bloodCloseupTimer = null
@@ -1701,9 +1823,14 @@ export class SceneManager {
 
   private async runBloodCloseup(actor: ActorId, hpAfter: number, generation: number): Promise<void> {
     const shot: CameraShot = actor === 'player' ? 'bloodPlayer' : 'bloodBoss'
+    const suspendedHit = actor === 'boss' && hpAfter > 0 && this.currentLevelIndex === 2
+    const holdPlantForCamera = actor === 'boss' && hpAfter > 0 && this.currentLevelIndex <= 1
     if (actor === 'boss') {
-      // 先在桌面机位让塌倒播到趴伏，再切特写；特写期间冻结姿态，
-      // 否则起身会在镜头外全部播完，回位时看起来像没被打中过
+      if (suspendedHit) {
+        this.bossPose.holdBeforeStill()
+        this.bossPoseCameraHold = true
+        this.setShot('table', 0.35)
+      } else if (holdPlantForCamera) this.bossPose.holdBeforePlant()
       if (!await this.waitBossCollapsed(generation)) return
       this.bossPoseHold = true
     } else if (!await this.waitBloodCloseup(1600, generation)) {
@@ -1717,6 +1844,38 @@ export class SceneManager {
       if (!await this.waitBloodCloseup(100, generation)) return
     }
     if (!await this.waitBloodCloseup(250, generation)) return
+    if (suspendedHit) {
+      this.setShot('table', 0.7)
+      while (this.shot !== 'table' || this.cameraBlend < 1) {
+        if (!await this.waitBloodCloseup(50, generation)) return
+      }
+      this.setShot('bossHead', 0.55)
+      while (this.cameraBlend < 1) {
+        if (!await this.waitBloodCloseup(50, generation)) return
+      }
+      if (!await this.waitBloodCloseup(220, generation)) return
+      this.bossPose.releaseStillHold()
+      this.bossPoseHold = false
+      const startedAt = performance.now()
+      while (this.bossPose.state() !== 'idle') {
+        if (!await this.waitBloodCloseup(50, generation)) return
+        if (performance.now() - startedAt > 5000) break
+      }
+      this.setShot('table', 0.7)
+      while (this.cameraBlend < 1) {
+        if (!await this.waitBloodCloseup(50, generation)) return
+      }
+      this.bossPoseCameraHold = false
+    } else if (holdPlantForCamera) {
+      this.bossPoseCameraHold = true
+      this.setShot('table', 0.7)
+      while (this.shot !== 'table' || this.cameraBlend < 1) {
+        if (!await this.waitBloodCloseup(50, generation)) return
+      }
+      this.bossPoseCameraHold = false
+      this.bossPoseHold = false
+      this.bossPose.releasePlantHold()
+    }
     const resolution = this.pendingResolutionShot
     this.pendingResolutionShot = null
     this.bloodCloseupActor = null
@@ -1726,7 +1885,7 @@ export class SceneManager {
       this.setShot(resolution.shot, resolution.duration)
       return
     }
-    if (hpAfter > 0) this.setShot('table', 0.7)
+    if (hpAfter > 0 && !holdPlantForCamera && !suspendedHit) this.setShot('table', 0.7)
   }
 
   private playBloodCloseup(actor: ActorId, hpAfter: number, damage: number): boolean {
@@ -1799,6 +1958,8 @@ export class SceneManager {
 
   playShot(payload: ShotPayload): void {
     if (this.disposed) return
+    this.boss2HeadTwitchLife = 0
+    this.boss2HeadTwitchCooldown = BOSS2_HEAD_TWITCH_MIN_DELAY + Math.random() * (BOSS2_HEAD_TWITCH_MAX_DELAY - BOSS2_HEAD_TWITCH_MIN_DELAY)
     this.gunShakeAfterAim = false
     this.stopGunShake()
     const live = payload.chamber === 'live'
@@ -1845,6 +2006,8 @@ export class SceneManager {
           hpAfter: payload.hpAfter,
           maxHp: this.lastSnapshot?.boss.maxHp ?? Math.max(1, payload.hpAfter),
           level: BOSS_VISUAL_LEVEL,
+          controlled: this.currentLevelIndex === 1 && payload.hpAfter > 0,
+          suspended: this.currentLevelIndex === 2 && payload.hpAfter > 0,
         })
       }
     }
@@ -1904,8 +2067,13 @@ export class SceneManager {
     this.bossFlashLife = 0
   }
 
-  playReload(): void {
+  playReload(live: number, blank: number): void {
     if (this.disposed) return
+    this.animateReloadGun()
+    this.revealBulletTray(live, blank)
+  }
+
+  private animateReloadGun(): void {
     if (this.pumpSlide) {
       const slide = this.pumpSlide
       const base = this.pumpBaseZ
@@ -1931,6 +2099,97 @@ export class SceneManager {
         drum.rotation.z = start + t * Math.PI * 2
       },
     })
+  }
+
+  private revealBulletTray(live: number, blank: number): void {
+    const tray = this.bulletTray
+    if (!tray) return
+    const generation = ++tray.generation
+    const total = Math.max(0, Math.min(8, Math.round(live + blank)))
+    const liveCount = Math.max(0, Math.min(total, Math.round(live)))
+    const down = -BULLET_TRAY.travel
+    const from = tray.lift.position.y
+    tray.active = true
+    tray.light.intensity = 0
+    for (const bullet of tray.bullets) {
+      bullet.group.visible = false
+      bullet.group.position.y = -0.24
+    }
+
+    this.tween({
+      duration: this.reducedMotion ? 0.1 : 0.18,
+      onUpdate: (t) => {
+        if (generation !== tray.generation) return
+        tray.lift.position.y = from + (down - from) * easeInOutCubic(t)
+      },
+      onComplete: () => {
+        if (generation !== tray.generation) return
+        for (let index = 0; index < total; index += 1) {
+          const bullet = tray.bullets[index]
+          if (!bullet) continue
+          const material = index < liveCount ? tray.liveMaterial : tray.blankMaterial
+          bullet.shell.material = material
+          bullet.tip.material = material
+          bullet.group.visible = true
+          this.tween({
+            duration: this.reducedMotion ? 0.16 : 0.42,
+            delay: (this.reducedMotion ? 0 : 0.28) + index * (this.reducedMotion ? 0 : 0.06),
+            onUpdate: (t) => {
+              if (generation !== tray.generation) return
+              const eased = this.reducedMotion ? easeOutCubic(t) : easeOutCubic(t) + Math.sin(t * Math.PI) * 0.12
+              bullet.group.position.y = -0.24 + (0.03 + 0.24) * eased
+            },
+          })
+        }
+        this.tween({
+          duration: this.reducedMotion ? 0.14 : 0.34,
+          delay: this.reducedMotion ? 0 : 0.38,
+          onUpdate: (t) => {
+            if (generation !== tray.generation) return
+            tray.lift.position.y = down + (0 - down) * easeOutCubic(t)
+          },
+        })
+        this.tween({
+          duration: 0.35,
+          delay: this.reducedMotion ? 0 : 0.3,
+          onUpdate: (t) => {
+            if (generation !== tray.generation) return
+            tray.light.intensity = 1.15 * easeOutCubic(t)
+          },
+        })
+        this.tween({
+          duration: 0.3,
+          delay: this.reducedMotion ? 0.35 : 1.75,
+          onUpdate: (t) => {
+            if (generation !== tray.generation) return
+            tray.light.intensity = 1.15 * (1 - easeOutCubic(t))
+          },
+        })
+        this.tween({
+          duration: this.reducedMotion ? 0.18 : 0.32,
+          delay: this.reducedMotion ? 0.7 : 2.05,
+          onUpdate: (t) => {
+            if (generation !== tray.generation) return
+            tray.lift.position.y = down * easeInOutCubic(t)
+          },
+          onComplete: () => {
+            if (generation !== tray.generation) return
+            for (const bullet of tray.bullets) bullet.group.visible = false
+            tray.lift.position.y = 0
+            tray.light.intensity = 0
+            tray.active = false
+          },
+        })
+      },
+    })
+
+    if (!this.isBloodCloseupActive()) {
+      this.setShot('bulletTray', 0.45)
+      window.setTimeout(() => {
+        if (generation !== tray.generation || this.isBloodCloseupActive()) return
+        if (this.shot === 'bulletTray') this.resetShot(0.55)
+      }, this.reducedMotion ? 850 : 2050)
+    }
   }
 
   playItemUse(actor: ActorId, item: ItemId): void {
@@ -2693,7 +2952,7 @@ export class SceneManager {
   }
 
   private isCloseupShot(): boolean {
-    return this.shot === 'bloodPlayer' || this.shot === 'bloodBoss'
+    return this.shot === 'bloodPlayer' || this.shot === 'bloodBoss' || this.shot === 'bossHead'
   }
 
   private updateCamera(dt: number): void {
@@ -3033,26 +3292,38 @@ export class SceneManager {
     if (!this.bossPosePaused && !this.bossPoseHold) this.bossPose.update(dt)
     this.emitBossPoseCue()
     const pose = this.bossPose.sample()
+    const poseState = this.bossPose.state()
     const profile = BOSS_POSE_PROFILES[BOSS_VISUAL_LEVEL] ?? BOSS_POSE_PROFILES[0]
-    let bodyPitch = -breath * 0.55 + pose.pitch
+    const stageThreeHanging = this.currentLevelIndex === 2 &&
+      ((this.lastSnapshot?.boss.hp ?? 0) > 0 || this.lastSnapshot?.phase === 'reloading')
+    const suspensionTarget = stageThreeHanging ? BOSS3_INVERSION_LIFT : 0
+    this.suspensionLift += (suspensionTarget - this.suspensionLift) * Math.min(1, dt * 3.5)
+    this.suspensionWeight = clamp01((this.suspensionLift - 0.2) / (BOSS3_INVERSION_LIFT - 0.2))
+    const hangingSway = stageThreeHanging && poseState === 'idle' && !this.reducedMotion
+      ? this.suspensionWeight
+      : 0
+    let bodyPitch = -breath * 0.55 + pose.pitch + Math.sin(t * 0.71) * 0.018 * hangingSway
     if (this.activeBossMaskLevel === 1) {
       const state = this.bossPose.state()
       const target = state === 'prone' || state === 'deadProne' ? 1 : 0
       this.proneFlatten += (target - this.proneFlatten) * Math.min(1, dt * 3)
       bodyPitch += this.proneFlatten * 0.95
     }
-    const bodyRoll = pose.roll
+    const hangingPitch = Math.PI * this.suspensionWeight
+    bodyPitch += hangingPitch
+    const bodyYaw = pose.yaw + Math.PI * this.suspensionWeight + Math.sin(t * 0.53) * 0.035 * hangingSway
+    const bodyRoll = pose.roll + Math.sin(t * 0.67 + 0.8) * 0.035 * hangingSway
 
     // 绕虚拟枢轴旋转：先把枢轴点转到新姿态，再反推平移量，避免整尊半身像绕脚底甩动
-    this.bossPoseEuler.set(bodyPitch, pose.yaw, bodyRoll)
+    this.bossPoseEuler.set(bodyPitch, bodyYaw, bodyRoll)
     this.bossPosePivot.set(0, profile.pivotY, 0)
     this.bossPosePivotRotated.copy(this.bossPosePivot).applyEuler(this.bossPoseEuler)
     this.bossPoseOffset.copy(this.bossPosePivot).sub(this.bossPosePivotRotated)
-    this.bossGroup.rotation.set(bodyPitch, pose.yaw, bodyRoll)
+    this.bossGroup.rotation.set(bodyPitch, bodyYaw, bodyRoll)
     this.bossGroup.position.set(
-      0,
-      breath + pose.y + this.bossPoseOffset.y - (this.activeBossMaskLevel === 1 ? this.proneFlatten * 0.25 : 0),
-      BOSS_Z + pose.z + this.bossPoseOffset.z,
+      Math.sin(t * 0.59) * 0.045 * hangingSway,
+      breath + pose.y + this.bossPoseOffset.y + this.suspensionLift - (this.activeBossMaskLevel === 1 ? this.proneFlatten * 0.25 : 0),
+      BOSS_Z + pose.z + this.bossPoseOffset.z + Math.sin(t * 0.47 + 1.2) * 0.02 * hangingSway,
     )
 
     if (this.bossFlashLife > 0) {
@@ -3077,33 +3348,241 @@ export class SceneManager {
       pitch = pitch * (1 - env) - 0.03 * env
     }
 
-    const headYaw = yaw * pose.lookWeight
-    const headPitch = pitch * pose.lookWeight + pose.headPitch
+    if (stageThreeHanging && poseState === 'idle') {
+      yaw = 0
+      pitch = -0.025
+    }
+    const headYaw = pose.headYaw + (yaw - Math.PI * this.suspensionWeight) * pose.lookWeight
+    const headPitch = pitch * pose.lookWeight + pose.headPitch - Math.PI * this.suspensionWeight * pose.lookWeight
+    // 换层 reloading 快照里 Boss 血量可能仍是 0，不能因此漏掉第二层歪头。
+    const stageTwoAffliction = this.currentLevelIndex === 1 &&
+      ((this.lastSnapshot?.boss.hp ?? 0) > 0 || this.lastSnapshot?.phase === 'reloading')
+    const canTwitch = stageTwoAffliction && !this.reducedMotion && poseState === 'idle' && !this.isBloodCloseupActive()
+    if (!stageTwoAffliction) {
+      this.boss2HeadTwitchLife = 0
+      if (this.boss2HeadTwitchCooldown <= 0) {
+        this.boss2HeadTwitchCooldown = BOSS2_HEAD_TWITCH_MIN_DELAY + Math.random() * (BOSS2_HEAD_TWITCH_MAX_DELAY - BOSS2_HEAD_TWITCH_MIN_DELAY)
+      }
+    } else if (!canTwitch) {
+      this.boss2HeadTwitchLife = 0
+    } else if (this.boss2HeadTwitchLife > 0) {
+      this.boss2HeadTwitchLife = Math.max(0, this.boss2HeadTwitchLife - dt)
+    } else {
+      this.boss2HeadTwitchCooldown = Math.max(0, this.boss2HeadTwitchCooldown - dt)
+      if (this.boss2HeadTwitchCooldown <= 0) {
+        this.boss2HeadTwitchLife = BOSS2_HEAD_TWITCH_LIFE
+        this.boss2HeadTwitchCooldown = BOSS2_HEAD_TWITCH_MIN_DELAY + Math.random() * (BOSS2_HEAD_TWITCH_MAX_DELAY - BOSS2_HEAD_TWITCH_MIN_DELAY)
+      }
+    }
+
+    let headTwitch = 0
+    if (this.boss2HeadTwitchLife > 0) {
+      const progress = 1 - this.boss2HeadTwitchLife / BOSS2_HEAD_TWITCH_LIFE
+      if (progress < BOSS2_HEAD_TWITCH_KEYS.at(-1)![0]) {
+        for (let i = 1; i < BOSS2_HEAD_TWITCH_KEYS.length; i += 1) {
+          const [endAt, endRoll] = BOSS2_HEAD_TWITCH_KEYS[i]
+          if (progress > endAt) continue
+          const [startAt, startRoll] = BOSS2_HEAD_TWITCH_KEYS[i - 1]
+          const local = (progress - startAt) / (endAt - startAt)
+          const eased = local * local * (3 - 2 * local)
+          headTwitch = (startRoll + (endRoll - startRoll) * eased) * Math.PI / 180
+          break
+        }
+      } else {
+        const settle = (progress - 0.34) / 0.66
+        headTwitch = Math.sin(settle * Math.PI * 3) * 3 * (1 - settle) * Math.PI / 180
+      }
+    }
+    const headRoll = pose.headRoll + (stageTwoAffliction ? BOSS2_HEAD_TILT + headTwitch : 0)
     if (this.bossHeadBone) {
+      this.bossHeadBone.position.copy(this.bossHeadRestPosition)
+      this.bossHeadBone.position.z += BOSS3_HEAD_CLEARANCE * this.suspensionWeight
       // 父链（Hips→Spine→Chest→Neck）静止无旋转，父空间偏移与旧枢轴等价
-      this.bossBoneOffset.set(headPitch, headYaw, pose.headRoll)
+      this.bossBoneOffset.set(headPitch, headYaw, headRoll)
       this.bossBoneQuat.setFromEuler(this.bossBoneOffset)
       this.bossHeadBone.quaternion.copy(this.bossBoneQuat).multiply(this.bossHeadRest)
     } else {
       // 程序化 Boss 兜底：沿用旧的可动头部
-      this.bossParts.head.rotation.set(headPitch, headYaw, pose.headRoll)
+      this.bossParts.head.rotation.set(headPitch, headYaw, headRoll)
       const maskBob = Math.sin(t * 1.6) * 0.004
       this.bossParts.mask.position.y = (this.bossParts.mask.userData.baseY as number) + maskBob
       this.bossParts.maskBack.position.y = (this.bossParts.maskBack.userData.baseY as number) + maskBob
     }
 
     // 上臂骨骼静止约绕 X 转 180°，偏移在父空间左乘才能复现旧枢轴的世界轴摆动
+    const state = poseState
+    const knockbackArms =
+      state === 'launch' || state === 'down' || state === 'plant' ||
+      state === 'brace' || state === 'push' || state === 'rise' ||
+      state === 'struggle' || state === 'still' || state === 'headTurn'
+    const upperPitch = knockbackArms ? 0.9 : 0.3
+    const upperSpread = knockbackArms ? 0.42 : 0.28
     if (this.bossArmLBone) {
-      this.bossBoneOffset.set(-pose.armL * 0.3, 0, -pose.armL * 0.28)
+      this.bossBoneOffset.set(-pose.armL * upperPitch, 0, -pose.armL * upperSpread)
       this.bossBoneQuat.setFromEuler(this.bossBoneOffset)
       this.bossArmLBone.quaternion.copy(this.bossBoneQuat).multiply(this.bossArmLRest)
     }
     if (this.bossArmRBone) {
-      this.bossBoneOffset.set(-pose.armR * 0.3, 0, pose.armR * 0.28)
+      this.bossBoneOffset.set(-pose.armR * upperPitch, 0, pose.armR * upperSpread)
       this.bossBoneQuat.setFromEuler(this.bossBoneOffset)
       this.bossArmRBone.quaternion.copy(this.bossBoneQuat).multiply(this.bossArmRRest)
     }
+    if (this.bossForearmLBone) {
+      this.bossBoneOffset.set(-pose.forearmL * 1.05, 0, -pose.forearmL * 0.12)
+      this.bossBoneQuat.setFromEuler(this.bossBoneOffset)
+      this.bossForearmLBone.quaternion.copy(this.bossBoneQuat).multiply(this.bossForearmLRest)
+    }
+    if (this.bossForearmRBone) {
+      this.bossBoneOffset.set(-pose.forearmR * 1.05, 0, pose.forearmR * 0.12)
+      this.bossBoneQuat.setFromEuler(this.bossBoneOffset)
+      this.bossForearmRBone.quaternion.copy(this.bossBoneQuat).multiply(this.bossForearmRRest)
+    }
+    if (this.bossThighLBone) {
+      this.bossBoneOffset.set(
+        -pose.legL * 0.5 * this.suspensionWeight,
+        0,
+        -pose.legL * 0.24 * this.suspensionWeight,
+      )
+      this.bossBoneQuat.setFromEuler(this.bossBoneOffset)
+      this.bossThighLBone.quaternion.copy(this.bossBoneQuat).multiply(this.bossThighLRest)
+    }
+    if (this.bossThighRBone) {
+      this.bossBoneOffset.set(
+        -pose.legR * 0.5 * this.suspensionWeight,
+        0,
+        pose.legR * 0.24 * this.suspensionWeight,
+      )
+      this.bossBoneQuat.setFromEuler(this.bossBoneOffset)
+      this.bossThighRBone.quaternion.copy(this.bossBoneQuat).multiply(this.bossThighRRest)
+    }
+    if (
+      this.activeBossMaskLevel === 0 &&
+      this.currentLevelIndex === 0 &&
+      this.bossUpperArmLength > 0 &&
+      this.bossForearmLLength > 0 &&
+      this.bossForearmRLength > 0
+    ) {
+      let leftContact = 0
+      let rightContact = 0
+      if (state === 'plant') {
+        leftContact = easeOutCubic(clamp01(this.bossPose.stateProgress() / 0.32))
+      } else if (state === 'brace') {
+        leftContact = 1
+        rightContact = clamp01((pose.armR - 0.2) / 1.15)
+      } else if (state === 'push') {
+        leftContact = 1
+        rightContact = 1
+      } else if (state === 'rise') {
+        leftContact = clamp01((pose.pitch + 0.03) / 0.3)
+        rightContact = leftContact
+      }
+      this.bossGroup.updateMatrixWorld(true)
+      if (leftContact > 0 && this.bossArmLBone && this.bossForearmLBone) {
+        this.solveBossArmContact(
+          this.bossArmLBone,
+          this.bossForearmLBone,
+          this.bossArmLRest,
+          this.bossForearmLRest,
+          this.bossArmLDirection,
+          this.bossHandLOffset,
+          this.bossForearmLLength,
+          this.bossHandContactL,
+          leftContact,
+          -1,
+        )
+      }
+      if (rightContact > 0 && this.bossArmRBone && this.bossForearmRBone) {
+        this.solveBossArmContact(
+          this.bossArmRBone,
+          this.bossForearmRBone,
+          this.bossArmRRest,
+          this.bossForearmRRest,
+          this.bossArmRDirection,
+          this.bossHandROffset,
+          this.bossForearmRLength,
+          this.bossHandContactR,
+          rightContact,
+          1,
+        )
+      }
+    }
+    this.bossGroup.updateMatrixWorld(true)
+    this.updateSuspensionRig()
     this.updateBossLimbs()
+  }
+
+  private solveBossArmContact(
+    upper: THREE.Bone,
+    forearm: THREE.Bone,
+    upperRest: THREE.Quaternion,
+    forearmRest: THREE.Quaternion,
+    upperRestDirection: THREE.Vector3,
+    handOffset: THREE.Vector3,
+    forearmLength: number,
+    target: THREE.Vector3,
+    weight: number,
+    poleSide: number,
+  ): void {
+    this.bossIkUpperFk.copy(upper.quaternion)
+    this.bossIkForearmFk.copy(forearm.quaternion)
+    this.solveBossArmGeometry(
+      upper,
+      forearm,
+      upperRest,
+      forearmRest,
+      upperRestDirection,
+      handOffset,
+      forearmLength,
+      target,
+      poleSide,
+    )
+    this.bossIkUpperSolved.copy(upper.quaternion)
+    this.bossIkForearmSolved.copy(forearm.quaternion)
+    upper.quaternion.copy(this.bossIkUpperFk).slerp(this.bossIkUpperSolved, weight)
+    forearm.quaternion.copy(this.bossIkForearmFk).slerp(this.bossIkForearmSolved, weight)
+    upper.updateWorldMatrix(true, true)
+  }
+
+  private solveBossArmGeometry(
+    upper: THREE.Bone,
+    forearm: THREE.Bone,
+    upperRest: THREE.Quaternion,
+    forearmRest: THREE.Quaternion,
+    upperRestDirection: THREE.Vector3,
+    handOffset: THREE.Vector3,
+    forearmLength: number,
+    target: THREE.Vector3,
+    poleSide: number,
+  ): void {
+    upper.updateWorldMatrix(true, true)
+    upper.getWorldPosition(this.bossIkShoulder)
+    this.bossIkDirection.copy(target).sub(this.bossIkShoulder)
+    const reach = this.bossUpperArmLength + forearmLength
+    const minReach = Math.abs(this.bossUpperArmLength - forearmLength) + 0.001
+    const distance = Math.max(minReach, Math.min(reach - 0.001, this.bossIkDirection.length()))
+    this.bossIkDirection.normalize()
+    this.bossIkClampedTarget.copy(this.bossIkShoulder).addScaledVector(this.bossIkDirection, distance)
+    const along = (this.bossUpperArmLength ** 2 - forearmLength ** 2 + distance ** 2) / (2 * distance)
+    const bend = Math.sqrt(Math.max(0, this.bossUpperArmLength ** 2 - along ** 2))
+    this.bossIkPole.set(poleSide * 1.4, -0.65, -0.45)
+    this.bossIkBend.copy(this.bossIkPole).addScaledVector(this.bossIkDirection, -this.bossIkPole.dot(this.bossIkDirection)).normalize()
+    this.bossIkElbow.copy(this.bossIkShoulder).addScaledVector(this.bossIkDirection, along).addScaledVector(this.bossIkBend, bend)
+    this.bossIkUpperDirection.copy(this.bossIkElbow).sub(this.bossIkShoulder).normalize()
+    this.bossIkLowerDirection.copy(this.bossIkClampedTarget).sub(this.bossIkElbow).normalize()
+
+    upper.parent!.getWorldQuaternion(this.bossIkParentQuat).invert()
+    this.bossIkParentDirection.copy(upperRestDirection).applyQuaternion(upperRest).normalize()
+    this.bossIkUpperDirection.applyQuaternion(this.bossIkParentQuat)
+    this.bossIkOffsetQuat.setFromUnitVectors(this.bossIkParentDirection, this.bossIkUpperDirection)
+    upper.quaternion.copy(this.bossIkOffsetQuat).multiply(upperRest)
+
+    upper.updateWorldMatrix(true, true)
+    upper.getWorldQuaternion(this.bossIkParentQuat).invert()
+    this.bossIkParentDirection.copy(handOffset).normalize().applyQuaternion(forearmRest).normalize()
+    this.bossIkLowerDirection.applyQuaternion(this.bossIkParentQuat)
+    this.bossIkOffsetQuat.setFromUnitVectors(this.bossIkParentDirection, this.bossIkLowerDirection)
+    forearm.quaternion.copy(this.bossIkOffsetQuat).multiply(forearmRest)
+    forearm.updateWorldMatrix(true, true)
   }
 
   /** 沙漏滤镜强度平滑跟随快照状态；使用瞬间叠一次短闪 */
@@ -3182,9 +3661,14 @@ export class SceneManager {
     } else {
       // Boss 手在桌后不可见，链子改箍住半身像下段，读作「被缚住」
       const bustHeight = BOSS_BUST_HEIGHTS[BOSS_VISUAL_LEVEL] ?? BOSS_BUST_HEIGHTS[0]
-      group.position.set(0, BOSS_BUST_BASE_Y + bustHeight * 0.42, BOSS_Z + 0.55)
+      if (this.currentLevelIndex === 2) {
+        group.position.set(0, BOSS_BUST_BASE_Y + bustHeight * 0.96, BOSS_Z + 0.3)
+        group.rotation.z = Math.PI + 0.05
+      } else {
+        group.position.set(0, BOSS_BUST_BASE_Y + bustHeight * 0.42, BOSS_Z + 0.55)
+        group.rotation.z = 0.05
+      }
       group.scale.setScalar(2.4)
-      group.rotation.z = 0.05
     }
     this.scene.add(group)
 
@@ -3595,81 +4079,95 @@ export class SceneManager {
   }
 
   private buildActionButtons(): void {
+    for (const [index, action] of (['hit', 'stand'] as const).entries()) {
+      const button = this.makeActionButton(action, index === 0 ? -0.35 : 0.35, 2.05, 0)
+      this.scene.add(button.root)
+      this.actionButtons.set(action, button)
+    }
+    // 对沿镜像一组：只作桌面对称陈列，按道具惯例转 180° 朝 Boss，不参与拾取/悬停
+    for (const [index, action] of (['hit', 'stand'] as const).entries()) {
+      const button = this.makeActionButton(action, index === 0 ? -0.35 : 0.35, -2.05, Math.PI)
+      button.root.name = `TableActionBoss-${action}`
+      button.face.emissiveIntensity = 0.06
+      button.indicator.emissiveIntensity = 0.02
+      this.scene.add(button.root)
+    }
+  }
+
+  private makeActionButton(action: TableAction, x: number, z: number, yaw: number): ActionButton {
     const iron = makeStandardMaterial(0x262421, 0.7, 0.65)
     const brass = makeStandardMaterial(0x947047, 0.65, 0.52)
-    for (const [index, action] of (['hit', 'stand'] as const).entries()) {
-      const root = new THREE.Group()
-      root.name = `TableAction-${action}`
-      root.userData.tableAction = action
-      root.position.set(index === 0 ? -0.35 : 0.35, TABLE_TOP + 0.12, 2.05)
-      root.rotation.x = 0.2
-      const socket = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.09, 0.44), iron)
-      socket.castShadow = true
-      socket.receiveShadow = true
-      root.add(socket)
-      const bezel = new THREE.Mesh(new THREE.BoxGeometry(0.59, 0.025, 0.39), brass)
-      bezel.position.y = 0.052
-      root.add(bezel)
-      const cap = new THREE.Group()
-      cap.position.y = 0.075
-      const body = new THREE.Mesh(new THREE.BoxGeometry(0.53, 0.055, 0.33), iron)
-      body.castShadow = true
-      cap.add(body)
+    const root = new THREE.Group()
+    root.name = `TableAction-${action}`
+    root.userData.tableAction = action
+    root.position.set(x, TABLE_TOP + 0.12, z)
+    root.rotation.order = 'YXZ'
+    root.rotation.set(0.2, yaw, 0)
+    const socket = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.09, 0.44), iron)
+    socket.castShadow = true
+    socket.receiveShadow = true
+    root.add(socket)
+    const bezel = new THREE.Mesh(new THREE.BoxGeometry(0.59, 0.025, 0.39), brass)
+    bezel.position.y = 0.052
+    root.add(bezel)
+    const cap = new THREE.Group()
+    cap.position.y = 0.075
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.53, 0.055, 0.33), iron)
+    body.castShadow = true
+    cap.add(body)
 
-      const canvas = document.createElement('canvas')
-      canvas.width = 512
-      canvas.height = 320
-      const ctx = canvas.getContext('2d')!
-      ctx.fillStyle = action === 'hit' ? '#39332a' : '#342726'
-      ctx.fillRect(0, 0, 512, 320)
-      ctx.strokeStyle = '#8d7050'
-      ctx.lineWidth = 3
-      ctx.strokeRect(14, 14, 484, 292)
-      ctx.strokeStyle = 'rgba(196,166,116,0.13)'
-      ctx.lineWidth = 1
-      for (let i = 0; i < 24; i += 1) {
-        const x = (i * 137) % 480
-        const y = (i * 89) % 300
-        ctx.beginPath()
-        ctx.moveTo(x, y)
-        ctx.lineTo(x + 15 + (i % 7) * 5, y - 3)
-        ctx.stroke()
-      }
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillStyle = '#ead7ad'
-      ctx.font = 'bold 92px "Microsoft YaHei", sans-serif'
-      ctx.fillText(action === 'hit' ? '要牌' : '停牌', 256, 131)
-      ctx.font = '30px Georgia, serif'
-      ctx.fillStyle = '#bc9b6b'
-      ctx.fillText(action === 'hit' ? 'H  ·  HIT' : 'S  ·  STAND', 256, 237)
-      const texture = new THREE.CanvasTexture(canvas)
-      texture.colorSpace = THREE.SRGBColorSpace
-      texture.anisotropy = 4
-      const face = new THREE.MeshStandardMaterial({
-        map: texture, roughness: 0.72, metalness: 0.2,
-        emissiveMap: texture, emissive: 0xffffff, emissiveIntensity: 0.08,
-      })
-      const label = new THREE.Mesh(new THREE.PlaneGeometry(0.525, 0.325), face)
-      label.rotation.x = -Math.PI / 2
-      label.position.y = 0.028
-      cap.add(label)
-      root.add(cap)
-      const indicator = new THREE.MeshStandardMaterial({
-        color: 0x483921, emissive: 0xe5a24b, emissiveIntensity: 0,
-        roughness: 0.45, metalness: 0.35,
-      })
-      const light = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.012, 0.014), indicator)
-      light.position.set(0, 0.066, -0.189)
-      root.add(light)
-      for (const x of [-0.282, 0.282]) {
-        const screw = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.008, 8), brass)
-        screw.position.set(x, 0.057, 0.165)
-        root.add(screw)
-      }
-      this.scene.add(root)
-      this.actionButtons.set(action, { root, cap, face, indicator, texture, pressedUntil: 0 })
+    const canvas = document.createElement('canvas')
+    canvas.width = 512
+    canvas.height = 320
+    const ctx = canvas.getContext('2d')!
+    ctx.fillStyle = action === 'hit' ? '#39332a' : '#342726'
+    ctx.fillRect(0, 0, 512, 320)
+    ctx.strokeStyle = '#8d7050'
+    ctx.lineWidth = 3
+    ctx.strokeRect(14, 14, 484, 292)
+    ctx.strokeStyle = 'rgba(196,166,116,0.13)'
+    ctx.lineWidth = 1
+    for (let i = 0; i < 24; i += 1) {
+      const px = (i * 137) % 480
+      const py = (i * 89) % 300
+      ctx.beginPath()
+      ctx.moveTo(px, py)
+      ctx.lineTo(px + 15 + (i % 7) * 5, py - 3)
+      ctx.stroke()
     }
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = '#ead7ad'
+    ctx.font = 'bold 92px "Microsoft YaHei", sans-serif'
+    ctx.fillText(action === 'hit' ? '要牌' : '停牌', 256, 131)
+    ctx.font = '30px Georgia, serif'
+    ctx.fillStyle = '#bc9b6b'
+    ctx.fillText(action === 'hit' ? 'H  ·  HIT' : 'S  ·  STAND', 256, 237)
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.colorSpace = THREE.SRGBColorSpace
+    texture.anisotropy = 4
+    const face = new THREE.MeshStandardMaterial({
+      map: texture, roughness: 0.72, metalness: 0.2,
+      emissiveMap: texture, emissive: 0xffffff, emissiveIntensity: 0.08,
+    })
+    const label = new THREE.Mesh(new THREE.PlaneGeometry(0.525, 0.325), face)
+    label.rotation.x = -Math.PI / 2
+    label.position.y = 0.028
+    cap.add(label)
+    root.add(cap)
+    const indicator = new THREE.MeshStandardMaterial({
+      color: 0x483921, emissive: 0xe5a24b, emissiveIntensity: 0,
+      roughness: 0.45, metalness: 0.35,
+    })
+    const light = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.012, 0.014), indicator)
+    light.position.set(0, 0.066, -0.189)
+    root.add(light)
+    for (const screwX of [-0.282, 0.282]) {
+      const screw = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.008, 8), brass)
+      screw.position.set(screwX, 0.057, 0.165)
+      root.add(screw)
+    }
+    return { root, cap, face, indicator, texture, pressedUntil: 0 }
   }
 
   setTableActionsAllowed(allowed: boolean): void {
@@ -3681,6 +4179,25 @@ export class SceneManager {
     if (this.supplyRevealAllowed === allowed) return
     this.supplyRevealAllowed = allowed
     if (allowed && this.lastSnapshot) this.syncSupply(this.lastSnapshot)
+  }
+
+  getBossDialogueAnchor(): { x: number; y: number; visible: boolean } {
+    if (!this.bossHeadBone) return { x: 0.5, y: 0.35, visible: false }
+    this.bossHeadBone.getWorldPosition(this.bossDialogueVector)
+    this.bossDialogueVector.project(this.camera)
+    const x = (this.bossDialogueVector.x + 1) / 2
+    const y = (1 - this.bossDialogueVector.y) / 2
+    return {
+      x,
+      y,
+      visible:
+        this.bossDialogueVector.z > -1 &&
+        this.bossDialogueVector.z < 1 &&
+        x > 0.04 &&
+        x < 0.94 &&
+        y > 0.06 &&
+        y < 0.9,
+    }
   }
 
   private canUseTableActions(): boolean {
@@ -3911,7 +4428,7 @@ export class SceneManager {
     const drum = new THREE.Group()
     drum.position.set(0, 0.035, -0.09)
     root.add(drum)
-    const drumGeo = new THREE.CylinderGeometry(0.095, 0.095, 0.17, 6)
+    const drumGeo = new THREE.CylinderGeometry(0.095, 0.095, 0.17, 8)
     this.disposableGeometries.add(drumGeo)
     const drumBody = new THREE.Mesh(drumGeo, darkSteel)
     drumBody.rotation.x = Math.PI / 2
@@ -3926,8 +4443,8 @@ export class SceneManager {
       roughness: 0.9,
     })
     this.disposableMaterials.add(chamberMat)
-    for (let i = 0; i < 6; i += 1) {
-      const angle = (i / 6) * Math.PI * 2
+    for (let i = 0; i < 8; i += 1) {
+      const angle = (i / 8) * Math.PI * 2
       const tube = new THREE.Mesh(chamberGeo, chamberMat)
       tube.rotation.x = Math.PI / 2
       tube.position.set(Math.cos(angle) * 0.058, Math.sin(angle) * 0.058, 0.085)
@@ -4038,6 +4555,54 @@ export class SceneManager {
     return points
   }
 
+  private buildSuspensionRig(): void {
+    const geometry = new THREE.TorusGeometry(0.036, 0.009, 6, 10)
+    const material = new THREE.MeshStandardMaterial({
+      color: 0x3d4145,
+      metalness: 0.85,
+      roughness: 0.48,
+    })
+    this.disposableGeometries.add(geometry)
+    this.disposableMaterials.add(material)
+    this.suspensionChains = this.suspensionAnchors.map(() => {
+      const chain = new THREE.InstancedMesh(geometry, material, SUSPENSION_LINK_COUNT)
+      chain.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      chain.frustumCulled = false
+      chain.visible = false
+      this.scene.add(chain)
+      return chain
+    })
+  }
+
+  private updateSuspensionRig(): void {
+    const legs = [this.bossThighLBone, this.bossThighRBone]
+    const offsets = [this.bossFootLOffset, this.bossFootROffset]
+    for (let side = 0; side < this.suspensionChains.length; side += 1) {
+      const chain = this.suspensionChains[side]
+      const leg = legs[side]
+      const offset = offsets[side]
+      const ready = this.suspensionLift > 0.02 && leg && offset.lengthSq() > 0.001
+      chain.visible = Boolean(ready)
+      if (!ready || !leg) continue
+      this.suspensionAnchor.copy(this.suspensionAnchors[side])
+      this.suspensionFoot.copy(offset)
+      leg.localToWorld(this.suspensionFoot)
+      this.suspensionDirection.copy(this.suspensionFoot).sub(this.suspensionAnchor).normalize()
+      for (let link = 0; link < SUSPENSION_LINK_COUNT; link += 1) {
+        this.suspensionDummy.position.lerpVectors(
+          this.suspensionAnchor,
+          this.suspensionFoot,
+          (link + 0.5) / SUSPENSION_LINK_COUNT,
+        )
+        this.suspensionDummy.quaternion.setFromUnitVectors(this.suspensionUp, this.suspensionDirection)
+        this.suspensionDummy.rotateY(link % 2 === 0 ? 0 : Math.PI / 2)
+        this.suspensionDummy.updateMatrix()
+        chain.setMatrixAt(link, this.suspensionDummy.matrix)
+      }
+      chain.instanceMatrix.needsUpdate = true
+    }
+  }
+
   /** 实弹命中的血雾：一小撮带重力的血珠 + 一团扩散的红雾，都朝镜头方向喷出 */
   private buildBloodBurst(): THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial> {
     const positions = new Float32Array(BLOOD_PARTICLE_COUNT * 3)
@@ -4066,6 +4631,13 @@ export class SceneManager {
   private bossHitPoint(out: THREE.Vector3): THREE.Vector3 {
     const marker = this.bossGroup.getObjectByName('BossHitPoint')
     if (marker) return marker.getWorldPosition(out)
+    if (this.currentLevelIndex === 2 && this.bossChestBone) {
+      this.bossChestBone.getWorldPosition(out)
+      const orientation = this.bossGroup.quaternion
+      out.x += 0.48 * orientation.z
+      out.y -= 0.48 * orientation.x
+      return out
+    }
     const bustHeight = BOSS_BUST_HEIGHTS[BOSS_VISUAL_LEVEL] ?? BOSS_BUST_HEIGHTS[0]
     return out.set(0, BOSS_BUST_BASE_Y + bustHeight * BOSS_CHEST_RATIO, BOSS_Z + 0.62)
   }
@@ -4271,6 +4843,10 @@ export class SceneManager {
     this.currentLevelIndex = index
     if (index === this.levelLookIndex) return
     this.levelLookIndex = index
+    if (index === 1) {
+      this.boss2HeadTwitchLife = 0
+      this.boss2HeadTwitchCooldown = BOSS2_HEAD_TWITCH_MIN_DELAY + Math.random() * (BOSS2_HEAD_TWITCH_MAX_DELAY - BOSS2_HEAD_TWITCH_MIN_DELAY)
+    }
     const look = LEVEL_LOOK[index]
     if (!look) return
     this.rimLight.color.setHex(look.rim)
@@ -4309,13 +4885,62 @@ export class SceneManager {
     // GLTFLoader 会把 UpperArm.L 规范成 UpperArmL。
     const headBone = wrapper.getObjectByName('Head')
     this.bossHeadBone = headBone instanceof THREE.Bone ? headBone : null
-    if (this.bossHeadBone) this.bossHeadRest.copy(this.bossHeadBone.quaternion)
+    if (this.bossHeadBone) {
+      this.bossHeadRest.copy(this.bossHeadBone.quaternion)
+      this.bossHeadRestPosition.copy(this.bossHeadBone.position)
+    }
     const armLBone = wrapper.getObjectByName('UpperArmL')
     const armRBone = wrapper.getObjectByName('UpperArmR')
+    const forearmLBone = wrapper.getObjectByName('ForearmL')
+    const forearmRBone = wrapper.getObjectByName('ForearmR')
+    const thighLBone = wrapper.getObjectByName('ThighL')
+    const thighRBone = wrapper.getObjectByName('ThighR')
+    const chestBone = wrapper.getObjectByName('Chest')
     this.bossArmLBone = armLBone instanceof THREE.Bone ? armLBone : null
     this.bossArmRBone = armRBone instanceof THREE.Bone ? armRBone : null
+    this.bossForearmLBone = forearmLBone instanceof THREE.Bone ? forearmLBone : null
+    this.bossForearmRBone = forearmRBone instanceof THREE.Bone ? forearmRBone : null
+    this.bossThighLBone = thighLBone instanceof THREE.Bone ? thighLBone : null
+    this.bossThighRBone = thighRBone instanceof THREE.Bone ? thighRBone : null
+    this.bossChestBone = chestBone instanceof THREE.Bone ? chestBone : null
     if (this.bossArmLBone) this.bossArmLRest.copy(this.bossArmLBone.quaternion)
     if (this.bossArmRBone) this.bossArmRRest.copy(this.bossArmRBone.quaternion)
+    if (this.bossForearmLBone) this.bossForearmLRest.copy(this.bossForearmLBone.quaternion)
+    if (this.bossForearmRBone) this.bossForearmRRest.copy(this.bossForearmRBone.quaternion)
+    if (this.bossThighLBone) this.bossThighLRest.copy(this.bossThighLBone.quaternion)
+    if (this.bossThighRBone) this.bossThighRRest.copy(this.bossThighRBone.quaternion)
+    this.bossGroup.updateMatrixWorld(true)
+    this.bossForearmLLength = 0
+    this.bossForearmRLength = 0
+    if (this.bossArmLBone && this.bossForearmLBone) {
+      this.bossArmLDirection.copy(this.bossForearmLBone.position).normalize()
+      this.bossArmLBone.getWorldPosition(this.bossIkShoulder)
+      this.bossForearmLBone.getWorldPosition(this.bossIkElbow)
+      this.bossUpperArmLength = this.bossIkShoulder.distanceTo(this.bossIkElbow)
+      const hand = this.measureBossHandEffector(wrapper, this.bossForearmLBone)
+      if (hand) {
+        this.bossHandLOffset.copy(hand.offset)
+        this.bossForearmLLength = hand.length
+      }
+    }
+    if (this.bossArmRBone && this.bossForearmRBone) {
+      this.bossArmRDirection.copy(this.bossForearmRBone.position).normalize()
+      const hand = this.measureBossHandEffector(wrapper, this.bossForearmRBone)
+      if (hand) {
+        this.bossHandROffset.copy(hand.offset)
+        this.bossForearmRLength = hand.length
+      }
+    }
+    this.bossFootLOffset.set(0, 0, 0)
+    this.bossFootROffset.set(0, 0, 0)
+    if (this.bossThighLBone) {
+      const foot = this.measureBossHandEffector(wrapper, this.bossThighLBone)
+      if (foot) this.bossFootLOffset.copy(foot.offset)
+    }
+    if (this.bossThighRBone) {
+      const foot = this.measureBossHandEffector(wrapper, this.bossThighRBone)
+      if (foot) this.bossFootROffset.copy(foot.offset)
+    }
     this.collectBossLimbs(wrapper)
 
     // 半身像含完整头部与双肩，隐藏程序化面具与躯干
@@ -4323,6 +4948,70 @@ export class SceneManager {
     this.bossParts.maskBack.visible = false
     this.bossParts.head.visible = false
     this.setProgrammaticBodyVisible(false)
+  }
+
+  private measureBossHandEffector(
+    wrapper: THREE.Group,
+    forearm: THREE.Bone,
+  ): { mesh: THREE.SkinnedMesh; offset: THREE.Vector3; length: number } | null {
+    const best = { mesh: null as THREE.SkinnedMesh | null, boneIndex: -1, weight: -1 }
+    wrapper.traverse((object) => {
+      if (!(object instanceof THREE.SkinnedMesh)) return
+      const index = object.skeleton.bones.indexOf(forearm)
+      if (index < 0) return
+      const skinIndex = object.geometry.getAttribute('skinIndex')
+      const skinWeight = object.geometry.getAttribute('skinWeight')
+      let total = 0
+      for (let i = 0; i < skinIndex.count; i += 1) {
+        for (let k = 0; k < 4; k += 1) {
+          if (skinIndex.getComponent(i, k) === index) total += skinWeight.getComponent(i, k)
+        }
+      }
+      if (total > best.weight) {
+        best.mesh = object
+        best.boneIndex = index
+        best.weight = total
+      }
+    })
+    const mesh = best.mesh
+    const boneIndex = best.boneIndex
+    if (!mesh) return null
+
+    // ArmL_3/R_3 蒙皮在上臂；掌心点必须从前臂权重最高的网格远端取样。
+    mesh.skeleton.update()
+    mesh.updateWorldMatrix(true, false)
+    const position = mesh.geometry.getAttribute('position')
+    const skinIndex = mesh.geometry.getAttribute('skinIndex')
+    const skinWeight = mesh.geometry.getAttribute('skinWeight')
+    const elbow = forearm.getWorldPosition(new THREE.Vector3())
+    const centroid = new THREE.Vector3()
+    const vertex = new THREE.Vector3()
+    const candidates: THREE.Vector3[] = []
+    for (let i = 0; i < position.count; i += 1) {
+      let weight = 0
+      for (let k = 0; k < 4; k += 1) {
+        if (skinIndex.getComponent(i, k) === boneIndex) weight += skinWeight.getComponent(i, k)
+      }
+      if (weight < 0.35) continue
+      mesh.getVertexPosition(i, vertex)
+      vertex.applyMatrix4(mesh.matrixWorld)
+      candidates.push(vertex.clone())
+      centroid.add(vertex)
+    }
+    if (candidates.length === 0) return null
+    centroid.multiplyScalar(1 / candidates.length)
+    const direction = centroid.sub(elbow)
+    if (direction.lengthSq() < 1e-6) return null
+    direction.normalize()
+    const ranked = candidates
+      .map((point) => ({ point, projection: point.dot(direction) }))
+      .sort((a, b) => b.projection - a.projection)
+    const sampleCount = Math.min(ranked.length, Math.max(8, Math.round(ranked.length * 0.12)))
+    const palm = new THREE.Vector3()
+    for (let i = 0; i < sampleCount; i += 1) palm.add(ranked[i].point)
+    palm.multiplyScalar(1 / sampleCount)
+    const offset = forearm.worldToLocal(palm.clone())
+    return { mesh, offset, length: elbow.distanceTo(palm) }
   }
 
   /** L2 虫体：按象限拆出的四肢（每肢三段），收好节点与静止姿态，供击倒/起身驱动 */
@@ -4890,6 +5579,138 @@ export class SceneManager {
       this.itemGrid.add(gridLight)
     }
     this.itemRoot.add(this.itemGrid)
+  }
+
+  private buildBulletTray(): void {
+    const root = new THREE.Group()
+    root.name = 'BulletTray'
+    root.position.set(BULLET_TRAY.centerX, TABLE_TOP + 0.002, BULLET_TRAY.centerZ)
+    root.rotation.y = -0.06
+
+    const width = BULLET_TRAY.columns * BULLET_TRAY.spacing + 0.08
+    const depth = BULLET_TRAY.rows * BULLET_TRAY.spacing + 0.08
+    const panelGeo = new THREE.BoxGeometry(width, 0.004, depth)
+    const panelMat = new THREE.MeshStandardMaterial({
+      color: 0x030202,
+      metalness: 0.2,
+      roughness: 0.96,
+      emissive: 0x020101,
+      emissiveIntensity: 0.25,
+    })
+    const rimMat = new THREE.MeshStandardMaterial({
+      color: 0x8c652f,
+      metalness: 0.78,
+      roughness: 0.4,
+      emissive: 0x2a1908,
+      emissiveIntensity: 0.25,
+    })
+    const plateMat = new THREE.MeshStandardMaterial({
+      color: 0x14100c,
+      metalness: 0.52,
+      roughness: 0.62,
+      emissive: 0x040302,
+      emissiveIntensity: 0.2,
+    })
+    const slotMat = new THREE.MeshStandardMaterial({
+      color: 0x020202,
+      metalness: 0.35,
+      roughness: 0.9,
+    })
+    const liveMat = new THREE.MeshStandardMaterial({
+      color: 0xb52b24,
+      metalness: 0.55,
+      roughness: 0.32,
+      emissive: 0x5a0805,
+      emissiveIntensity: 0.45,
+    })
+    const blankMat = new THREE.MeshStandardMaterial({
+      color: 0x2f6f9e,
+      metalness: 0.55,
+      roughness: 0.32,
+      emissive: 0x071f33,
+      emissiveIntensity: 0.45,
+    })
+    for (const material of [panelMat, rimMat, plateMat, slotMat, liveMat, blankMat]) {
+      this.disposableMaterials.add(material)
+    }
+    this.disposableGeometries.add(panelGeo)
+
+    const panel = new THREE.Mesh(panelGeo, panelMat)
+    panel.position.y = 0.001
+    panel.receiveShadow = true
+    root.add(panel)
+
+    const longWallGeo = new THREE.BoxGeometry(width + 0.04, 0.05, 0.02)
+    const shortWallGeo = new THREE.BoxGeometry(0.02, 0.05, depth)
+    for (const geo of [longWallGeo, shortWallGeo]) this.disposableGeometries.add(geo)
+    for (const z of [-depth / 2 - 0.01, depth / 2 + 0.01]) {
+      const wall = new THREE.Mesh(longWallGeo, rimMat)
+      wall.position.set(0, 0.025, z)
+      wall.castShadow = true
+      root.add(wall)
+    }
+    for (const x of [-width / 2 - 0.01, width / 2 + 0.01]) {
+      const wall = new THREE.Mesh(shortWallGeo, rimMat)
+      wall.position.set(x, 0.025, 0)
+      wall.castShadow = true
+      root.add(wall)
+    }
+
+    const lift = new THREE.Group()
+    lift.name = 'BulletTrayLift'
+    root.add(lift)
+    const plateGeo = new THREE.BoxGeometry(width - 0.04, 0.016, depth - 0.04)
+    this.disposableGeometries.add(plateGeo)
+    const plate = new THREE.Mesh(plateGeo, plateMat)
+    plate.position.y = 0.012
+    plate.receiveShadow = true
+    lift.add(plate)
+
+    const slotGeo = new THREE.CylinderGeometry(BULLET_TRAY.slotSize / 2, BULLET_TRAY.slotSize / 2, 0.012, 16)
+    const ringGeo = new THREE.TorusGeometry(BULLET_TRAY.slotSize * 0.43, 0.008, 6, 16)
+    const bodyGeo = new THREE.CylinderGeometry(0.038, 0.042, 0.13, 10)
+    const tipGeo = new THREE.SphereGeometry(0.04, 10, 6)
+    const baseGeo = new THREE.CylinderGeometry(0.044, 0.044, 0.018, 10)
+    for (const geo of [slotGeo, ringGeo, bodyGeo, tipGeo, baseGeo]) this.disposableGeometries.add(geo)
+
+    const bullets: BulletTrayEntry[] = []
+    for (let index = 0; index < BULLET_TRAY.columns * BULLET_TRAY.rows; index += 1) {
+      const column = index % BULLET_TRAY.columns
+      const row = Math.floor(index / BULLET_TRAY.columns)
+      const x = (column - (BULLET_TRAY.columns - 1) / 2) * BULLET_TRAY.spacing
+      const z = (row - (BULLET_TRAY.rows - 1) / 2) * BULLET_TRAY.spacing
+
+      const slot = new THREE.Mesh(slotGeo, slotMat)
+      slot.position.set(x, 0.024, z)
+      lift.add(slot)
+      const ring = new THREE.Mesh(ringGeo, rimMat)
+      ring.rotation.x = Math.PI / 2
+      ring.position.set(x, 0.031, z)
+      lift.add(ring)
+
+      const group = new THREE.Group()
+      group.name = `BulletTrayRound-${index + 1}`
+      group.position.set(x, -0.24, z)
+      group.visible = false
+      const shell = new THREE.Mesh(bodyGeo, liveMat)
+      shell.position.y = 0.075
+      shell.castShadow = true
+      const tip = new THREE.Mesh(tipGeo, liveMat)
+      tip.scale.y = 0.65
+      tip.position.y = 0.147
+      tip.castShadow = true
+      const base = new THREE.Mesh(baseGeo, rimMat)
+      base.position.y = 0.012
+      group.add(shell, tip, base)
+      lift.add(group)
+      bullets.push({ group, shell, tip })
+    }
+
+    const light = new THREE.PointLight(0xffd2a0, 0, 2.2, 2)
+    light.position.set(0, 0.38, 0.08)
+    root.add(light)
+    this.scene.add(root)
+    this.bulletTray = { root, lift, bullets, light, liveMaterial: liveMat, blankMaterial: blankMat, generation: 0, active: false }
   }
 
   /** 左侧两块补给托盘：玩家左前、Boss 左后，镜像摆放 */

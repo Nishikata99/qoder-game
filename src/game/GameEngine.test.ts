@@ -899,8 +899,31 @@ describe('新道具：裁纸刀 / 借据 / 封条 / 单片眼镜', () => {
     expect(engine.useItem('aegis')).toBe(false)
     expect(engine.cancelCardChoice()).toBe(true)
     expect(engine.getSnapshot().cardChoice).toBeNull()
-    // 放弃后牌与道具都没变
+    // 放弃后牌、道具和本回合道具次数都没变
     expect(engine.getSnapshot().player.hand.total).toBe(15)
+    expect(engine.getSnapshot().player.items).toEqual(['cutter', 'aegis'])
+    expect(engine.getSnapshot().player.itemsUsedThisTurn).toBe(0)
+    expect(engine.useItem('cutter')).toBe(true)
+    expect(engine.getSnapshot().cardChoice?.kind).toBe('cutter')
+  })
+
+  it('封蜡放弃后恢复道具、回合次数和暗牌状态', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.boss.hand = { ...hand(6, 9), visible: [card(6), null] }
+    probe.holeRevealed = false
+    probe.player.items = ['seal', 'aegis']
+    expect(engine.useItem('seal')).toBe(true)
+    expect(engine.getSnapshot().boss.holeCardRevealed).toBe(true)
+    expect(engine.getSnapshot().player.itemsUsedThisTurn).toBe(1)
+
+    expect(engine.cancelCardChoice()).toBe(true)
+    const snapshot = engine.getSnapshot()
+    expect(snapshot.cardChoice).toBeNull()
+    expect(snapshot.player.items).toEqual(['seal', 'aegis'])
+    expect(snapshot.player.itemsUsedThisTurn).toBe(0)
+    expect(snapshot.boss.holeCardRevealed).toBe(false)
+    expect(snapshot.boss.hand.visible[1]).toBeNull()
   })
 
   it('裁纸刀每回合限一次，且爆牌时不可用', async () => {
@@ -998,5 +1021,103 @@ describe('新道具：裁纸刀 / 借据 / 封条 / 单片眼镜', () => {
     expect(peeked[0]).toHaveLength(3)
     // 牌序不变：顶部三张仍是 9、7、5（从栈顶往下）
     expect(probe.deck.map((c: Card) => c.id)).toEqual(['spade-2', 'spade-5', 'spade-7', 'spade-9'])
+  })
+})
+
+describe('道具动作演出闸门', () => {
+  it('有场景闸门时锁到动作结束，而不是固定 460ms', async () => {
+    const { engine, probe } = newEngine()
+    const gate: { release: (() => void) | null } = { release: null }
+    engine.setItemPresentationGate(() => new Promise<void>((done) => { gate.release = done }))
+    await toPlayerTurn(engine)
+    probe.player.items = ['saw']
+    expect(engine.useItem('saw')).toBe(true)
+    expect(engine.getSnapshot().inputLocked).toBe(true)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(engine.getSnapshot().inputLocked).toBe(true)
+    gate.release?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(engine.getSnapshot().inputLocked).toBe(false)
+  })
+
+  it('动作未完成时读数与换牌事件不会提前广播', async () => {
+    const { engine, probe } = newEngine()
+    const gate: { release: (() => void) | null } = { release: null }
+    engine.setItemPresentationGate(() => new Promise<void>((done) => { gate.release = done }))
+    await toPlayerTurn(engine)
+    probe.player.items = ['magnifier']
+    const seen: string[] = []
+    engine.subscribe((event) => {
+      if (event.type === 'itemUsed' || event.type === 'chamberRevealed') seen.push(event.type)
+    })
+    expect(engine.useItem('magnifier')).toBe(true)
+    expect(seen).toEqual(['itemUsed'])
+    gate.release?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(seen).toEqual(['itemUsed', 'chamberRevealed'])
+  })
+
+  it('暂停期间动作结束也不解锁，恢复后才放行', async () => {
+    const { engine, probe } = newEngine()
+    const gate: { release: (() => void) | null } = { release: null }
+    engine.setItemPresentationGate(() => new Promise<void>((done) => { gate.release = done }))
+    await toPlayerTurn(engine)
+    probe.player.items = ['saw']
+    engine.useItem('saw')
+    engine.pause()
+    gate.release?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(engine.getSnapshot().inputLocked).toBe(true)
+    engine.resume()
+    expect(engine.getSnapshot().inputLocked).toBe(false)
+  })
+
+  it('选牌等待期间动作仍锁输入，取消选牌后收尾放行', async () => {
+    const { engine, probe } = newEngine()
+    const gate: { release: (() => void) | null } = { release: null }
+    engine.setItemPresentationGate(() => new Promise<void>((done) => { gate.release = done }))
+    await toPlayerTurn(engine)
+    probe.player.items = ['cutter']
+    probe.player.hand = hand(10, 9)
+    expect(engine.useItem('cutter')).toBe(true)
+    expect(engine.getSnapshot().cardChoice?.kind).toBe('cutter')
+    expect(engine.hit()).toBe(false)
+    expect(engine.cancelCardChoice()).toBe(true)
+    gate.release?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(engine.getSnapshot().inputLocked).toBe(false)
+  })
+
+  it('Boss 使用道具同样等场景动作结束才继续', async () => {
+    const { engine, probe } = newEngine()
+    const order: string[] = []
+    engine.setItemPresentationGate(async () => { order.push('act'); await Promise.resolve() })
+    engine.subscribe((event) => {
+      if (event.type === 'itemUsed' && event.actor === 'boss') order.push('used')
+    })
+    await toPlayerTurn(engine)
+    // 保守人格只在「大量实弹 + 高点数」时才锯枪，先把条件摆满
+    probe.boss.items = ['saw']
+    probe.boss.hand = hand(10, 10)
+    probe.player.hand = hand(10)
+    probe.cylinder.chambers = ['live', 'live', 'live', 'live', 'live']
+    probe.cylinder.cursor = 0
+    engine.stand()
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(order).toContain('act')
+    expect(order.indexOf('used')).toBeGreaterThan(-1)
+  })
+
+  it('重开后旧动作 promise 不再解锁新回合', async () => {
+    const { engine, probe } = newEngine()
+    const gate: { release: (() => void) | null } = { release: null }
+    engine.setItemPresentationGate(() => new Promise<void>((done) => { gate.release = done }))
+    await toPlayerTurn(engine)
+    probe.player.items = ['saw']
+    engine.useItem('saw')
+    engine.restart()
+    gate.release?.()
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(engine.getSnapshot().phase).toBe('playerTurn')
   })
 })

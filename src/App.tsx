@@ -16,6 +16,8 @@ import type { Cutscene2D, Playable2D } from './narrative/Cutscene2D'
 import type { GunHoverPayload, ItemHoverPayload } from './scene/SceneManager'
 import type { QualityPreset, SceneManager } from './scene/SceneManager'
 import type { BossPoseCue } from './scene/SceneManager'
+import type { ItemActionCue } from './scene/ItemActions'
+import { ITEM_ACTION_SPECS } from './scene/itemActionConfig'
 import type { ActorId, ActorView, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
 import {
   GameEngine,
@@ -422,6 +424,12 @@ export default function App() {
     noticeTimer.current = window.setTimeout(() => setNotice(null), 2400)
   }, [])
 
+  const handleItemCue = useCallback((item: ItemId, cue: ItemActionCue) => {
+    if (cue === 'pickup') sound.playItemUse()
+    else if (cue === 'contact') sound.playItemContact(ITEM_ACTION_SPECS[item].sound)
+    else if (ITEM_ACTION_SPECS[item].sound === 'paper') sound.playPaperRustle()
+  }, [sound])
+
   const handleEventSound = useCallback(
     (event: GameEvent) => {
       switch (event.type) {
@@ -473,10 +481,8 @@ export default function App() {
           }
           break
         case 'itemUsed':
-          sound.playItemUse()
           break
         case 'magnetSwap':
-          sound.playItemUse()
           showNotice(`磁铁换牌：你拿到 ${formatCardLabel(event.card)}`)
           break
         case 'hourglass':
@@ -494,23 +500,19 @@ export default function App() {
           }
           break
         case 'daggerReshuffle':
-          sound.playItemUse()
           sound.playReload()
           break
         case 'cardCuttered':
-          sound.playItemUse()
           if (event.actor === 'player') {
             showNotice(`裁纸刀：裁掉了 ${formatCardLabel(event.old)}`)
           }
           break
         case 'iouSigned':
-          sound.playItemUse()
           if (event.actor === 'player') {
             showNotice('借据落印：本局赢下的实弹 +2，输掉时挨的实弹 +1')
           }
           break
         case 'cardSealed':
-          sound.playItemUse()
           if (event.actor === 'player') {
             showNotice(`封条贴住 ${formatCardLabel(event.card)}，本局不计点`)
           }
@@ -736,6 +738,31 @@ export default function App() {
   }, [snapshot?.phase, snapshot?.pendingShot])
 
   const devBridge = useMemo(() => new DevBridge(game), [game])
+
+  // 仅开发期道具动作验收入口：生产构建会被摇掉
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    const host = window as unknown as { __itemActionDebug?: unknown }
+    host.__itemActionDebug = {
+      grant: (item: ItemId) => devBridge.grantItem(item),
+      hp: (value: number) => devBridge.setPlayerHp(value),
+      use: (item: ItemId) => game.useItem(item),
+      status: () => sceneRef.current?.itemActionStatus() ?? null,
+      skip: () => sceneRef.current?.skipItemAction() ?? false,
+      cancel: () => sceneRef.current?.cancelItemAction(),
+      seek: (t: number) => sceneRef.current?.seekItemAction(t) ?? null,
+      hold: (v: boolean) => sceneRef.current?.holdItemAction(v),
+      preview: (item: ItemId, actor: 'player' | 'boss' = 'player') => sceneRef.current?.previewItemAction(item, actor) ?? false,
+      cards: () => sceneRef.current?.previewItemCards() ?? [],
+      pick: (index: number) => sceneRef.current?.previewChooseCard(index) ?? false,
+      probe: () => sceneRef.current?.previewItemProbe() ?? null,
+      memory: () => sceneRef.current?.previewRenderMemory() ?? null,
+      phase: () => game.getSnapshot().phase,
+      items: () => [...game.getSnapshot().player.items],
+      choose: (index: number) => game.resolveCardChoice(index),
+    }
+    return () => { delete host.__itemActionDebug }
+  }, [game, devBridge])
 
   // 姿态段落音效：枪响已由 shot 事件播过，这里只补落地/撑起/直身/落稳
   const handleBossPoseCue = useCallback(
@@ -1028,6 +1055,7 @@ export default function App() {
               return action === 'hit' ? game.hit() : game.stand()
             }}
             onItemUse={handleItemUse}
+            onItemCue={handleItemCue}
             onSupplyPick={(item) => game.chooseSupply(item)}
             onTargetPick={(target) => game.chooseTarget(target)}
             onHoverChange={setHover}
@@ -1571,7 +1599,10 @@ export default function App() {
                 <button
                   key={`${card.id}-${index}`}
                   type="button"
-                  onClick={() => game.resolveCardChoice(index)}
+                  onClick={() => {
+                    sceneRef.current?.chooseItemCard(card)
+                    game.resolveCardChoice(index)
+                  }}
                   className="min-w-12 border border-white/12 bg-black/40 px-2 py-1.5 font-display text-sm text-bone-200/85 transition-colors hover:border-rust-500/60 hover:bg-rust-500/15"
                 >
                   {formatCardLabel(card)}
@@ -1579,7 +1610,10 @@ export default function App() {
               ))}
               <button
                 type="button"
-                onClick={() => game.cancelCardChoice()}
+                onClick={() => {
+                  sceneRef.current?.cancelItemChoice()
+                  game.cancelCardChoice()
+                }}
                 className="px-2 py-1.5 text-[10px] tracking-[0.2em] text-bone-200/35 uppercase hover:text-bone-200/70"
               >
                 放弃

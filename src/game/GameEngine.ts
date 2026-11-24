@@ -348,6 +348,17 @@ export interface GameEngineOptions {
   readonly itemLockMs?: number
 }
 
+interface CardChoiceState {
+  readonly kind: 'cutter' | 'seal'
+  readonly cards: Card[]
+  readonly item: ItemId
+  readonly itemIndex: number
+  readonly itemsUsedThisTurn: number
+  readonly logLength: number
+  readonly holeRevealed: boolean
+  readonly bossHand: HandState
+}
+
 interface BossProfile {
   readonly label: string
   readonly personality: BossPersonality
@@ -650,7 +661,7 @@ export class GameEngine {
   private supplyChoice: ItemId | null = null
   private supplyResolver: (() => void) | null = null
   /** 裁纸刀/封条等待点选的牌；暂停/换层/销毁时清空 */
-  private cardChoice: { kind: 'cutter' | 'seal'; cards: Card[] } | null = null
+  private cardChoice: CardChoiceState | null = null
   private cardChoiceResolver: (() => void) | null = null
   /** 层间三选一选中的道具：beginLevel 会重建 Actor，必须先寄存再注入 */
   private carryOver: ItemId[] = []
@@ -665,6 +676,11 @@ export class GameEngine {
   private paused = false
   /** 场景演出闸门：枪放平、镜头回位后才允许重新发牌；测试/无场景时为 null */
   private presentationGate: (() => Promise<void>) | null = null
+  private itemPresentationGate: (() => Promise<void>) | null = null
+  private itemPresentationPending = false
+  private itemPresentationFinished = false
+  private itemEvents: GameEvent[] | null = null
+  private deferredItemEvents: GameEvent[] = []
   private runRounds = 0
   private phase: Phase = 'idle'
   private levelIndex = 0
@@ -817,8 +833,31 @@ export class GameEngine {
     }
     if (!this.applyItem(this.player, item)) return false
     if (this.resolveDeaths()) return true
-    this.lockInput(this.itemLockMs)
+    if (this.itemPresentationGate) {
+      this.clearInputDelay()
+      this.itemPresentationPending = true
+      this.itemPresentationFinished = false
+      this.inputLocked = true
+      const token = this.generation
+      this.publish()
+      void this.itemPresentationGate().then(() => {
+        if (!this.alive(token)) return
+        this.releaseDeferredItemEvents()
+        this.itemPresentationFinished = true
+        this.finishItemPresentation()
+      })
+    } else {
+      this.releaseDeferredItemEvents()
+      this.lockInput(this.itemLockMs)
+    }
     return true
+  }
+
+  private finishItemPresentation(): void {
+    if (!this.itemPresentationPending || !this.itemPresentationFinished || this.paused) return
+    this.itemPresentationPending = false
+    this.itemPresentationFinished = false
+    this.unlockInput()
   }
 
   advanceLevel(): boolean {
@@ -878,8 +917,15 @@ export class GameEngine {
   }
 
   cancelCardChoice(): boolean {
-    if (!this.cardChoice) return false
+    const choice = this.cardChoice
+    if (!choice) return false
     this.cardChoice = null
+    this.player.items.splice(choice.itemIndex, 0, choice.item)
+    this.player.itemsUsedThisTurn = choice.itemsUsedThisTurn
+    this.holeRevealed = choice.holeRevealed
+    this.boss.hand = choice.bossHand
+    this.logLines.length = choice.logLength
+    this.log(`你收起了【${ITEM_CATALOG[choice.item].name}】，本次没有消耗。`)
     this.cardChoiceResolver?.()
     this.cardChoiceResolver = null
     this.publish()
@@ -1115,6 +1161,9 @@ export class GameEngine {
       if (!this.alive(token) || this.phase !== 'bossTurn') return
       if (!this.applyItem(this.boss, item)) break
       if (this.resolveDeaths()) return
+      if (this.itemPresentationGate) await this.itemPresentationGate()
+      if (!this.alive(token) || this.phase !== 'bossTurn') return
+      this.releaseDeferredItemEvents()
       await this.wait(Math.max(160, think * 0.4))
       if (!this.alive(token) || this.phase !== 'bossTurn') return
     }
@@ -1227,6 +1276,20 @@ export class GameEngine {
   /** 注入场景演出闸门；传 null 恢复立即发牌（测试与无场景环境） */
   setPresentationGate(gate: (() => Promise<void>) | null): void {
     this.presentationGate = gate
+  }
+
+  /** 动作收尾前不允许再次行动，也不允许把未完成的结果提前交给 UI */
+  get hasPendingItemAction(): boolean {
+    return this.itemPresentationPending
+  }
+
+  setItemPresentationGate(gate: (() => Promise<void>) | null): void {
+    this.itemPresentationGate = gate
+    if (!gate && this.itemPresentationPending) {
+      this.releaseDeferredItemEvents()
+      this.itemPresentationFinished = true
+      this.finishItemPresentation()
+    }
   }
 
   /** 跳过处决悬念停顿，立即揭晓枪响结果；只在处决演出进行中有效 */
@@ -1472,6 +1535,36 @@ export class GameEngine {
   }
 
   private applyItem(actor: ActorRuntime, item: ItemId): boolean {
+    this.itemEvents = []
+    let success = false
+    let events: GameEvent[] = []
+    try {
+      success = this.applyItemEffect(actor, item)
+      events = this.itemEvents
+    } finally {
+      this.itemEvents = null
+    }
+    // 读数、换牌、重洗等结果要等动作演到接触点再发，否则会出现「手还没碰到枪，镜头已经特写」
+    const used = events.find((event) => event.type === 'itemUsed')
+    if (used) this.dispatch(used)
+    if (success) {
+      this.deferredItemEvents.push(...events.filter((event) => event !== used))
+      this.publish()
+    } else {
+      for (const event of events) this.dispatch(event)
+    }
+    return success
+  }
+
+  private releaseDeferredItemEvents(): void {
+    if (this.deferredItemEvents.length === 0) return
+    const events = this.deferredItemEvents
+    this.deferredItemEvents = []
+    for (const event of events) this.dispatch(event)
+    this.publish()
+  }
+
+  private applyItemEffect(actor: ActorRuntime, item: ItemId): boolean {
     const index = actor.items.indexOf(item)
     if (index === -1) {
       return this.reject(`${actorLabel(actor.id)}没有【${ITEM_CATALOG[item].name}】。`)
@@ -1548,7 +1641,11 @@ export class GameEngine {
         if (actor.hand.cards.length === 0) return this.reject('手里没有可以裁掉的牌。')
         if (actor.id === 'player') {
           // 玩家自选一张：进入待选状态，resolveCardChoice 结算
-          this.cardChoice = { kind: 'cutter', cards: [...actor.hand.cards] }
+          this.cardChoice = {
+            kind: 'cutter', cards: [...actor.hand.cards], item, itemIndex: index,
+            itemsUsedThisTurn: actor.itemsUsedThisTurn, logLength: this.logLines.length,
+            holeRevealed: this.holeRevealed, bossHand: this.boss.hand,
+          }
           detail = '亮出裁纸刀，选择要裁掉的一张牌。'
           break
         }
@@ -1583,6 +1680,9 @@ export class GameEngine {
         if (this.boss.hand.cards.length === 0) return this.reject('桌上还没有可以封的牌。')
         // 封牌是公开动作：先亮出底牌，再让玩家从明牌里任选一张
         const wasHidden = !this.holeRevealed
+        const previousHoleRevealed = this.holeRevealed
+        const previousBossHand = this.boss.hand
+        const previousLogLength = this.logLines.length
         this.holeRevealed = true
         this.boss.hand = withHoleCard(this.boss.hand, false)
         if (wasHidden) {
@@ -1592,7 +1692,11 @@ export class GameEngine {
         const visible = this.boss.hand.visible.filter((cardValue): cardValue is Card => cardValue !== null)
         if (visible.length === 0) return this.reject('对手没有可以封的明牌。')
         if (actor.id === 'player') {
-          this.cardChoice = { kind: 'seal', cards: visible }
+          this.cardChoice = {
+            kind: 'seal', cards: visible, item, itemIndex: index,
+            itemsUsedThisTurn: actor.itemsUsedThisTurn, logLength: previousLogLength,
+            holeRevealed: previousHoleRevealed, bossHand: previousBossHand,
+          }
           detail = '封条已经蘸好朱砂，选择对手的一张明牌。'
           break
         }
@@ -1923,6 +2027,7 @@ export class GameEngine {
   }
 
   private publish(): void {
+    if (this.itemEvents) return
     const snapshot = this.getSnapshot()
     for (const listener of [...this.listeners]) {
       try {
@@ -1934,6 +2039,7 @@ export class GameEngine {
   }
 
   private dispatch(event: GameEvent): void {
+    if (this.itemEvents) { this.itemEvents.push(event); return }
     const snapshot = this.getSnapshot()
     for (const listener of [...this.listeners]) {
       try {
@@ -1980,6 +2086,7 @@ export class GameEngine {
   resume(): void {
     if (!this.paused || this.destroyed) return
     this.paused = false
+    this.finishItemPresentation()
     for (const delay of this.delays) delay.resume()
     this.publish()
   }
@@ -2044,6 +2151,9 @@ export class GameEngine {
     this.executionDelay = null
     this.executionSkip = null
     this.inputLocked = false
+    this.itemPresentationPending = false
+    this.itemPresentationFinished = false
+    this.deferredItemEvents = []
     this.cardChoice = null
     this.cardChoiceResolver = null
     // 取消 supply 等待时也要放行挂起的 offerSupply，否则 Promise 永久悬空

@@ -85,4 +85,10 @@ export class DevBridge {
     items.push(item)
     this.internals.publish()
   }
+
+  /** 仅供动作验收：压低血量以触发治疗类道具 */
+  setPlayerHp(hp: number): void {
+    this.internals.player.hp = Math.max(0, Math.min(7, Math.round(hp)))
+    this.internals.publish()
+  }
 }

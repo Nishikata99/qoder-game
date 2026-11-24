@@ -21,6 +21,9 @@ import {
   type ItemId,
 } from '../game/GameEngine'
 import { TextureFactory } from './TextureFactory'
+import { ItemActions, type ItemActionCue, type ItemActionStatus } from './ItemActions'
+import { itemActionCamera } from './itemActionConfig'
+import type { GameEvent } from '../game/GameEngine'
 import { BOSS_POSE_PROFILES, BossPoseController, shouldRespawnBossPose, type BossPoseState } from './BossPose'
 
 export interface ItemHoverPayload {
@@ -66,6 +69,10 @@ export interface SceneCallbacks {
   readonly onGunHover?: (payload: GunHoverPayload | null) => void
   /** 层间补给：点中托盘里的候选道具即选定 */
   readonly onSupplyPick?: (item: ItemId) => void
+  readonly onItemActionCue?: (item: ItemId, cue: ItemActionCue) => void
+  readonly onItemActionStatus?: (status: ItemActionStatus | null) => void
+  readonly onItemPresented?: (event: GameEvent) => void
+  readonly onItemSnapshot?: (snapshot: GameSnapshot) => void
   /** Boss 姿态段落提示，用于音效对齐；只报语义节点，不报每帧采样 */
   readonly onBossPoseCue?: (cue: BossPoseCue) => void
   onLoadProgress?: (progress: SceneLoadProgress) => void
@@ -746,6 +753,10 @@ export class SceneManager {
   private readonly scorePlates = new Map<ActorId, ScorePlate>()
   private readonly bloodRacks = new Map<ActorId, BloodRack>()
   private readonly chains = new Map<ActorId, ChainEntry>()
+  private readonly itemActions: ItemActions
+  /** 锯短后的断管摆件：只按 sawBoost 生命周期清除 */
+  private readonly sawMarks = new Map<ActorId, THREE.Group>()
+  private pendingVisualSnapshot: GameSnapshot | null = null
   /** 沙漏滤镜：0=正常，1=全强度冷青；由快照的 hourglassActive 驱动 */
   private hourglassAmount = 0
   private hourglassTarget = 0
@@ -1089,6 +1100,23 @@ export class SceneManager {
     this.buildActionButtons()
     this.buildNarrativeProps()
 
+    this.itemActions = new ItemActions({
+      scene: this.scene,
+      tableY: TABLE_TOP,
+      prop: (item) => this.buildItemContent(item).content,
+      hand: () => this.models.get('player_hand'),
+      card: (actor, card) => this.findCardMesh(actor, card),
+      focus: (point, actor, item) => this.focusItemAction(point, actor, item),
+      rest: () => this.setShot('table', 0.8),
+      commit: () => this.flushItemEvents(),
+      cue: (item, cue) => this.callbacks.onItemActionCue?.(item, cue),
+      status: (status) => this.callbacks.onItemActionStatus?.(status),
+      restHands: (visible) => { if (this.introHands) this.introHands.visible = visible },
+      reducedMotion: () => this.reducedMotion,
+      saw: (actor) => this.presentSawCut(actor),
+      reload: () => this.playReload(),
+    })
+
     this.preloadModels()
 
     this.textures.startWatching()
@@ -1223,6 +1251,12 @@ export class SceneManager {
 
   applySnapshot(snapshot: GameSnapshot): void {
     if (this.disposed) return
+    if (this.itemActions.busy) {
+      // 动作没演到接触点前，手牌/血袋/点数保持原样；结果在收尾提交时一次补上
+      this.pendingVisualSnapshot = snapshot
+      this.itemActions.sync(snapshot)
+      return
+    }
     if (shouldRespawnBossPose(this.lastSnapshot, snapshot)) {
       this.bossPose.spawn(BOSS_VISUAL_LEVEL)
     }
@@ -1242,6 +1276,15 @@ export class SceneManager {
     this.syncScores(snapshot)
     this.syncBlood(snapshot)
     this.syncChains(snapshot)
+    this.itemActions.sync(snapshot)
+    for (const actor of ['player', 'boss'] as const) {
+      const mark = this.sawMarks.get(actor)
+      if (mark && snapshot[actor].sawBoost === 0) {
+        this.sawMarks.delete(actor)
+        mark.removeFromParent()
+        this.disposeObject(mark)
+      }
+    }
     this.hourglassTarget = snapshot.hourglassActive ? 1 : 0
   }
 
@@ -2067,10 +2110,11 @@ export class SceneManager {
     this.bossFlashLife = 0
   }
 
-  playReload(live: number, blank: number): void {
+  playReload(live?: number, blank?: number): void {
     if (this.disposed) return
+    const cylinder = this.pendingVisualSnapshot?.cylinder ?? this.lastSnapshot?.cylinder
     this.animateReloadGun()
-    this.revealBulletTray(live, blank)
+    this.revealBulletTray(live ?? cylinder?.live ?? 0, blank ?? cylinder?.blank ?? 0)
   }
 
   private animateReloadGun(): void {
@@ -2192,35 +2236,216 @@ export class SceneManager {
     }
   }
 
+  /** 道具演出：从槽位拾起原作道具，交给双手完成起手／接触／收尾 */
   playItemUse(actor: ActorId, item: ItemId): void {
     if (this.disposed) return
     const found = [...this.items.values()].find(
       (entry) => entry.actor === actor && entry.item === item && entry.group.visible,
     )
-    if (!found) return
-    this.items.delete(found.key)
-    if (this.hovered === found) this.setHovered(null)
-    const startY = found.group.position.y
-    const startScale = found.group.scale.x
-    this.tween({
-      duration: 0.75,
-      onUpdate: (t) => {
-        found.group.position.y = startY + 0.75 * easeOutCubic(t)
-        found.group.rotation.y = t * Math.PI * 3
-        const scale = startScale * (1 - t) ** 1.4
-        found.group.scale.setScalar(Math.max(0.001, scale))
-        for (const mat of found.materials) mat.color.setHex(t > 0.5 ? 0xffd08a : Number(mat.userData.baseColor ?? 0xffffff))
-      },
-      onComplete: () => {
-        this.itemRoot.remove(found.group)
-        this.disposeObject(found.group)
-      },
-    })
+    const from = found ? found.group.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3(0, TABLE_TOP, actor === 'player' ? 1.2 : -1.2)
+    if (found) {
+      this.items.delete(found.key)
+      if (this.hovered === found) this.setHovered(null)
+      const group = found.group
+      const startScale = group.scale.x
+      this.tween({
+        duration: 0.26,
+        onUpdate: (t) => {
+          group.scale.setScalar(Math.max(0.001, startScale * (1 - easeOutCubic(t))))
+        },
+        onComplete: () => {
+          group.removeFromParent()
+          this.disposeObject(group)
+        },
+      })
+    }
+    if (this.lastSnapshot) this.itemActions.start(actor, item, this.lastSnapshot, from)
+  }
+
+  /** 动作到接触/结算点时，把动作期间压住的手牌、血袋与点数一次补到台面 */
+  private flushItemEvents(): void {
+    const pending = this.pendingVisualSnapshot
+    this.pendingVisualSnapshot = null
+    if (pending) this.applySnapshot(pending)
+  }
+
+  /** 玩家侧道具特写；Boss 保持桌面机位，避免双方演出抢镜。 */
+  private focusItemAction(point: THREE.Vector3, actor: ActorId, item: ItemId): void {
+    if (this.disposed || actor !== 'player') return
+    const framing = itemActionCamera(item)
+    const direction = new THREE.Vector3(0.06, 0.5, 0.86)
+    const position = point.clone().addScaledVector(direction.normalize(), framing.distance)
+    const target = { position, lookAt: point, fov: framing.fov }
+    this.setCameraFraming(target, this.reducedMotion ? 0.18 : 0.55)
+  }
+
+  /** 绕过 shot 表直接落一段一次性取景，收尾时由 setShot('table') 回位 */
+  private setCameraFraming(target: { position: THREE.Vector3; lookAt: THREE.Vector3; fov: number }, duration: number): void {
+    this.cameraFrom.copy(this.cameraBase)
+    this.lookFrom.copy(this.cameraLookAt)
+    this.cameraTo.copy(target.position)
+    this.lookTo.copy(target.lookAt)
+    this.fovFrom = this.camera.fov
+    this.fovTo = target.fov
+    this.cameraBlend = 0
+    this.cameraBlendDuration = Math.max(0.001, duration)
+    this.cameraBlendStartedAt = performance.now()
+    this.cameraBlendRealtime = false
+  }
+
+  private findCardMesh(actor: ActorId, card: Card): THREE.Mesh | null {
+    const key = this.textures.cardKey(card.rank, card.suit)
+    for (const entry of this.cards.values()) {
+      if (entry.actor !== actor) continue
+      if (entry.cardKey === key) return entry.mesh
+    }
+    return null
+  }
+
+  chooseItemCard(card: Card): void {
+    this.itemActions.choose(card)
+  }
+
+  cancelItemChoice(): void {
+    this.itemActions.cancelChoice()
+  }
+
+  /** 锯短枪管：在枪身下留一段断管与切痕，直到加成真正打出实弹才清 */
+  private presentSawCut(actor: ActorId): void {
+    if (this.sawMarks.has(actor)) return
+    const mark = new THREE.Group()
+    const pipe = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.038, 0.038, 0.2, 12, 1, true),
+      new THREE.MeshStandardMaterial({ color: 0x6c6c68, metalness: 0.7, roughness: 0.55 }),
+    )
+    pipe.rotation.z = Math.PI / 2
+    mark.add(pipe)
+    const smear = new THREE.Mesh(
+      new THREE.CircleGeometry(0.09, 16),
+      new THREE.MeshBasicMaterial({ color: 0x2c1a12, transparent: true, opacity: 0.55, depthWrite: false }),
+    )
+    smear.rotation.x = -Math.PI / 2
+    smear.position.y = -0.028
+    mark.add(smear)
+    mark.position.copy(GUN_PIVOT).add(new THREE.Vector3(-0.62, -0.01, 0.22))
+    mark.rotation.y = Math.PI * 0.18
+    this.scene.add(mark)
+    this.sawMarks.set(actor, mark)
+    for (const obj of [pipe.geometry, smear.geometry]) this.disposableGeometries.add(obj)
+    for (const mat of [pipe.material, smear.material]) this.disposableMaterials.add(mat as THREE.Material)
+  }
+
+  itemActionStatus(): ItemActionStatus | null {
+    return this.itemActions.getStatus()
+  }
+
+  seekItemAction(seconds: number): ItemActionStatus | null {
+    return this.itemActions.seek(seconds)
+  }
+
+  holdItemAction(value: boolean): void {
+    this.itemActions.hold(value)
+  }
+
+  /** 仅供开发期逐帧验收：不经过引擎，直接用当前快照播一件道具动作 */
+  previewItemAction(item: ItemId, actor: ActorId = 'player'): boolean {
+    if (this.disposed || !this.lastSnapshot) return false
+    const from = new THREE.Vector3(0, TABLE_TOP, actor === 'player' ? 1.2 : -1.2)
+    this.itemActions.start(actor, item, this.lastSnapshot, from)
+    return true
+  }
+
+  previewItemCards(): Card[] {
+    return this.itemActions.previewCards()
+  }
+
+  previewChooseCard(index: number): boolean {
+    const card = this.itemActions.previewCards()[index]
+    if (!card) return false
+    this.itemActions.choose(card)
+    return true
+  }
+
+  /** 仅供开发期逐帧验收：动作道具、双手与相机的位置，用来判断是否出画 */
+  previewItemProbe(): Record<string, unknown> | null {
+    const root = this.scene.getObjectByName(this.itemActions.activeName)
+    if (!root) return null
+    const toWorld = (obj: THREE.Object3D) => obj.getWorldPosition(new THREE.Vector3()).toArray().map((n) => +n.toFixed(3))
+    const toNdc = (obj: THREE.Object3D) => {
+      const n = obj.getWorldPosition(new THREE.Vector3()).project(this.camera)
+      return [+n.x.toFixed(2), +n.y.toFixed(2), +n.z.toFixed(2)]
+    }
+    const handR = this.scene.getObjectByName(`${this.itemActions.activeName}-right`)
+    const handL = this.scene.getObjectByName(`${this.itemActions.activeName}-left`)
+    const prop = this.itemActions.getHero()
+    const ndc = prop ? toNdc(prop) : null
+    const parts: Record<string, unknown> = {}
+    for (const child of root.children) {
+      if (!child.name || !child.visible) continue
+      if (child === prop || child === handR || child === handL) continue
+      parts[child.name] = { ndc: toNdc(child), world: toWorld(child) }
+    }
+    return {
+      root: toWorld(root),
+      prop: prop ? toWorld(prop) : null,
+      propNdc: ndc,
+      __debug: (() => {
+        const out: Record<string, unknown> = {}
+        if (prop) {
+          out.propRotation = [prop.rotation.x, prop.rotation.y, prop.rotation.z].map((n) => +n.toFixed(2))
+          out.propScale = +prop.scale.x.toFixed(2)
+          let i = 0
+          prop.traverse((o) => {
+            if (!(o instanceof THREE.Mesh)) return
+            const m = Array.isArray(o.material) ? o.material[0] : o.material
+            const std = m as THREE.MeshStandardMaterial
+            out[`#${i++}-${o.name || 'anon'}`] = {
+              visible: o.visible,
+              z: +o.getWorldPosition(new THREE.Vector3()).z.toFixed(3),
+              color: std.color ? '#' + std.color.getHexString() : '?',
+              opacity: std.opacity,
+              transparent: std.transparent,
+              rough: std.roughness,
+              metal: std.metalness,
+            }
+          })
+        }
+        return out
+      })(),
+      parts,
+      left: handL ? toWorld(handL) : null,
+      right: handR ? toWorld(handR) : null,
+      camera: this.camera.position.toArray().map((n) => +n.toFixed(3)),
+      fov: +this.camera.fov.toFixed(1),
+    }
+  }
+
+  previewRenderMemory(): Record<string, number> {
+    return { ...this.renderer.info.memory }
+  }
+  cancelItemAction(): void {
+    this.itemActions.cancel()
+  }
+  isItemActionBusy(): boolean {
+    return this.itemActions.busy
+  }
+
+  whenItemReady(): Promise<void> {
+    return this.itemActions.whenReady()
+  }
+
+  skipItemAction(): boolean {
+    return this.itemActions.skip()
+  }
+
+  breakItemShield(actor: ActorId): void {
+    this.itemActions.breakShield(actor)
   }
 
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.itemActions.dispose()
     this.bloodCloseupGeneration += 1
     if (this.bloodCloseupTimer !== null) window.clearTimeout(this.bloodCloseupTimer)
     this.bloodCloseupTimer = null
@@ -2338,8 +2563,10 @@ export class SceneManager {
     this.pendingModels.push(criticalTask)
     void criticalTask.then(() => {
       const idle = (cb: () => void): void => {
+        // 这里必须带超时：对局中渲染循环一直在跑，页面几乎没有真正空闲的窗口，
+        // 不带 timeout 的 requestIdleCallback 会被无限饿死，二级道具就一直停在程序化兜底几何上
         if (typeof window.requestIdleCallback === 'function') {
-          window.requestIdleCallback(cb)
+          window.requestIdleCallback(cb, { timeout: 1200 })
         } else {
           window.setTimeout(cb, 400)
         }
@@ -2521,7 +2748,24 @@ export class SceneManager {
     const group = new THREE.Group()
     for (const side of [-1, 1]) {
       const hand = source.clone(true)
-      hand.scale.set(1.15 * side, 1.15, 1.15)
+      hand.updateMatrixWorld(true)
+      // meshopt 重导出的手模型：各网格顶点是 [-1,1] 归一化、靠自身缩放落到真实尺寸。
+      // 直接把原树按 1.15 缩放会得到两米巨手铺满镜头，所以先把各网格的局部变换烘进几何，
+      // 再按整手包围盒归一化到真实手长（与 ItemActions 的 ActionHand 保持一致）。
+      hand.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return
+        child.geometry = child.geometry.clone()
+        child.geometry.applyMatrix4(child.matrixWorld)
+        child.position.set(0, 0, 0)
+        child.rotation.set(0, 0, 0)
+        child.scale.setScalar(1)
+        child.updateMatrix()
+      })
+      hand.updateMatrixWorld(true)
+      const box = new THREE.Box3().setFromObject(hand)
+      const longest = Math.max(...box.getSize(new THREE.Vector3()).toArray())
+      const fit = longest > 1e-6 ? 0.218 / longest : 1.15
+      hand.scale.set(fit * side, fit, fit)
       hand.position.set(side * 0.43, TABLE_TOP + 0.022, 2.05)
       hand.rotation.y = side * 0.08
       hand.traverse((child) => {
@@ -2889,6 +3133,7 @@ export class SceneManager {
     this.updateArmedRacks()
     this.updateItems(dt)
     this.updateCards(dt)
+    this.itemActions.update(dt)
     this.updateCamera(dt)
     this.updateActionButtons(dt)
     this.composer.render(dt)
@@ -3705,60 +3950,6 @@ export class SceneManager {
       const flicker = 0.45 + Math.sin(this.elapsed * 3.1) * 0.12
       for (const material of entry.materials) material.emissiveIntensity = flicker
     }
-  }
-
-  /**
-   * 磁铁换牌：一张牌从对手明牌位沿弧线飞到自己最后一张明牌位，
-   * 用一张临时贴图牌做替身，落位后销毁；快照同步会各自就位。
-   */
-  playMagnetSwap(card: Card): void {
-    if (this.disposed) return
-    const geo = new THREE.BoxGeometry(CARD_W, CARD_T, CARD_H)
-    this.disposableGeometries.add(geo)
-    const side = new THREE.MeshStandardMaterial({ color: 0x231b16, roughness: 0.88 })
-    this.disposableMaterials.add(side)
-    const face = new THREE.MeshStandardMaterial({
-      map: this.textures.get(this.textures.cardKey(card.rank, card.suit)),
-      roughness: 0.66,
-      metalness: 0.04,
-    })
-    this.disposableMaterials.add(face)
-    const back = new THREE.MeshStandardMaterial({
-      map: this.textures.get(this.textures.cardBackKey),
-      roughness: 0.76,
-      metalness: 0.05,
-    })
-    this.disposableMaterials.add(back)
-    const mesh = new THREE.Mesh(geo, [side, side, face, back, side, side])
-    mesh.castShadow = true
-
-    const bossCount = Math.max(1, this.handCount('boss'))
-    const playerCount = Math.max(1, this.handCount('player'))
-    const from = this.cardSlot('boss', bossCount - 1, bossCount).position.clone()
-    const to = this.cardSlot('player', playerCount - 1, playerCount).position.clone()
-    const lift = this.reducedMotion ? 0.08 : 0.55
-    mesh.position.copy(from)
-    mesh.position.y += 0.02
-    mesh.rotation.order = 'YXZ'
-    mesh.rotation.set(0, Math.PI, 0)
-    mesh.scale.setScalar(0.72)
-    this.cardGroup.add(mesh)
-
-    this.tween({
-      duration: this.reducedMotion ? 0.22 : 0.72,
-      onUpdate: (t) => {
-        const eased = easeInOutCubic(t)
-        mesh.position.lerpVectors(from, to, eased)
-        mesh.position.y += Math.sin(eased * Math.PI) * lift
-        mesh.rotation.y = Math.PI + eased * Math.PI * 2
-        mesh.rotation.z = Math.sin(eased * Math.PI) * 0.5
-        mesh.scale.setScalar(0.72 + eased * 0.28)
-      },
-      onComplete: () => {
-        mesh.removeFromParent()
-        this.disposeObject(mesh)
-      },
-    })
   }
 
   private updateDust(dt: number): void {
@@ -5309,14 +5500,6 @@ export class SceneManager {
         })
       },
     })
-  }
-
-  private handCount(actor: ActorId): number {
-    let count = 0
-    for (const entry of this.cards.values()) {
-      if (entry.actor === actor) count += 1
-    }
-    return count
   }
 
   private cardSlot(actor: ActorId, index: number, count: number): { position: THREE.Vector3; angle: number } {

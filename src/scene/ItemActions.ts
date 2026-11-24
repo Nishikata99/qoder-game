@@ -92,9 +92,10 @@ class ActionHand {
   private readonly parts: { mesh: THREE.Mesh; points: Float32Array }[] = []
   private curl = -1
   /** 手掌在动作特写里应有的长度（米）；按实际包围盒归一化，不依赖模型的导出单位 */
-  private static readonly HAND_LENGTH = 0.19
+  private static readonly HAND_LENGTH = 0.165
   constructor(template: THREE.Object3D | undefined, left: boolean, actor: ActorId, level: number) {
-    const skin = material(actor === 'player' ? 0x6f5347 : level === 1 ? 0x40332e : 0x6e685f)
+    const skin = material(actor === 'player' ? 0x80604f : level === 1 ? 0x40332e : 0x6e685f)
+    skin.roughness = 0.88
     const model = template?.clone(true)
     if (model) {
       // clone 出来的子树还没跑过矩阵更新，Nail 这类挂在缩放父级下的网格 obj.matrix 仍是单位阵；
@@ -253,6 +254,7 @@ export class ItemActions {
     const spec = ITEM_ACTION_TIMINGS[a.item]
     const hero = a.item === 'cutter' ? a.parts.get('cutter')
       : a.item === 'monocle' ? a.parts.get('monocle')
+      : a.item === 'saw' ? a.parts.get('saw')
       : a.item === 'iou' ? a.parts.get('paper')
       : a.item === 'seal' ? a.parts.get('strip')
       : a.prop
@@ -266,6 +268,9 @@ export class ItemActions {
     a.time = a.item === 'cutter' ? Math.min(spec.commit, 1.79) : spec.commit
     this.pose(a)
     const point = node.position.clone()
+    // 避开桌面贴图里的长直线装饰，同时保持道具在画面中心附近。
+    if (a.item === 'sedative') point.y -= 0.28
+    if (a.item === 'hourglass') point.x -= 0.14
     a.time = saved
     this.pose(a)
     return point
@@ -278,8 +283,8 @@ export class ItemActions {
       const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
       for (const mat of materials) {
         if (!(mat instanceof THREE.MeshStandardMaterial)) continue
-        // 护心镜红镜、沙漏玻璃靠低粗糙度和自发光读材质；一起压暗只会变成一块黑盘
-        if (mat.transparent || mat.opacity < 1) continue
+        // 透明玻璃只保留透光，不投射实心剪影。
+        if (mat.transparent || mat.opacity < 1) { obj.castShadow = false; mat.side = THREE.DoubleSide; continue }
         mat.metalness = Math.min(mat.metalness, 0.35)
         mat.roughness = Math.max(mat.roughness, 0.7)
         mat.color.multiplyScalar(0.62)
@@ -294,16 +299,21 @@ export class ItemActions {
     if (item === 'saw' || item === 'hammer' || item === 'magnifier') {
       // 工具处理的是摆在桌沿近侧的枪管段：真实枪身太远，手部动作会在镜头里缩成一团。
       // 近景里这段管壁几乎贴着镜头，尺寸和金属度都要压下来，否则一格白柱挡住整张桌子
-      a.target.set(0.06, 0.43, -0.24)
-      const barrel = mesh(
-        new THREE.CylinderGeometry(0.03, 0.03, 0.2, 16, 1, true),
-        material(item === 'magnifier' ? 0x8a7f66 : 0x58564f, 0.4),
-        a.target.clone().add(v(0, -0.09, 0)),
-      )
-      barrel.rotation.z = Math.PI / 2
-      add('workpiece', barrel)
+      a.target.set(item === 'saw' ? 0.02 : 0.06, item === 'saw' ? 0.38 : 0.43, -0.24)
+      const workpiece = item === 'saw'
+        ? mesh(new THREE.BoxGeometry(0.24, 0.035, 0.055), material(0x58564f, 0.35, 0.85))
+        : mesh(
+          new THREE.CylinderGeometry(0.022, 0.022, 0.17, 16, 1, true),
+          material(item === 'magnifier' ? 0x4a4439 : 0x58564f, item === 'magnifier' ? 0.1 : 0.4, 0.9),
+        )
+      workpiece.position.copy(a.target).add(v(0, -0.09, 0))
+      if (item !== 'saw') workpiece.rotation.z = Math.PI / 2
+      add('workpiece', workpiece)
     }
     if (item === 'sedative') {
+      // 桌上道具统一归一化到 0.5m，直接沿用会把针筒放大到手掌的 1.5 倍。
+      // 动作里按真实注射器比例重新缩小，保持筒身略短于手指到腕部的长度。
+      prop.scale.setScalar(0.44)
       const cap = mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.12, 12), material(0x969c8d))
       cap.rotation.x = Math.PI / 2
       add('cap', cap)
@@ -312,19 +322,67 @@ export class ItemActions {
       dot.visible = false
       add('puncture', dot)
     }
+    if (item === 'aegis') {
+      prop.scale.setScalar(0.42)
+      const pulse = mesh(
+        new THREE.TorusGeometry(0.115, 0.004, 8, 40),
+        new THREE.MeshBasicMaterial({ color: 0xffc15a, transparent: true, opacity: 0.8, depthWrite: false }),
+      )
+      pulse.visible = false
+      add('shieldPulse', pulse)
+    }
     if (item === 'dagger') {
       const drop = mesh(new THREE.SphereGeometry(0.011, 10, 8), material(0x5a120e))
       add('blood', drop).visible = false
     }
     if (item === 'saw') {
-      const pipe = mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.23, 16, 1, true), material(0x565552, 0.8))
-      add('offcut', pipe).visible = false
+      prop.visible = false
+      const saw = new THREE.Group()
+      const shape = new THREE.Shape()
+      shape.moveTo(-0.18, 0.035)
+      shape.lineTo(0.11, 0.035)
+      shape.lineTo(0.11, -0.035)
+      for (let i = 0; i < 15; i += 1) {
+        const x = 0.11 - i * 0.0193
+        shape.lineTo(x - 0.0096, -0.035)
+        shape.lineTo(x - 0.0193, -0.044)
+      }
+      shape.lineTo(-0.18, -0.035)
+      shape.closePath()
+      const bladeGeo = new THREE.ExtrudeGeometry(shape, { depth: 0.008, bevelEnabled: false })
+      bladeGeo.translate(0, 0, -0.004)
+      saw.add(mesh(bladeGeo, material(0xa4a8a5, 0.45, 0.58)))
+      const handleShape = new THREE.Shape()
+      handleShape.moveTo(0.1, -0.052); handleShape.lineTo(0.23, -0.052); handleShape.lineTo(0.23, 0.052); handleShape.lineTo(0.1, 0.052); handleShape.closePath()
+      const hole = new THREE.Path()
+      hole.moveTo(0.14, -0.026); hole.lineTo(0.14, 0.026); hole.lineTo(0.205, 0.026); hole.lineTo(0.205, -0.026); hole.closePath()
+      handleShape.holes.push(hole)
+      const handleGeo = new THREE.ExtrudeGeometry(handleShape, { depth: 0.034, bevelEnabled: true, bevelSize: 0.004, bevelThickness: 0.004, bevelSegments: 2 })
+      handleGeo.translate(0, 0, -0.017)
+      saw.add(mesh(handleGeo, material(0x684226, 0, 0.82)))
+      saw.add(mesh(new THREE.BoxGeometry(0.018, 0.082, 0.042), material(0xa18148, 0.55, 0.5), v(0.095, 0, 0)))
+      add('saw', saw)
+      const offcut = mesh(new THREE.BoxGeometry(0.07, 0.035, 0.055), material(0x67655f, 0.4, 0.8))
+      add('offcut', offcut).visible = false
+    }
+    if (item === 'hammer') {
+      prop.scale.setScalar(0.52)
+      const impact = mesh(
+        new THREE.RingGeometry(0.026, 0.035, 24),
+        new THREE.MeshBasicMaterial({ color: 0xffc06a, transparent: true, opacity: 0.8, depthWrite: false }),
+      )
+      impact.rotation.x = -Math.PI / 2
+      impact.visible = false
+      add('impact', impact)
     }
     if (item === 'handcuffs') {
       a.target.set(-0.25, 0.23, -1.95)
       const wrist = new ActionHand(this.deps.hand(), true, a.actor === 'player' ? 'boss' : 'player', a.snapshot.levelIndex)
       wrist.root.rotation.y = Math.PI
       wrist.root.position.copy(a.target).add(v(0, 0, -0.12))
+      const sleeve = mesh(new THREE.CylinderGeometry(0.052, 0.066, 0.24, 14), material(a.snapshot.levelIndex === 1 ? 0x2c2522 : 0x34302b), v(0, 0, 0.25))
+      sleeve.rotation.x = Math.PI / 2
+      wrist.root.add(sleeve)
       add('targetWrist', wrist.root)
     }
     if (item === 'iou') {
@@ -335,18 +393,51 @@ export class ItemActions {
       stamp.scale.x = 0.65
       stamp.rotation.x = -Math.PI / 2
       add('stamp', stamp).visible = false
+      const signature = new THREE.Group()
+      const ink = new THREE.MeshBasicMaterial({ color: 0x531b17 })
+      signature.add(mesh(new THREE.PlaneGeometry(0.065, 0.003), ink, v(0.025, 0, 0)))
+      const stroke2 = mesh(new THREE.PlaneGeometry(0.052, 0.003), ink, v(0.018, -0.012, 0))
+      stroke2.rotation.z = -0.18; signature.add(stroke2)
+      const stroke3 = mesh(new THREE.PlaneGeometry(0.038, 0.003), ink, v(0.01, -0.023, 0))
+      stroke3.rotation.z = 0.22; signature.add(stroke3)
+      signature.position.set(-0.055, -0.13, 0.002)
+      signature.scale.x = 0.01
+      paper.add(signature)
+      parts.set('signature', signature)
+      const pen = new THREE.Group()
+      pen.add(mesh(new THREE.CylinderGeometry(0.005, 0.006, 0.13, 10), material(0x322a26), v(0, 0.07, 0)))
+      const nib = mesh(new THREE.ConeGeometry(0.006, 0.024, 10), material(0xb89a5c, 0.6, 0.4), v(0, 0.008, 0))
+      nib.rotation.z = Math.PI
+      pen.add(nib)
+      add('pen', pen)
+      const stampTool = new THREE.Group()
+      stampTool.add(mesh(new THREE.CylinderGeometry(0.038, 0.038, 0.012, 20), material(0x771c18), v(0, 0.006, 0)))
+      stampTool.add(mesh(new THREE.CylinderGeometry(0.014, 0.018, 0.05, 12), material(0x5b3b25), v(0, 0.036, 0)))
+      stampTool.visible = false
+      add('stampTool', stampTool)
       a.target.set(-0.1, 0.045, -0.3)
     }
     if (item === 'seal') {
-      const strip = this.paper('封  契', 0.1, 0.43, true)
+      const strip = this.paper('封  契', 0.26, 0.095, true)
       add('strip', strip)
+      const wax = mesh(new THREE.CylinderGeometry(0.032, 0.035, 0.009, 20), material(0x8f1d18, 0.05, 0.55))
+      wax.visible = false
+      add('wax', wax)
     }
     if (item === 'cutter') {
       // Imported cutter is a solid dagger; the close-up needs an independently retractable blade.
       prop.visible = false
       const tool = new THREE.Group()
-      tool.add(mesh(new THREE.BoxGeometry(0.065, 0.05, 0.23), material(0x514436)))
-      const blade = mesh(new THREE.BoxGeometry(0.04, 0.007, 0.17), material(0xa2a9aa, 0.5, 0.62), v(0, 0, -0.16))
+      tool.add(mesh(new THREE.BoxGeometry(0.046, 0.03, 0.18), material(0x777d7e, 0.55, 0.5)))
+      tool.add(mesh(new THREE.BoxGeometry(0.054, 0.038, 0.105), material(0x2d2926, 0, 0.86), v(0, 0, 0.025)))
+      tool.add(mesh(new THREE.BoxGeometry(0.03, 0.008, 0.18), material(0xaab2b3, 0.6, 0.42), v(0, 0.019, 0)))
+      tool.add(mesh(new THREE.BoxGeometry(0.034, 0.014, 0.032), material(0x4b5152, 0.45, 0.55), v(0, 0.026, -0.052)))
+      const bladeShape = new THREE.Shape()
+      bladeShape.moveTo(-0.019, 0); bladeShape.lineTo(0.019, 0); bladeShape.lineTo(0.013, 0.145); bladeShape.lineTo(-0.004, 0.17); bladeShape.lineTo(-0.019, 0.17); bladeShape.closePath()
+      const bladeGeo = new THREE.ExtrudeGeometry(bladeShape, { depth: 0.006, bevelEnabled: false })
+      bladeGeo.rotateX(-Math.PI / 2)
+      bladeGeo.translate(0, 0, -0.075)
+      const blade = mesh(bladeGeo, material(0xc6d0d2, 0.65, 0.38))
       tool.add(blade)
       parts.set('blade', blade)
       add('cutter', tool)
@@ -354,16 +445,39 @@ export class ItemActions {
     if (item === 'monocle') {
       prop.visible = false
       const lens = new THREE.Group()
-      lens.add(mesh(new THREE.TorusGeometry(0.13, 0.012, 10, 32), material(0x9c7d45, 0.45, 0.62)))
-      const glass = mesh(new THREE.CircleGeometry(0.12, 32), new THREE.MeshStandardMaterial({ color: 0x6a8c91, transparent: true, opacity: 0.22, side: THREE.DoubleSide, roughness: 0.5 }))
+      lens.add(mesh(new THREE.TorusGeometry(0.085, 0.009, 10, 32), material(0x9c7d45, 0.45, 0.62)))
+      const glass = mesh(new THREE.CircleGeometry(0.078, 32), new THREE.MeshStandardMaterial({ color: 0x6a8c91, transparent: true, opacity: 0.2, side: THREE.DoubleSide, roughness: 0.35, depthWrite: false }))
       lens.add(glass)
-      for (let i = 0; i < 10; i += 1) {
-        const link = mesh(new THREE.TorusGeometry(0.012, 0.003, 5, 8), material(0x927849, 0.45, 0.62), v(0.13 + Math.sin(i * 0.5) * 0.025, -i * 0.028, 0))
+      for (let i = 0; i < 7; i += 1) {
+        const link = mesh(new THREE.TorusGeometry(0.008, 0.0022, 5, 8), material(0x927849, 0.45, 0.62), v(0.085 + Math.sin(i * 0.55) * 0.014, -i * 0.019, 0))
+        link.rotation.y = i % 2 ? Math.PI / 2 : 0
         lens.add(link)
       }
+      const glint = new THREE.Group()
+      const glintMat = new THREE.MeshBasicMaterial({ color: 0xe8fbff, transparent: true, opacity: 0.85, depthWrite: false })
+      glint.add(mesh(new THREE.PlaneGeometry(0.055, 0.004), glintMat))
+      glint.add(mesh(new THREE.PlaneGeometry(0.004, 0.055), glintMat))
+      glint.position.z = 0.005
+      glint.visible = false
+      lens.add(glint)
+      parts.set('glint', glint)
       add('monocle', lens)
     }
+    if (item === 'hourglass') {
+      prop.scale.setScalar(0.42)
+    }
     if (item === 'magnet') {
+      prop.scale.setScalar(0.48)
+      const field = new THREE.Group()
+      const fieldMat = new THREE.MeshBasicMaterial({ color: 0x79b7ff, transparent: true, opacity: 0.35, depthWrite: false })
+      for (let i = 0; i < 2; i += 1) {
+        const arc = mesh(new THREE.TorusGeometry(0.065 + i * 0.025, 0.0025, 5, 24, Math.PI), fieldMat)
+        arc.rotation.z = Math.PI
+        arc.position.y = -i * 0.018
+        field.add(arc)
+      }
+      field.visible = false
+      add('magnetField', field)
       const mine = a.snapshot[a.actor].hand.cards
       const foeActor = a.actor === 'player' ? 'boss' : 'player'
       const theirs = a.snapshot[foeActor].hand.cards
@@ -373,20 +487,21 @@ export class ItemActions {
         const c1 = this.copyCard(a, a.actor, first), c2 = this.copyCard(a, foeActor, second)
         if (c1 && c2) {
           c1.to.copy(c2.from); c2.to.copy(c1.from)
-          a.target.copy(c1.from).add(v(0, 0.28, 0))
+          a.target.copy(c1.from).add(v(0, 0.14, 0))
         }
       }
     }
   }
   private paper(text: string, width: number, height: number, red = false): THREE.Mesh {
     const canvas = document.createElement('canvas')
-    canvas.width = 256; canvas.height = 384
+    const landscape = width > height
+    canvas.width = landscape ? 512 : 256; canvas.height = landscape ? 192 : 384
     const ctx = canvas.getContext('2d')!
-    ctx.fillStyle = red ? '#731d16' : '#b4a079'; ctx.fillRect(0, 0, 256, 384)
-    ctx.strokeStyle = red ? '#c6a87b' : '#5b4630'; ctx.lineWidth = 4; ctx.strokeRect(12, 12, 232, 360)
-    ctx.fillStyle = red ? '#d2b78f' : '#332b22'; ctx.font = '30px serif'
-    text.split('\n').forEach((line, i) => ctx.fillText(line, 28, 62 + i * 45))
-    for (let i = 0; i < 60; i += 1) { ctx.fillStyle = `rgba(50,25,12,${0.015 + (i % 5) * 0.01})`; ctx.fillRect((i * 73) % 256, (i * 97) % 384, 8, 20) }
+    ctx.fillStyle = red ? '#731d16' : '#b4a079'; ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.strokeStyle = red ? '#c6a87b' : '#5b4630'; ctx.lineWidth = 4; ctx.strokeRect(12, 12, canvas.width - 24, canvas.height - 24)
+    ctx.fillStyle = red ? '#d2b78f' : '#332b22'; ctx.font = landscape ? '54px serif' : '30px serif'
+    text.split('\n').forEach((line, i) => ctx.fillText(line, landscape ? 150 : 28, landscape ? 116 : 62 + i * 45))
+    for (let i = 0; i < 60; i += 1) { ctx.fillStyle = `rgba(50,25,12,${0.015 + (i % 5) * 0.01})`; ctx.fillRect((i * 73) % canvas.width, (i * 97) % canvas.height, 8, 20) }
     // 纸面压掉两档白：纯白受桌面暖光一打就过 bloom 阈值，字迹会被光晕吃掉
     const mat = material(0xa89c86); mat.map = new THREE.CanvasTexture(canvas); mat.map.colorSpace = THREE.SRGBColorSpace; mat.side = THREE.DoubleSide; mat.userData.actionTexture = true
     const obj = mesh(new THREE.PlaneGeometry(width, height), mat)
@@ -484,9 +599,8 @@ export class ItemActions {
     const spec = ITEM_ACTION_TIMINGS[item]
     const take = span(t, 0, spec.start)
     const out = span(t, spec.release, spec.end)
-    const work = span(t, spec.start, Math.max(spec.start + 0.1, spec.commit))
     const restR = v(0.43, 0.1, 0.25), restL = v(-0.43, 0.1, 0.25)
-    const tool = item === 'cutter' ? parts.get('cutter')! : item === 'monocle' ? parts.get('monocle')! : prop
+    const tool = item === 'cutter' ? parts.get('cutter')! : item === 'monocle' ? parts.get('monocle')! : item === 'saw' ? parts.get('saw')! : prop
     tool.position.lerpVectors(a.from, target, take)
     tool.rotation.set(0, 0, 0)
     const gripOffset = v(0.018, 0.03, 0.12)
@@ -496,14 +610,14 @@ export class ItemActions {
     right.grip(take * (1 - out) * 0.95)
     left.grip(take * (1 - out) * 0.4)
     if (item === 'sedative') {
-      support = v(-0.24, 0.27, -0.04)
-      left.root.rotation.set(0, -0.9, Math.PI * 0.7)
+      support = v(-0.28, 0.4, 0.02)
+      left.root.rotation.set(0.2, -0.55, Math.PI * 0.62)
       left.grip(span(t, 1.1, 1.4) * (1 - span(t, 2.9, 3.5)) * 0.7)
       // 针筒横在左前臂上方，针尖朝腕部；推药时只有活塞向后走
-      tool.rotation.set(0, Math.PI / 2, Math.PI / 2)
+      tool.rotation.set(0.08, Math.PI / 2, Math.PI / 2)
       const insert = span(t, 0.85, 1.25)
-      tool.position.copy(v(0.02, 0.44, 0.02)).lerp(v(0.01, 0.285, 0.01), insert * (1 - span(t, 2.8, 3.1)))
-      if (t < spec.start) tool.position.lerpVectors(a.from, v(0.02, 0.44, 0.02), take)
+      tool.position.copy(v(-0.23, 0.53, -0.02)).lerp(v(-0.23, 0.47, -0.02), insert * (1 - span(t, 2.8, 3.1)))
+      if (t < spec.start) tool.position.lerpVectors(a.from, v(-0.23, 0.53, -0.02), take)
       const pushed = span(t, 1.4, 2.8)
       prop.traverse((obj) => {
         if (!obj.userData.actionBasePosition) obj.userData.actionBasePosition = obj.position.clone()
@@ -514,70 +628,122 @@ export class ItemActions {
       const cap = parts.get('cap')!
       cap.position.set(-0.3, 0.03 + (1 - span(t, 0.3, 0.8)) * 0.3, -0.08)
       const dot = parts.get('puncture')!
-      dot.visible = t > 2.95; dot.position.set(-0.19, 0.275, 0)
-      gripOffset.set(0.012, 0.055, 0.085)
+      dot.visible = t > 2.95; dot.position.set(-0.23, 0.415, -0.02)
+      gripOffset.set(0.07, -0.01, 0.11)
     } else if (item === 'dagger') {
-      support = v(-0.22, 0.29, -0.02)
-      left.root.rotation.set(0, -1, Math.PI * 0.75)
-      left.grip(span(t, 1, 1.4) * 0.8 * (1 - out))
+      support = v(-0.25, 0.29, -0.17)
+      left.root.rotation.set(0.1, -0.6, Math.PI * 0.55)
+      left.grip(span(t, 1, 1.4) * 0.6 * (1 - out))
       tool.rotation.set(0.1, 1.25, -0.3)
-      tool.position.set(0.16 - span(t, 0.8, 1.35) * 0.34, 0.34, -0.16)
-      if (t < 0.8) tool.position.lerpVectors(a.from, v(0.16, 0.34, -0.16), take)
+      const draw = span(t, 0.8, 1.35)
+      tool.position.set(0.15 - draw * 0.27, 0.34 + Math.sin(draw * Math.PI) * 0.07, -0.16)
+      const cuts = span(t, 1.35, 2.55) * (1 - span(t, 2.55, 2.7))
+      tool.position.y -= Math.abs(Math.sin((t - 1.35) * Math.PI * 2.4)) * 0.035 * cuts
+      if (t < 0.8) tool.position.lerpVectors(a.from, v(0.15, 0.34, -0.16), take)
+      gripOffset.set(0, 0, 0.115).applyQuaternion(tool.quaternion)
+      gripOffset.y += 0.018
+      right.root.rotation.set(tool.rotation.x * 0.4, tool.rotation.y, tool.rotation.z * 0.5)
       const drop = parts.get('blood')!
       drop.visible = t > 1.3
-      drop.position.set(-0.16, 0.275 * (1 - span(t, 1.4, 1.85)) + 0.006, -0.18)
+      drop.position.set(-0.2, 0.275 * (1 - span(t, 1.4, 1.85)) + 0.006, -0.18)
       drop.scale.set(1, t > 1.85 ? 0.35 : 1, 1)
     } else if (item === 'magnifier') {
-      tool.rotation.x = -0.45
+      tool.rotation.set(0, Math.PI + 0.18, -0.08)
       tool.position.y += Math.sin(t * 4) * 0.008 * (1 - out)
-      gripOffset.set(0, 0.01, -0.19)
-      support = target.clone().add(v(-0.17, -0.24, 0.24))
+      gripOffset.set(0, 0.01, -0.19).applyQuaternion(tool.quaternion)
+      support = tool.position.clone().add(v(-0.11, -0.06, 0.02))
+      left.root.rotation.set(0.15, -0.5, Math.PI * 0.42)
+      left.grip(take * (1 - out) * 0.62)
     } else if (item === 'monocle') {
-      tool.position.set(0.18, 0.66, 0.12)
-      if (t < spec.start) tool.position.lerpVectors(a.from, v(0.18, 0.66, 0.12), take)
-      tool.rotation.x = -0.5
-      gripOffset.set(0.13, 0, 0)
-      support = restL.clone()
+      const lift = span(t, 0.55, 1.05)
+      const inspect = span(t, 1, 2.5) * (1 - out)
+      tool.position.set(0.02, 0.42 + lift * 0.15 + Math.sin(t * 3) * 0.006 * inspect, 0.1)
+      if (t < spec.start) tool.position.lerpVectors(a.from, v(0.02, 0.57, 0.1), take)
+      tool.rotation.set(-0.2, 0.12, Math.sin(t * 2) * 0.06 * inspect)
+      gripOffset.set(0.1, 0, 0)
+      support = tool.position.clone().add(v(-0.1, 0.025, 0.015))
+      left.root.rotation.set(0.1, -0.35, -Math.PI * 0.35)
+      left.grip(take * (1 - out) * 0.58)
+      right.root.rotation.z = -0.18
+      const glint = parts.get('glint')!
+      const shine = span(t, 1.25, 1.45) * (1 - span(t, 1.75, 1.95))
+      glint.visible = shine > 0.01
+      glint.scale.setScalar(0.5 + shine * 0.8)
+      glint.position.x = -0.025 + span(t, 1.25, 1.95) * 0.05
+      glint.rotation.z = span(t, 1.25, 1.95) * 0.5
     } else if (item === 'saw') {
-      tool.rotation.set(0, Math.PI / 2, -0.48)
-      tool.position.x += Math.sin((t - spec.start) * Math.PI * 3.2) * 0.16 * (t > 0.7 && t < 2.6 ? 1 : 0)
-      gripOffset.set(0.22, 0.06, 0)
-      support = target.clone().add(v(0.3, -0.09, 0.14))
-      const pipe = parts.get('offcut')!
-      pipe.visible = t >= 2.6
-      pipe.position.copy(target).add(v(-0.12 - span(t, 2.6, 3.1) * 0.18, -0.18, 0))
-      pipe.rotation.set(Math.PI / 2, 0, span(t, 2.6, 3.1) * Math.PI)
+      tool.rotation.set(0, 0, 0)
+      const stroke = t > 0.7 && t < 2.6 ? Math.sin((t - spec.start) * Math.PI * 3.2) : 0
+      tool.position.copy(target).add(v(stroke * 0.1, -0.015, 0.02))
+      if (t < spec.start) tool.position.lerpVectors(a.from, target.clone().add(v(0, -0.015, 0.02)), take)
+      gripOffset.set(0.17, 0.005, 0.035)
+      right.root.rotation.z = -0.12
+      support = target.clone().add(v(-0.17, -0.075, 0.015))
+      left.root.rotation.set(0.15, -0.3, Math.PI * 0.48)
+      left.grip(take * (1 - out) * 0.48)
+      const offcut = parts.get('offcut')!
+      offcut.visible = t >= 2.6
+      offcut.position.copy(target).add(v(-0.12 - span(t, 2.6, 3.1) * 0.16, -0.09, 0.02))
+      offcut.rotation.set(0, 0, span(t, 2.6, 3.1) * Math.PI)
     } else if (item === 'hammer') {
       const impact = span(t, 1.05, 1.35)
       tool.position.y += (0.52 * take * (1 - impact)) + Math.sin(span(t, 1.35, 1.8) * Math.PI) * 0.14
       tool.rotation.x = -0.55 * (1 - impact)
-      gripOffset.set(0, 0.02, 0.17)
-      support = target.clone().add(v(0.34, -0.12, 0.16))
+      gripOffset.set(0, 0.02, 0.15)
+      support = target.clone().add(v(-0.16, -0.1, 0.1))
+      left.root.rotation.set(0.1, -0.4, Math.PI * 0.45)
+      left.grip(take * (1 - out) * 0.45)
+      const flash = parts.get('impact') as THREE.Mesh
+      const flashMat = flash.material as THREE.MeshBasicMaterial
+      const burst = span(t, 1.3, 1.42) * (1 - span(t, 1.55, 1.75))
+      flash.visible = burst > 0.01
+      flash.position.copy(target).add(v(0, -0.065, 0.02))
+      flash.scale.setScalar(0.7 + span(t, 1.3, 1.75) * 1.8)
+      flashMat.opacity = burst * 0.75
     } else if (item === 'handcuffs') {
       tool.rotation.x = Math.PI / 2 * span(t, 0.7, 1.4)
       tool.position.y += (1 - span(t, 0.6, 1.5)) * 0.1
       const cuff = prop.getObjectByName('CuffB')
       if (cuff) cuff.rotation.z = (1 - span(t, 1.3, 1.65)) * 1.2
-      support = target.clone().add(v(0.27, -0.13, 0))
+      support = target.clone().add(v(-0.2, -0.08, 0.02))
+      left.root.rotation.set(0.1, -0.45, Math.PI * 0.42)
+      left.grip(take * (1 - out) * 0.5)
     } else if (item === 'aegis') {
-      tool.position.set(0, 0.25 + Math.sin(work * Math.PI) * 0.3, 0.35)
-      if (t < spec.start) tool.position.lerpVectors(a.from, v(0, 0.25, 0.35), take)
-      // 护心镜是持久残留：收尾落到桌左的「用毕」位，镜面仍朝镜头。
-      // 之前它悬在取景点正上方不走，会一直挡在后续道具的特写里
-      tool.rotation.x = -0.2 * (1 - out)
+      const raise = span(t, 0.55, 1.35)
+      const brace = Math.sin(span(t, 1.35, 1.75) * Math.PI) * 0.035
+      tool.position.set(0, 0.08 + raise * 0.38 + brace, 0.3 - raise * 0.08)
+      if (t < spec.start) tool.position.lerpVectors(a.from, v(0, 0.08, 0.3), take)
+      tool.rotation.set(-0.12 * raise, 0, Math.sin(t * 2.2) * 0.025 * raise)
       tool.position.lerp(v(-0.78, 0.02, -0.2), out)
-      gripOffset.set(0.14, 0.04, 0.05)
-      support = tool.position.clone().add(v(-0.16, 0.05, 0.05))
+      gripOffset.set(0.12, 0.035, 0.06)
+      support = tool.position.clone().add(v(-0.13, 0.035, 0.06))
+      left.root.rotation.set(0.1, -0.45, -Math.PI * 0.28)
+      left.grip(take * (1 - out) * 0.62)
+      const pulse = parts.get('shieldPulse') as THREE.Mesh
+      const pulseMat = pulse.material as THREE.MeshBasicMaterial
+      const glow = span(t, 1.5, 1.65) * (1 - span(t, 1.95, 2.2))
+      pulse.visible = glow > 0.01
+      pulse.position.copy(tool.position).add(v(0, 0.08, 0.015))
+      pulse.rotation.copy(tool.rotation)
+      pulse.scale.setScalar(0.85 + span(t, 1.5, 2.2) * 0.65)
+      pulseMat.opacity = glow * 0.72
     } else if (item === 'magnet') {
       const p = span(t, 0.75, 1.95)
       a.moving.forEach((card, i) => {
         card.obj.position.lerpVectors(card.from, card.to, p)
-        card.obj.position.y += Math.sin(p * Math.PI) * (i === 0 ? 0.23 : 0.42)
+        card.obj.position.y += Math.sin(p * Math.PI) * (i === 0 ? 0.12 : 0.22)
         card.obj.rotation.z = Math.sin(p * Math.PI) * (i === 0 ? 0.12 : -0.12)
       })
-      if (a.moving[0]) tool.position.copy(a.moving[0].obj.position).add(v(0, 0.22, 0.03))
-      support = restL.clone()
-      gripOffset.set(0, 0.035, 0.07)
+      if (a.moving[0]) tool.position.copy(a.moving[0].obj.position).add(v(0, 0.12, 0.05))
+      tool.rotation.z = Math.sin(t * 4) * 0.06 * (1 - out)
+      support = tool.position.clone().add(v(-0.11, -0.015, 0.055))
+      left.root.rotation.set(0.1, -0.4, -Math.PI * 0.3)
+      left.grip(take * (1 - out) * 0.58)
+      gripOffset.set(0.11, 0.015, 0.06)
+      const field = parts.get('magnetField')!
+      field.visible = t > 0.75 && t < 2.05
+      field.position.copy(tool.position).add(v(0, -0.07, 0.015))
+      field.scale.setScalar(0.9 + Math.sin(t * 9) * 0.08)
     } else if (item === 'cutter') {
       const blade = parts.get('blade')!
       if (a.waiting || !a.chosen) {
@@ -596,8 +762,10 @@ export class ItemActions {
         tool.position.copy(target).add(v(-0.13 + span(t, 0.9, 1.8) * 0.26, 0.055, 0.04))
         tool.rotation.set(0, Math.PI / 2, 0)
         blade.scale.z = Math.max(0.02, 1 - out)
-        support = target.clone().add(v(-0.13, 0.05, -0.11))
-        gripOffset.set(0.12, 0.012, 0)
+        support = target.clone().add(v(-0.16, 0.025, 0.12))
+        left.root.rotation.set(0.12, -0.35, Math.PI * 0.42)
+        left.grip(take * (1 - out) * 0.28)
+        gripOffset.set(0.12, 0.018, 0)
         if (t >= 1.8 && a.moving[0]) {
           const c = a.moving[0]
           if (!parts.has('half')) {
@@ -620,31 +788,74 @@ export class ItemActions {
       const paper = parts.get('paper')!
       paper.position.copy(target).add(v(0, 0, -span(t, 2.1, 2.6) * 0.12))
       support = paper.position.clone().add(v(-0.2, 0.04, 0.06))
-      tool.position.copy(paper.position).add(v(0.04, 0.24 - span(t, 1.1, 1.55) * 0.18 + span(t, 1.85, 2.2) * 0.18, 0.1))
-      gripOffset.set(0.04, 0, 0)
-      right.root.rotation.z = -0.6
+      const pen = parts.get('pen')!
+      const stampTool = parts.get('stampTool')!
+      const signature = parts.get('signature')!
+      const sign = span(t, 1.05, 1.55)
+      const signed = span(t, 1.15, 1.7)
+      const lift = span(t, 1.8, 2.15)
+      const press = span(t, 1.9, 2.08) * (1 - span(t, 2.2, 2.45))
+      signature.visible = signed > 0.01
+      signature.scale.x = Math.max(0.01, signed)
+      if (t < 1.82) {
+        tool.position.copy(paper.position).add(v(-0.055 + sign * 0.12, 0.025 + (1 - sign) * 0.12 + lift * 0.14, 0.07))
+        pen.visible = out < 0.8
+        pen.position.copy(tool.position)
+        pen.rotation.set(0.35, 0, -0.5 + Math.sin(t * 18) * 0.06 * sign * (1 - lift))
+        gripOffset.set(0, 0.07, 0).applyQuaternion(pen.quaternion)
+        stampTool.visible = false
+      } else {
+        pen.visible = false
+        stampTool.visible = out < 0.8
+        tool.position.copy(paper.position).add(v(0.04, 0.012 + (1 - press) * 0.15, 0.12))
+        stampTool.position.copy(tool.position)
+        stampTool.rotation.set(0, 0, Math.sin(t * 10) * 0.025 * (1 - press))
+        gripOffset.set(0, 0.045, 0)
+      }
+      right.root.rotation.z = -0.35
       const stamp = parts.get('stamp')!
-      stamp.visible = t > 1.85; stamp.position.copy(paper.position).add(v(0.04, 0.004, 0.12))
+      stamp.visible = t > 1.98; stamp.position.copy(paper.position).add(v(0.04, 0.004, 0.12))
+      const stampPop = span(t, 1.98, 2.12)
+      stamp.scale.set(0.65 * Math.max(0.01, stampPop), 0.65 * Math.max(0.01, stampPop), 1)
     } else if (item === 'seal') {
       tool.visible = false
       const strip = parts.get('strip')!
-      strip.position.copy(target).add(v(0, (1 - span(t, 0.75, 1.2)) * 0.22, 0))
-      strip.rotation.z = 0.12 * (1 - work)
-      if (!a.chosen) strip.position.set(0, 0.28, -0.12)
-      tool.position.copy(strip.position).add(v(0, 0.035, 0.17 - span(t, 1.2, 1.9) * 0.32))
-      support = strip.position.clone().add(v(-0.09, 0.025, -0.16))
-      gripOffset.set(0.04, 0.015, 0)
+      const place = span(t, 0.75, 1.2)
+      strip.position.copy(target).add(v(0, (1 - place) * 0.18, 0))
+      strip.rotation.z = 0.12 * (1 - place)
+      if (!a.chosen) strip.position.set(0, 0.22, -0.12)
+      const press = span(t, 1.55, 1.78) * (1 - span(t, 2.0, 2.25))
+      if (t < 1.55) {
+        tool.position.copy(strip.position).add(v(0, 0.035, 0))
+        gripOffset.set(0.14, 0.02, 0)
+      } else {
+        tool.position.copy(strip.position).add(v(0, 0.035 + (1 - press) * 0.08, 0.055))
+        gripOffset.set(0, 0.025, 0.075)
+      }
+      support = strip.position.clone().add(v(-0.14, 0.02, 0))
+      left.root.rotation.set(0.1, -0.35, -Math.PI * 0.28)
+      left.grip(take * (1 - out) * 0.4)
+      const wax = parts.get('wax')!
+      wax.visible = t > 1.72
+      wax.position.copy(strip.position).add(v(0, 0.009, 0))
+      const waxPop = span(t, 1.72, 1.9)
+      wax.scale.set(Math.max(0.01, waxPop), 1, Math.max(0.01, waxPop))
     } else if (item === 'hourglass') {
-      tool.rotation.z = span(t, 0.7, 1.65) * Math.PI
-      tool.position.y += Math.sin(work * Math.PI) * 0.12 + span(t, 0.7, 1.65) * 0.3
-      support = tool.position.clone().add(v(-0.13, 0.04, 0))
-      gripOffset.set(0.13, 0.08, 0)
+      const flip = span(t, 0.7, 1.65)
+      const lift = span(t, 0.55, 1.1)
+      tool.rotation.set(-0.12, 0, Math.PI / 2 + flip * Math.PI)
+      tool.position.set(0.04, 0.25 + lift * 0.12 + Math.sin(lift * Math.PI) * 0.025, 0.12)
+      if (t < spec.start) tool.position.lerpVectors(a.from, v(0.04, 0.25, 0.12), take)
+      gripOffset.set(0.078, 0, 0.055).applyQuaternion(tool.quaternion)
+      support = tool.position.clone().add(v(-0.078, 0, 0.055).applyQuaternion(tool.quaternion))
+      left.grip(take * (1 - out) * 0.62)
+      right.grip(take * (1 - out) * 0.72)
       const stream = prop.getObjectByName('SandStream')
       if (stream) stream.scale.y = t > 1.65 ? 0.6 + Math.sin(t * 15) * 0.2 : 1
     }
     const used = v(-0.75, 0.035, -0.13)
     if (!['aegis', 'handcuffs', 'hourglass', 'seal', 'iou'].includes(item)) tool.position.lerp(used, out)
-    if (item === 'hourglass') { tool.position.lerp(v(-0.62, 0.53, -0.35), out) }
+    if (item === 'hourglass') { tool.position.lerp(v(-0.62, 0.115, -0.35), out) }
     if (item === 'handcuffs' || item === 'aegis') tool.position.y -= out * 0.02
     right.root.position.copy(tool.position).add(gripOffset)
     right.root.position.lerp(restR, out)

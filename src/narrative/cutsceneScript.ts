@@ -19,6 +19,7 @@ import {
   rect as drawRect,
   span as spanFn,
 } from './pixelDraw'
+import type { DialogueChannel } from './dialogue'
 
 export type CutsceneSfx =
   | 'doorLock'
@@ -40,6 +41,7 @@ export interface CutsceneLine {
   readonly text: string
   readonly at: number
   readonly end: number
+  readonly channel: DialogueChannel
 }
 
 export interface CutsceneSpec {
@@ -50,6 +52,7 @@ export interface CutsceneSpec {
   /** 总时长（秒），含淡入淡出 */
   readonly duration: number
   readonly lines: readonly CutsceneLine[]
+  readonly dialogueAnchor?: { readonly x: number; readonly y: number }
   readonly cues: readonly CutsceneCue[]
   readonly draw: (ctx: CanvasRenderingContext2D, t: number) => void
 }
@@ -212,7 +215,7 @@ function drawLedgerRoom(ctx: Ctx, t: number): void {
 
 /**
  * 第三层 · 补针刑台（7.5s）
- * 铁链降下缝账人 → 睁眼 → 刻痕名单逐道刻入 → 拈针绷线 →
+ * 铁链降下讨债人 → 睁眼 → 刻痕名单逐道刻入 → 拈针绷线 →
  * 名单推到你面前、末行空槽发光 → 血从缝线渗出滴落
  */
 function drawTallyRoom(ctx: Ctx, t: number): void {
@@ -279,7 +282,7 @@ function drawTallyRoom(ctx: Ctx, t: number): void {
   rect(ctx, bX + 42, 74, 14, 1, slotLit ? C.bone : '#3a322a')
   if (slotLit) glow(ctx, bX + 49, 74, 14, '230,205,150', 0.22)
 
-  // ---- 缝账人：随右侧链条降到画面内，与链条同步摆荡 ----
+  // ---- 讨债人：随右侧链条降到画面内，与链条同步摆荡 ----
   const figY = -84 + drop * 78 // 落地后头顶在 y≈-6 → 用 76 基准
   const cx = 213 + camMid * 0.5 + swayR
   const top = 76 + figY
@@ -368,9 +371,10 @@ export const CUTSCENES: Readonly<Record<number, CutsceneSpec>> = {
     levelIndex: 1,
     layer: 2,
     duration: 7,
+    dialogueAnchor: { x: 238, y: 54 },
     lines: [
-      { text: '「赖账犬」把烧剩的账页一页页摊开，欠的血都记在上面。', at: 1.9, end: 4.3 },
-      { text: '你伸手按住那页——墨迹还在渗，像没干的血。', at: 5.5, end: 6.8 },
+      { text: '烧剩的账页，一页页摊开。欠的血，都记在上面。', at: 1.9, end: 4.3, channel: 'enemy' },
+      { text: '我伸手按住那页——墨迹还在渗，像没干的血。', at: 5.5, end: 6.8, channel: 'player' },
     ],
     cues: [
       { at: 0.05, sfx: 'doorCreak' },
@@ -388,9 +392,10 @@ export const CUTSCENES: Readonly<Record<number, CutsceneSpec>> = {
     levelIndex: 2,
     layer: 3,
     duration: 7.5,
+    dialogueAnchor: { x: 244, y: 50 },
     lines: [
-      { text: '补针刑台没有出口。名单上又添一道刻痕，一道比一道快。', at: 1.9, end: 4.4 },
-      { text: '最后一行的空槽还亮着——那是留给你补针的位置。', at: 5.5, end: 7.2 },
+      { text: '补针刑台没有出口。名单上，又多了一道刻痕。', at: 1.9, end: 4.4, channel: 'enemy' },
+      { text: '最后一行的空槽，是留给你的。', at: 5.5, end: 7.2, channel: 'enemy' },
     ],
     cues: [
       { at: 0.05, sfx: 'lowThump' },

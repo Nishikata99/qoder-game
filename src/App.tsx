@@ -8,6 +8,8 @@ import { DevPanel } from './components/DevPanel'
 import { CorridorIntro } from './components/CorridorIntro'
 import { NarrativeOverlay } from './narrative/NarrativeOverlay'
 import { CutsceneOverlay } from './narrative/CutsceneOverlay'
+import { EnemyDialogueBox } from './narrative/EnemyDialogueBox'
+import type { DialogueChannel } from './narrative/dialogue'
 import { cutsceneFor } from './narrative/cutsceneScript'
 import { ENDINGS, type EndingSpec } from './narrative/endingScript'
 import type { Cutscene2D, Playable2D } from './narrative/Cutscene2D'
@@ -29,20 +31,18 @@ import {
 import { bossName, levelTitle, narrativeLog } from './narrative/copy'
 import { useDialogFocus } from './components/useDialogFocus'
 
-interface RelayBanner {
-  readonly id: number
-  readonly live: number
-  readonly blank: number
-  readonly level: number
-}
-
 interface LootBanner {
   readonly id: number
   readonly level: number
   readonly items: readonly ItemId[]
 }
 
-const FADE_MS = 2400
+interface ClueLine {
+  readonly text: string
+  readonly channel: DialogueChannel
+  readonly durationMs: number
+}
+
 const GUIDE_KEY = 'blood-ante.guideSeen'
 
 const GUIDE_LINES = [
@@ -264,7 +264,6 @@ export default function App() {
   const [quality, setQuality] = useState(() => readSettings().quality ?? 'auto')
   const [modal, setModal] = useState<ModalTab | null>(null)
   const [guideOpen, setGuideOpen] = useState(() => !hasSeenGuide())
-  const [relay, setRelay] = useState<RelayBanner | null>(null)
   const [loot, setLoot] = useState<LootBanner | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [bloodFlash, setBloodFlash] = useState(0)
@@ -273,7 +272,7 @@ export default function App() {
   const [visionBlur, setVisionBlur] = useState(0)
   const [wakeBlur, setWakeBlur] = useState(0)
   const [narrative, setNarrative] = useState<NarrativeVisual | null>(null)
-  const [clueLine, setClueLine] = useState<string | null>(null)
+  const [clueLine, setClueLine] = useState<ClueLine | null>(null)
   const [devOpen, setDevOpen] = useState(false)
   const [corridorState, setCorridorState] = useState<'idle' | 'playing' | 'done'>('idle')
   const [skipAvailable, setSkipAvailable] = useState(false)
@@ -300,7 +299,6 @@ export default function App() {
   /** 胜利结局：3D endingB 播完后要接的 2D 续篇（一次性） */
   const endingThenCutsceneRef = useRef<(() => void) | null>(null)
   const noticeTimer = useRef<number | null>(null)
-  const relayTimer = useRef<number | null>(null)
   const lootTimer = useRef<number | null>(null)
   const bloodTimer = useRef<number | null>(null)
   const muzzleTimer = useRef<number | null>(null)
@@ -503,7 +501,6 @@ export default function App() {
           break
         case 'daggerReshuffle':
           sound.playReload()
-          showNotice(`匕首献祭：重装 ${event.live} 实 ${event.blank} 空`)
           break
         case 'cardCuttered':
           if (event.actor === 'player') {
@@ -530,10 +527,6 @@ export default function App() {
           break
         case 'reload':
           sound.playReload()
-          bannerId.current += 1
-          setRelay({ id: bannerId.current, live: event.live, blank: event.blank, level: 0 })
-          if (relayTimer.current !== null) window.clearTimeout(relayTimer.current)
-          relayTimer.current = window.setTimeout(() => setRelay(null), FADE_MS)
           break
         case 'levelClear':
           bannerId.current += 1
@@ -580,9 +573,9 @@ export default function App() {
   // 入场未播完时排队的线索句，等导演层交出控制权再显示
   useEffect(() => {
     if (narrative || !pendingClueRef.current) return
-    const line = pendingClueRef.current
+    const lines = pendingClueRef.current
     pendingClueRef.current = null
-    showClueLine(line)
+    showDialogueSequence(lines)
   }, [narrative])
 
   useEffect(() => {
@@ -822,7 +815,7 @@ export default function App() {
     if (!sound.isAmbientPlaying) sound.startAmbient()
     void sound.startRoomTone(`${import.meta.env.BASE_URL}audio/room-tone.ogg`)
     setCorridorState('done')
-    game.startAtLevel(checkpoint.levelIndex, checkpoint.carryOver)
+    game.startAtLevel(checkpoint.levelIndex, checkpoint.carryOver, true)
   }
 
   /** 左门新开一局：旧存档立即作废，避免重载后还能从右门续旧进度 */
@@ -831,14 +824,34 @@ export default function App() {
     setCheckpoint(null)
   }
 
-  const pendingClueRef = useRef<string | null>(null)
+  const pendingClueRef = useRef<readonly ClueLine[] | null>(null)
   const clueTimer = useRef<number | null>(null)
+  const clueTimersRef = useRef<number[]>([])
 
-  function showClueLine(text: string, durationMs = 6000) {
-    setClueLine(text)
+  function clearClueTimers() {
+    if (clueTimer.current !== null) window.clearTimeout(clueTimer.current)
+    clueTimer.current = null
+    for (const timer of clueTimersRef.current) window.clearTimeout(timer)
+    clueTimersRef.current = []
+  }
+
+  function showClueLine(text: string, durationMs = 6000, channel: DialogueChannel = 'player') {
+    setClueLine({ text, durationMs, channel })
     if (clueTimer.current !== null) window.clearTimeout(clueTimer.current)
     clueTimer.current = window.setTimeout(() => setClueLine(null), durationMs)
   }
+
+  function showDialogueSequence(lines: readonly ClueLine[]) {
+    clearClueTimers()
+    let delay = 0
+    for (const line of lines) {
+      const timer = window.setTimeout(() => showClueLine(line.text, line.durationMs, line.channel), delay)
+      clueTimersRef.current.push(timer)
+      delay += line.durationMs
+    }
+  }
+
+  useEffect(() => () => clearClueTimers(), [])
 
   function handleEventNarrative(event: GameEvent) {
     // 只在结果节点播报，不做每回合点数播报
@@ -891,9 +904,13 @@ export default function App() {
     if (event.type !== 'roundStart') return
     // ch1 第一次 roundStart：入场 Boss 半句的后半句；入场没播完就排队
     if (event.level === 1 && event.round === 1) {
-      const line = '你妹妹血很凉，但手很稳——她撑过了这层，去了二楼账房。'
-      if (narrativeBusy) pendingClueRef.current = line
-      else showClueLine(line)
+      const lines: readonly ClueLine[] = [
+        { text: '你妹妹血很凉，手却稳。她付了七袋，才走到下一张桌。', durationMs: 3600, channel: 'enemy' },
+        { text: '她还活着？', durationMs: 1200, channel: 'player' },
+        { text: '活着。她的账，还没清。', durationMs: 2200, channel: 'enemy' },
+      ]
+      if (narrativeBusy) pendingClueRef.current = lines
+      else showDialogueSequence(lines)
     }
     // ch3 第一次 roundStart：刻痕名单扫镜再回桌面；延半拍让 GameCanvas 的 resetShot 先落
     if (event.level === 3 && event.round === 1) {
@@ -902,8 +919,12 @@ export default function App() {
       window.setTimeout(() => scene?.setShot('table', 1.2), 2900)
       sound.playStitch()
       window.setTimeout(
-        () => showClueLine('末位刻着「小棠」，底下空槽留给你。小心——她最会算牌。', 4000),
-        400,
+        () => showDialogueSequence([
+          { text: '名单末位是小棠。下面，留给你。', durationMs: 2600, channel: 'enemy' },
+          { text: '她最会算牌。', durationMs: 1300, channel: 'player' },
+          { text: '我现在，用她的记性算牌。', durationMs: 2400, channel: 'enemy' },
+        ]),
+        3000,
       )
     }
   }
@@ -1220,22 +1241,6 @@ export default function App() {
           className="volume-slider w-24 max-[420px]:w-20"
         />
       </div>
-
-      {/* Reload banner. */}
-      {relay ? (
-        <div
-          key={relay.id}
-          className="slide-banner absolute inset-x-0 top-[16%] flex justify-center"
-        >
-          <div className="flex flex-col items-center gap-1 border-y border-rust-500/25 bg-black/55 px-10 py-3 backdrop-blur-sm">
-            <p className="text-[11px] tracking-[0.4em] text-bone-200/55 uppercase">Loading cylinder</p>
-            <p className="font-display text-lg text-bone-200">
-              装入 <span className="text-rust-400">{relay.live}</span> 发实弹，
-              <span className="text-sky-300">{relay.blank}</span> 发空弹
-            </p>
-          </div>
-        </div>
-      ) : null}
 
       {/* Loot banner. */}
       {loot ? (
@@ -1619,14 +1624,33 @@ export default function App() {
       ) : null}
 
       {clueLine && !narrativeActive ? (
-        // 窄屏首回合：剧情行会横穿桌沿按键，让位给首次操作提示
-        <div
-          className={`pointer-events-none absolute inset-x-0 bottom-[16vh] z-20 flex justify-center px-6 ${showFirstTurnHint ? 'max-[420px]:opacity-0' : ''}`}
-        >
-          <p className="clue-line narrative-subtitle max-w-xl text-center font-display text-base tracking-[0.18em] text-bone-200/85">
-            {clueLine}
-          </p>
-        </div>
+        clueLine.channel === 'enemy' ? (
+          <EnemyDialogueBox
+            getAnchor={() => sceneRef.current?.getBossDialogueAnchor() ?? { x: 0.5, y: 0.35, visible: false }}
+          >
+            <p
+              className="clue-line narrative-subtitle font-display text-sm leading-relaxed tracking-[0.12em] text-red-50/90"
+              style={{ animationDuration: `${clueLine.durationMs}ms` }}
+            >
+              {clueLine.text}
+            </p>
+          </EnemyDialogueBox>
+        ) : (
+          // 窄屏首回合：剧情行会横穿桌沿按键，让位给首次操作提示
+          <div
+            data-testid="bottom-dialogue"
+            className={`pointer-events-none absolute inset-x-0 bottom-[16vh] z-20 flex justify-center px-6 ${showFirstTurnHint ? 'max-[420px]:opacity-0' : ''}`}
+          >
+            <p
+              className={`clue-line narrative-subtitle max-w-xl text-center font-display text-base tracking-[0.18em] ${
+                clueLine.channel === 'sister' ? 'sister-dialogue text-amber-100/95' : 'text-bone-200/85'
+              }`}
+              style={{ animationDuration: `${clueLine.durationMs}ms` }}
+            >
+              {clueLine.text}
+            </p>
+          </div>
+        )
       ) : null}
 
       {cutscene ? (

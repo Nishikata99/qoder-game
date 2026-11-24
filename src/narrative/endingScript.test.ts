@@ -51,6 +51,12 @@ describe('endingScript 结局分镜契约', () => {
     expect(ENDINGS.lose.lines.length).toBeGreaterThanOrEqual(2)
   })
 
+  it('胜利用底部姐妹对白，失败用敌人通道与底部玩家对白', () => {
+    expect(ENDINGS.win.lines.map((line) => line.channel)).toEqual(['sister', 'player', 'sister', 'player', 'sister'])
+    expect(ENDINGS.lose.lines.map((line) => line.channel)).toEqual(['enemy', 'player', 'enemy', 'enemy'])
+    expect(ENDINGS.lose.dialogueAnchor).toBeDefined()
+  })
+
   it('不引用外部素材', () => {
     for (const spec of Object.values(ENDINGS)) {
       expect(typeof spec.draw).toBe('function')

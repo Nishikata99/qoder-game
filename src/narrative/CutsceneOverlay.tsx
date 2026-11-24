@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SoundEngine } from '../audio/SoundEngine'
 import { Cutscene2D, type Playable2D, type PlayableLine } from './Cutscene2D'
+import { EnemyDialogueBox } from './EnemyDialogueBox'
+import { PIXEL_HEIGHT, PIXEL_WIDTH } from './pixelDraw'
 
 const CHAR_MS = 65
 const PAUSE_MS = 260
@@ -142,6 +144,17 @@ export function CutsceneOverlay({
   }, [holdGuard])
 
   const showSkipButton = mode === 'transition' ? true : skippable
+  const enemyAnchor = spec.dialogueAnchor
+  const getEnemyAnchor = () => {
+    const canvas = canvasRef.current
+    if (!canvas || !enemyAnchor) return { x: 0.5, y: 0.35, visible: false }
+    const rect = canvas.getBoundingClientRect()
+    return {
+      x: (rect.left + (enemyAnchor.x / PIXEL_WIDTH) * rect.width) / window.innerWidth,
+      y: (rect.top + (enemyAnchor.y / PIXEL_HEIGHT) * rect.height) / window.innerHeight,
+      visible: true,
+    }
+  }
 
   return (
     <div
@@ -153,12 +166,21 @@ export function CutsceneOverlay({
         className="cutscene-canvas block"
         style={{ imageRendering: 'pixelated' }}
       />
-      {/* 字幕压在画面底部：桌面上的手/账页动作都在下沿，用半透明背景板隔开保证可读 */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-[5vh] flex min-h-[4.5rem] items-start justify-center px-6">
-        <p className="narrative-subtitle max-w-lg bg-black/55 px-4 py-1.5 text-center font-display text-base leading-relaxed tracking-[0.18em] text-bone-200/95">
-          {director && line ? <TypedLine key={line.at} line={line} director={director} /> : null}
-        </p>
-      </div>
+      {line?.channel === 'enemy' && director ? (
+        <EnemyDialogueBox getAnchor={getEnemyAnchor}>
+          <TypedLine key={line.at} line={line} director={director} />
+        </EnemyDialogueBox>
+      ) : line && director ? (
+        <div data-testid="bottom-dialogue" className="pointer-events-none absolute inset-x-0 bottom-[5vh] flex min-h-[4.5rem] items-start justify-center px-6">
+          <p
+            className={`narrative-subtitle max-w-lg px-4 py-1.5 text-center font-display text-base leading-relaxed tracking-[0.18em] ${
+              line.channel === 'sister' ? 'sister-dialogue text-amber-100/95' : 'text-bone-200/95'
+            }`}
+          >
+            <TypedLine key={line.at} line={line} director={director} />
+          </p>
+        </div>
+      ) : null}
       {showSkipButton ? (
         <button
           type="button"

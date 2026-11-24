@@ -55,6 +55,14 @@ describe('cutsceneScript 分镜契约', () => {
     }
   })
 
+  it('二层过场使用敌人通道且不显示旧称呼', () => {
+    const text = CUTSCENES[1].lines.map((line) => line.text).join('')
+    expect(CUTSCENES[1].lines[0].channel).toBe('enemy')
+    expect(CUTSCENES[1].dialogueAnchor).toBeDefined()
+    expect(text).not.toContain('赖账犬')
+    expect(text).not.toContain('讨债人')
+  })
+
   it('每段至少两句字幕，保证能读出情节推进', () => {
     for (const spec of Object.values(CUTSCENES)) {
       expect(spec.lines.length).toBeGreaterThanOrEqual(2)

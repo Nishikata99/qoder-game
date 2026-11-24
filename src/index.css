@@ -336,6 +336,18 @@ body {
     0 0 18px rgb(0 0 0 / 0.7);
 }
 
+@keyframes sister-flicker {
+  0%, 19%, 21%, 23%, 100% { opacity: 1; }
+  20%, 22% { opacity: 0.55; }
+}
+
+.sister-dialogue {
+  text-shadow:
+    0 1px 4px rgb(0 0 0 / 0.95),
+    0 0 16px rgb(255 214 150 / 0.28);
+  animation: sister-flicker 2.8s steps(1, end) infinite;
+}
+
 /* 局内线索句（非阻断）：淡入停住再淡出，显示时长由 App 定时器对齐 */
 @keyframes clue-fade {
   0% { opacity: 0; }
@@ -352,6 +364,10 @@ body {
   .clue-line {
     animation: none;
     opacity: 0.9;
+  }
+
+  .sister-dialogue {
+    animation: none;
   }
 }
 

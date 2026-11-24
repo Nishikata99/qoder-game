@@ -80,9 +80,9 @@ interface CorridorCallbacks {
 
 /** 行走字幕时间表（秒，相对 beginWalk）：血契动机 → 21 袋底注 → 临近双门 */
 const WALK_LINES: ReadonlyArray<{ at: number; end: number; text: string; sfx?: 'paperRustle' | 'lowThump' }> = [
-  { at: 1.0, end: 4.3, text: '手里只剩半张血契。另一半，被小棠带进了这底下。', sfx: 'paperRustle' },
-  { at: 5.0, end: 8.2, text: '她替我签了名，进门凑那二十一袋血。' },
-  { at: 8.8, end: 10.8, text: '尽头有两扇铁门。', sfx: 'lowThump' },
+  { at: 1.0, end: 4.3, text: '半张血契……另一半，在小棠手里。', sfx: 'paperRustle' },
+  { at: 5.0, end: 8.2, text: '她替我签了名，进去凑那二十一袋血。' },
+  { at: 8.8, end: 10.8, text: '两扇门。她走的是哪一扇？', sfx: 'lowThump' },
 ]
 
 function easeInOutCubic(t: number): number {
@@ -101,6 +101,9 @@ export class CorridorScene {
   private readonly renderer: THREE.WebGLRenderer
   private readonly textures = new TextureFactory()
   private dust: THREE.Points | null = null
+  private coneMat: THREE.MeshBasicMaterial | null = null
+  private bulbMat: THREE.MeshStandardMaterial | null = null
+  private readyAt = 0
   private readonly scene = new THREE.Scene()
   private readonly camera: THREE.PerspectiveCamera
   private readonly composer: EffectComposer
@@ -179,11 +182,16 @@ export class CorridorScene {
       this.doorPivotL = gltf.scene.getObjectByName('DoorPivotL') ?? null
       this.doorPivotR = gltf.scene.getObjectByName('DoorPivotR') ?? null
       this.retexture(gltf.scene)
+      const bulb = gltf.scene.getObjectByName('LampBulb')
+      if (bulb instanceof THREE.Mesh && bulb.material instanceof THREE.MeshStandardMaterial) {
+        this.bulbMat = bulb.material
+      }
       this.buildAtmosphere()
       this.buildDoorPlates()
       this.buildSealedDoor()
       if (this.phase === 'loading') {
         this.phase = 'ready'
+        this.readyAt = this.elapsed
         this.callbacks.onReady()
       }
     })
@@ -436,6 +444,25 @@ export class CorridorScene {
     }
   }
 
+  /** ready 阶段的坏灯频闪：每 2.4s 一个窗口，多数窗口抽一次 3 连短灭 */
+  private readyFlicker(): number {
+    const hash = (n: number): number => {
+      const x = Math.sin(n * 127.1 + 311.7) * 43758.5453
+      return x - Math.floor(x)
+    }
+    const t = this.elapsed - this.readyAt
+    const slot = 2.4
+    const index = Math.floor(t / slot)
+    const local = t - index * slot
+    if (hash(index * 3.1 + 9.4) > 0.82) return 1
+    const start = 0.2 + hash(index * 7.3 + 1.9) * 0.9
+    const b = local - start
+    if (b < 0 || b >= 0.8) return 1
+    if ((b >= 0 && b < 0.08) || (b >= 0.17 && b < 0.22) || (b >= 0.46 && b < 0.6)) return 0.06
+    // 亮着的间隙保留一点电流抖动，避免「闪-稳-闪」太规整
+    return 0.82 + hash(index + Math.floor(t * 40)) * 0.18
+  }
+
   private makePlateMesh(canvas: HTMLCanvasElement, width: number, height: number): THREE.Mesh | null {
     const texture = new THREE.CanvasTexture(canvas)
     texture.colorSpace = THREE.SRGBColorSpace
@@ -466,6 +493,8 @@ export class CorridorScene {
     this.jitterY = THREE.MathUtils.clamp(this.jitterY + (Math.random() - 0.5) * 0.0012, -0.012, 0.012)
     const breathe = Math.sin(this.elapsed * 2.1) * 0.012 + this.jitterY
     const glitch = this.crtPass.uniforms.glitch!.value as number
+    // 未开局时吊灯接触不良：按时间窗随机抽 3 连短灭，点击起步后回到稳定
+    const flicker = this.phase === 'ready' ? this.readyFlicker() : 1
 
     if (this.phase === 'walk') {
       const t = Math.min(1, this.phaseTime / WALK_SECONDS)
@@ -519,7 +548,9 @@ export class CorridorScene {
       }
     }
 
-    this.lamp.intensity = 20 * (0.9 + Math.random() * 0.1) * (1 - glitch * 0.4)
+    this.lamp.intensity = 20 * (0.9 + Math.random() * 0.1) * (1 - glitch * 0.4) * flicker
+    if (this.bulbMat) this.bulbMat.emissiveIntensity = 4 * (0.12 + 0.88 * flicker)
+    if (this.coneMat) this.coneMat.opacity = 0.045 * (0.15 + 0.85 * flicker)
     if (this.dust) {
       this.dust.rotation.y = Math.sin(this.elapsed * 0.05) * 0.03
       this.dust.position.y = Math.sin(this.elapsed * 0.3) * 0.05
@@ -586,6 +617,7 @@ export class CorridorScene {
       side: THREE.DoubleSide,
     })
     const cone = new THREE.Mesh(coneGeo, coneMat)
+    this.coneMat = coneMat
     cone.position.set(0, 1.22, -12)
     this.scene.add(cone)
 

@@ -10,9 +10,14 @@ const CHANNELS: readonly (keyof BossPoseSample)[] = [
   'y',
   'z',
   'headPitch',
+  'headYaw',
   'headRoll',
   'armL',
   'armR',
+  'forearmL',
+  'forearmR',
+  'legL',
+  'legR',
   'lookWeight',
 ]
 
@@ -42,6 +47,19 @@ function hit(level: number, overrides: Partial<{ damage: number; hpAfter: number
   return { damage: 2, hpAfter: 6, maxHp: 8, level, ...overrides }
 }
 
+function controlledHit(
+  level = 1,
+  overrides: Partial<{ damage: number; hpAfter: number; maxHp: number }> = {},
+) {
+  return { ...hit(level, overrides), controlled: true }
+}
+
+function suspendedHit(
+  overrides: Partial<{ damage: number; hpAfter: number; maxHp: number }> = {},
+) {
+  return { ...hit(2, overrides), suspended: true }
+}
+
 describe('BossPoseController', () => {
   it('普通命中走完整倒地/起身并回到 idle', () => {
     const controller = new BossPoseController()
@@ -49,8 +67,9 @@ describe('BossPoseController', () => {
     const seen = recordStates(controller, 8)
     expect(seen).toEqual([
       'impact',
-      'collapse',
-      'prone',
+      'launch',
+      'down',
+      'plant',
       'brace',
       'push',
       'rise',
@@ -60,6 +79,266 @@ describe('BossPoseController', () => {
     expect(controller.state()).toBe('idle')
     expect(controller.sample().pitch).toBeCloseTo(0)
     expect(controller.sample().lookWeight).toBe(1)
+  })
+
+  it('L1 先向后击飞，再单手撑桌并跟上另一只手', () => {
+    const controller = new BossPoseController()
+    controller.triggerHit(hit(0))
+    const launched = sampleWhen(controller, 'down', 2)
+    expect(launched.y).toBeGreaterThan(0.2)
+    expect(launched.z).toBeLessThan(-0.8)
+
+    const firstHand = sampleWhen(controller, 'brace', 3)
+    expect(firstHand.armL).toBeGreaterThan(firstHand.armR + 0.5)
+    expect(firstHand.forearmL).toBeGreaterThan(firstHand.forearmR + 0.5)
+
+    advance(controller, 0.3)
+    const secondHand = controller.sample()
+    expect(secondHand.armR).toBeGreaterThan(firstHand.armR + 0.5)
+    expect(secondHand.forearmR).toBeGreaterThan(firstHand.forearmR + 0.5)
+  })
+
+  it('可以在撑桌入口冻结，释放后继续完整起身', () => {
+    const controller = new BossPoseController()
+    controller.triggerHit(hit(0))
+    controller.holdBeforePlant()
+
+    const beforePlant = sampleWhen(controller, 'plant', 3)
+    expect(beforePlant.armL).toBeCloseTo(0.35)
+    expect(controller.stateProgress()).toBe(0)
+    advance(controller, 2)
+    expect(controller.state()).toBe('plant')
+    expect(controller.stateProgress()).toBe(0)
+    expect(controller.sample().armL).toBeCloseTo(0.35)
+
+    controller.releasePlantHold()
+    controller.update(STEP)
+    expect(controller.stateProgress()).toBeGreaterThan(0)
+    expect(recordStates(controller, 5).at(-1)).toBe('idle')
+  })
+
+  it('L2/L3 非致死命中仍走原来的倒地起身序列', () => {
+    for (const level of [1, 2]) {
+      const controller = new BossPoseController()
+      controller.triggerHit(hit(level))
+      expect(recordStates(controller, 8)).toEqual([
+        'impact',
+        'collapse',
+        'prone',
+        'brace',
+        'push',
+        'rise',
+        'recover',
+        'idle',
+      ])
+    }
+  })
+
+  it('第三层悬吊命中按挣扎、僵住、回头顺序完成', () => {
+    const controller = new BossPoseController()
+    controller.triggerHit(suspendedHit())
+    expect(recordStates(controller, 5)).toEqual([
+      'impact',
+      'struggle',
+      'still',
+      'headTurn',
+      'recover',
+      'idle',
+    ])
+  })
+
+  it('第三层僵住阶段可冻结到血袋与桌面回位结束', () => {
+    const controller = new BossPoseController()
+    controller.triggerHit(suspendedHit())
+    controller.holdBeforeStill()
+    while (controller.state() !== 'still') controller.update(STEP)
+    const frozen = controller.sample()
+    expect(frozen.headYaw).toBeCloseTo(Math.PI)
+    expect(controller.stateProgress()).toBe(0)
+    advance(controller, 2)
+    for (const channel of CHANNELS) {
+      expect(controller.sample()[channel]).toBeCloseTo(frozen[channel], 6)
+    }
+    controller.releaseStillHold()
+    expect(recordStates(controller, 3).at(-1)).toBe('idle')
+  })
+
+  it('第三层挣扎时双臂与双腿持续乱动，停止时头背对玩家', () => {
+    const controller = new BossPoseController()
+    controller.triggerHit(suspendedHit())
+    while (controller.state() !== 'struggle') controller.update(STEP)
+    const start = controller.sample()
+    let armDelta = 0
+    let legDelta = 0
+    for (let elapsed = 0; elapsed < 2 && controller.state() !== 'still'; elapsed += STEP) {
+      controller.update(STEP)
+      const sample = controller.sample()
+      armDelta = Math.max(
+        armDelta,
+        Math.abs(sample.armL - start.armL),
+        Math.abs(sample.armR - start.armR),
+        Math.abs(sample.forearmL - start.forearmL),
+        Math.abs(sample.forearmR - start.forearmR),
+      )
+      legDelta = Math.max(legDelta, Math.abs(sample.legL), Math.abs(sample.legR))
+    }
+    expect(armDelta).toBeGreaterThan(0.8)
+    expect(legDelta).toBeGreaterThan(0.3)
+    expect(controller.state()).toBe('still')
+    expect(controller.sample().headYaw).toBeCloseTo(Math.PI)
+    expect(controller.sample().lookWeight).toBe(0)
+  })
+
+  it('第三层头部特写只旋转头部 180 度并回到面向玩家', () => {
+    const controller = new BossPoseController()
+    controller.triggerHit(suspendedHit())
+    while (controller.state() !== 'headTurn') controller.update(STEP)
+    controller.update(STEP)
+    const start = controller.sample()
+    expect(start.headYaw).toBeCloseTo(Math.PI + 0.08)
+    advance(controller, 0.36)
+    const turned = controller.sample()
+    expect(turned.headYaw).toBeCloseTo(0)
+    expect(turned.yaw).toBeCloseTo(start.yaw)
+    expect(turned.pitch).toBeCloseTo(start.pitch)
+  })
+
+  it('第三层 reduced motion 保留完整顺序并压低乱抓幅度', () => {
+    const measure = (reducedMotion: boolean) => {
+      const controller = new BossPoseController({ reducedMotion })
+      controller.triggerHit(suspendedHit())
+      while (controller.state() !== 'struggle') controller.update(STEP)
+      advance(controller, 0.2)
+      const start = controller.sample()
+      let delta = 0
+      for (let elapsed = 0; elapsed < 0.3; elapsed += STEP) {
+        controller.update(STEP)
+        const sample = controller.sample()
+        delta = Math.max(delta, Math.abs(sample.armL - start.armL), Math.abs(sample.armR - start.armR))
+      }
+      return { delta, states: recordStates(controller, 5) }
+    }
+    const normal = measure(false)
+    const reduced = measure(true)
+    expect(reduced.delta).toBeLessThan(normal.delta * 0.5)
+    expect(reduced.states).toEqual(['struggle', 'still', 'headTurn', 'recover', 'idle'])
+  })
+
+  it('第三层致死命中不进入悬吊挣扎', () => {
+    const controller = new BossPoseController()
+    controller.triggerHit(suspendedHit({ damage: 9, hpAfter: 0 }))
+    expect(recordStates(controller, 8)).toEqual(['impact', 'collapse', 'deadProne'])
+  })
+
+  it('第二阶段受控命中按错误重启顺序起身', () => {
+    const controller = new BossPoseController()
+    controller.triggerHit(controlledHit())
+    expect(recordStates(controller, 8)).toEqual([
+      'impact',
+      'launch',
+      'down',
+      'plant',
+      'brace',
+      'push',
+      'rise',
+      'recover',
+      'idle',
+    ])
+  })
+
+  it('受控后仰在落地前冻结，不会直接滑倒', () => {
+    const controller = new BossPoseController()
+    controller.triggerHit(controlledHit())
+    while (controller.state() !== 'launch') controller.update(STEP)
+
+    advance(controller, 0.31)
+    const frozen = controller.sample()
+    expect(controller.state()).toBe('launch')
+    advance(controller, 0.08)
+    expect(controller.state()).toBe('launch')
+    for (const channel of CHANNELS) {
+      expect(controller.sample()[channel]).toBeCloseTo(frozen[channel], 6)
+    }
+  })
+
+  it('倒地后先抽动右臂再抽动左臂，头部反向跟随', () => {
+    const controller = new BossPoseController()
+    controller.triggerHit(controlledHit())
+    while (controller.state() !== 'plant') controller.update(STEP)
+    const base = controller.sample()
+    let rightPeak = 0
+    let leftPeak = 0
+    let rightAt = 0
+    let leftAt = 0
+    let headPeak = 0
+
+    for (let elapsed = 0; elapsed < 1 && controller.state() === 'plant'; elapsed += STEP) {
+      controller.update(STEP)
+      const sample = controller.sample()
+      const right = sample.armR - base.armR
+      const left = sample.armL - base.armL
+      if (right > rightPeak) {
+        rightPeak = right
+        rightAt = elapsed
+      }
+      if (left > leftPeak) {
+        leftPeak = left
+        leftAt = elapsed
+      }
+      headPeak = Math.max(headPeak, Math.abs(sample.headPitch - base.headPitch))
+    }
+
+    expect(rightPeak).toBeGreaterThan(0.5)
+    expect(leftPeak).toBeGreaterThan(0.45)
+    expect(rightAt).toBeLessThan(leftAt)
+    expect(headPeak).toBeGreaterThan(0.25)
+  })
+
+  it('恢复时头部先修正，躯干随后，手臂最后跟上', () => {
+    const controller = new BossPoseController()
+    controller.triggerHit(controlledHit())
+    while (controller.state() !== 'brace') controller.update(STEP)
+    const start = controller.sample()
+    advance(controller, 0.24)
+    const middle = controller.sample()
+
+    const headDelta = Math.abs(middle.headPitch - start.headPitch)
+    const bodyDelta = Math.abs(middle.pitch - start.pitch) + Math.abs(middle.y - start.y)
+    const armDelta = Math.abs(middle.armR - start.armR) + Math.abs(middle.forearmR - start.forearmR)
+    expect(headDelta).toBeGreaterThan(bodyDelta * 2)
+    expect(bodyDelta).toBeGreaterThan(armDelta)
+
+    while (controller.state() !== 'push') controller.update(STEP)
+    const pushStart = controller.sample()
+    advance(controller, 0.2)
+    const pushMiddle = controller.sample()
+    expect(Math.abs(pushMiddle.pitch - pushStart.pitch)).toBeGreaterThan(0.1)
+    expect(Math.abs(pushMiddle.armR - pushStart.armR)).toBeLessThan(0.02)
+  })
+
+  it('受控序列的 reduced motion 保留停顿但关闭双臂抽搐', () => {
+    const controller = new BossPoseController({ reducedMotion: true })
+    controller.triggerHit(controlledHit())
+    while (controller.state() !== 'plant') controller.update(STEP)
+    const base = controller.sample()
+    let armDelta = 0
+    for (let elapsed = 0; elapsed < 1 && controller.state() === 'plant'; elapsed += STEP) {
+      controller.update(STEP)
+      const sample = controller.sample()
+      armDelta = Math.max(
+        armDelta,
+        Math.abs(sample.armL - base.armL),
+        Math.abs(sample.armR - base.armR),
+      )
+    }
+    expect(armDelta).toBeLessThan(0.001)
+    expect(recordStates(controller, 5).at(-1)).toBe('idle')
+  })
+
+  it('第二阶段致死命中仍直接死亡，不播放受控起身', () => {
+    const controller = new BossPoseController()
+    controller.triggerHit(controlledHit(1, { damage: 9, hpAfter: 0 }))
+    expect(recordStates(controller, 8)).toEqual(['impact', 'collapse', 'deadProne'])
   })
 
   it('致死命中停在 deadProne，之后也不再起身', () => {
@@ -111,13 +390,13 @@ describe('BossPoseController', () => {
   it('每关使用不同的倒地幅度', () => {
     const l1 = new BossPoseController()
     l1.triggerHit(hit(0))
-    const proneL1 = sampleWhen(l1, 'prone', 2)
+    const proneL1 = sampleWhen(l1, 'plant', 3)
 
     const l3 = new BossPoseController()
     l3.triggerHit(hit(2))
     const proneL3 = sampleWhen(l3, 'prone', 2)
 
-    expect(proneL1.pitch).toBeGreaterThan(proneL3.pitch + 0.2)
+    expect(Math.abs(proneL1.pitch)).toBeGreaterThan(Math.abs(proneL3.pitch) + 0.2)
     expect(BOSS_POSE_PROFILES[2].riseLift).toBeGreaterThan(0)
   })
 
@@ -151,19 +430,17 @@ describe('BossPoseController', () => {
     expect(BOSS_POSE_PROFILES[2].allowArms).toBe(false)
   })
 
-  it('reduced motion 更快，且关闭侧倾与手臂', () => {
+  it('reduced motion 更快，且关闭倒地侧倾', () => {
     const normal = new BossPoseController()
     normal.triggerHit(hit(0))
-    const normalProne = sampleWhen(normal, 'prone', 2)
+    const normalDown = sampleWhen(normal, 'plant', 3)
 
     const reduced = new BossPoseController({ reducedMotion: true })
     reduced.triggerHit(hit(0))
-    const reducedProne = sampleWhen(reduced, 'prone', 2)
+    const reducedDown = sampleWhen(reduced, 'plant', 3)
 
-    expect(reducedProne.roll).toBe(0)
-    expect(reducedProne.armL).toBe(0)
-    expect(normalProne.roll).not.toBe(0)
-    expect(normalProne.armL).toBeGreaterThan(0)
+    expect(reducedDown.roll).toBe(0)
+    expect(normalDown.roll).not.toBe(0)
 
     let normalTime = 0
     while (normal.state() !== 'idle' && normalTime < 10) {
@@ -178,11 +455,11 @@ describe('BossPoseController', () => {
     expect(reducedTime).toBeLessThan(normalTime)
   })
 
-  it('prone 阶段 lookWeight 归零', () => {
+  it('倒地阶段 lookWeight 归零', () => {
     const controller = new BossPoseController()
     controller.triggerHit(hit(0))
-    const prone = sampleWhen(controller, 'prone', 2)
-    expect(prone.lookWeight).toBe(0)
+    const down = sampleWhen(controller, 'plant', 3)
+    expect(down.lookWeight).toBe(0)
   })
 
   it('三关的采样值始终有界', () => {

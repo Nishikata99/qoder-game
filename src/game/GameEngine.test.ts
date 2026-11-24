@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BOSS_ITEM_POOLS, GameEngine, ITEM_IDS, evaluateHand, type Card, type CardSuit, type GameEngineOptions, type ItemId, type LevelConfig } from './GameEngine'
+import { BOSS_ITEM_POOLS, GameEngine, ITEM_IDS, createSeededRandom, evaluateHand, type Card, type CardSuit, type GameEngineOptions, type ItemId, type LevelConfig } from './GameEngine'
 
 const card = (rank: number, suit: CardSuit = 'spade'): Card => ({
   id: `${suit}-${rank}`,
@@ -78,6 +78,48 @@ describe('evaluateHand', () => {
   it('只有起手两张恰好 21 点算黑杰克', () => {
     expect(hand(1, 10).blackjack).toBe(true)
     expect(hand(10, 6, 5).blackjack).toBe(false)
+  })
+})
+
+describe('弹仓装填范围', () => {
+  it('2 发固定 1 实 1 空，3 发与 8 发边界正确', () => {
+    const { probe } = newEngine()
+    const cylinder = probe.cylinder
+
+    cylinder.rng = vi.fn().mockReturnValue(0)
+    let chambers = cylinder.reload()
+    expect(chambers).toHaveLength(2)
+    expect(chambers.filter((chamber: string) => chamber === 'live')).toHaveLength(1)
+    expect(chambers.filter((chamber: string) => chamber === 'blank')).toHaveLength(1)
+
+    cylinder.rng = vi.fn().mockReturnValueOnce(0.2).mockReturnValueOnce(0).mockReturnValue(0)
+    chambers = cylinder.reload()
+    expect(chambers).toHaveLength(3)
+    expect(chambers.filter((chamber: string) => chamber === 'live')).toHaveLength(2)
+
+    cylinder.rng = vi.fn().mockReturnValue(0.999999)
+    chambers = cylinder.reload()
+    expect(chambers).toHaveLength(8)
+    expect(chambers.filter((chamber: string) => chamber === 'live')).toHaveLength(4)
+  })
+
+  it('所有装填都满足总数、实弹上下限、非零空弹与比例限制', () => {
+    const { probe } = newEngine({ rng: createSeededRandom(20261125) })
+    for (let i = 0; i < 500; i += 1) {
+      const chambers = probe.cylinder.reload()
+      const live = chambers.filter((chamber: string) => chamber === 'live').length
+      const blank = chambers.length - live
+      expect(chambers.length).toBeGreaterThanOrEqual(2)
+      expect(chambers.length).toBeLessThanOrEqual(8)
+      expect(blank).toBeGreaterThanOrEqual(1)
+      if (chambers.length === 2) {
+        expect(live).toBe(1)
+      } else {
+        expect(live).toBeGreaterThanOrEqual(2)
+        expect(live).toBeLessThanOrEqual(4)
+        expect(live).toBeLessThanOrEqual(Math.ceil(chambers.length / 2))
+      }
+    }
   })
 })
 
@@ -704,6 +746,47 @@ describe('从层首重来', () => {
     expect(engine.retryLevel()).toBe(true)
     await settleUntil(() => engine.getSnapshot().phase === 'playerTurn')
     expect(engine.getSnapshot().levelIndex).toBe(1)
+    expect(engine.getSnapshot().player.items).toHaveLength(3)
+  })
+
+  it('续档恢复检查点道具，不重复发放本层初始补给', () => {
+    const { engine } = newEngine({ rng: createSeededRandom(12345) })
+    const checkpoints: { levelIndex: number; carryOver: readonly ItemId[] }[] = []
+    engine.subscribe((event) => {
+      if (event.type === 'checkpoint') {
+        checkpoints.push({ levelIndex: event.levelIndex, carryOver: [...event.carryOver] })
+      }
+    })
+
+    engine.start()
+    const initial = engine.getSnapshot()
+    const firstCheckpoint = checkpoints[0]
+    expect(firstCheckpoint).toBeDefined()
+    expect(initial.player.items).toHaveLength(2)
+
+    engine.startAtLevel(firstCheckpoint!.levelIndex, firstCheckpoint!.carryOver, true)
+    const resumed = engine.getSnapshot()
+    expect(resumed.player.items).toEqual(firstCheckpoint!.carryOver)
+    expect(resumed.player.items).toHaveLength(2)
+    expect(resumed.boss.items).toHaveLength(2)
+  })
+
+  it('连续多次续档不会继续增加道具', () => {
+    const { engine } = newEngine({ rng: createSeededRandom(12345) })
+    const checkpoints: { levelIndex: number; carryOver: readonly ItemId[] }[] = []
+    engine.subscribe((event) => {
+      if (event.type === 'checkpoint') {
+        checkpoints.push({ levelIndex: event.levelIndex, carryOver: [...event.carryOver] })
+      }
+    })
+
+    engine.start()
+    for (let i = 0; i < 3; i += 1) {
+      const checkpoint = checkpoints.at(-1)!
+      engine.startAtLevel(checkpoint.levelIndex, checkpoint.carryOver, true)
+      expect(engine.getSnapshot().player.items).toEqual(checkpoint.carryOver)
+      expect(engine.getSnapshot().player.items).toHaveLength(2)
+    }
   })
 })
 

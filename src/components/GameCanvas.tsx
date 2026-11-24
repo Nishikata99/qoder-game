@@ -123,8 +123,7 @@ export function GameCanvas({
         scene.applySnapshot(event.snapshot)
         break
       case 'reload':
-        scene.playReload()
-        if (!scene.isBloodCloseupActive()) scene.setShot('cylinder', 0.9)
+        scene.playReload(event.live, event.blank)
         break
       case 'roundStart':
         // 新一局 / 首层第一回合：枪先平躺回桌面

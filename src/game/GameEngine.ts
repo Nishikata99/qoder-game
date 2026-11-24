@@ -542,10 +542,12 @@ class Cylinder {
   }
 
   reload(): Chamber[] {
-    // 装 4~6 发、实弹 2~3 发：实弹率约五成，一枪定生死但不至于一局打完还在空响
-    const total = 4 + Math.floor(this.rng() * 3)
-    const maxLive = Math.min(3, total - 1)
-    const liveCount = 2 + Math.floor(this.rng() * (maxLive - 1))
+    // 总弹 2~8 发；2 发固定 1 实 1 空。其余实弹 2~4 发，且不超过一半（奇数可多 1 发）。
+    const total = 2 + Math.floor(this.rng() * 7)
+    const liveCount =
+      total === 2
+        ? 1
+        : 2 + Math.floor(this.rng() * (Math.min(4, Math.ceil(total / 2), total - 1) - 1))
     const chambers: Chamber[] = []
     for (let i = 0; i < liveCount; i += 1) chambers.push('live')
     for (let i = 0; i < total - liveCount; i += 1) chambers.push('blank')
@@ -717,7 +719,7 @@ export class GameEngine {
   }
 
   /** 从层首检查点继续：血袋与补给重置，不保留局内手牌 */
-  startAtLevel(levelIndex: number, carryOver: readonly ItemId[] = []): void {
+  startAtLevel(levelIndex: number, carryOver: readonly ItemId[] = [], skipPlayerSupply = false): void {
     if (this.destroyed) return
     const index = Math.max(0, Math.min(this.levelList.length - 1, Math.floor(levelIndex)))
     if (this.started) this.cancelTimers()
@@ -731,7 +733,7 @@ export class GameEngine {
     this.bossSupplyPick = null
     this.logLines = []
     this.log('你从门缝里退回上一层，血袋重新注满。')
-    void this.beginLevel(index, this.generation)
+    void this.beginLevel(index, this.generation, skipPlayerSupply)
   }
 
   /** 死亡后从本层重来；不保留旧手牌与旧补给 */
@@ -993,7 +995,7 @@ export class GameEngine {
     this.listeners.clear()
   }
 
-  private async beginLevel(index: number, token: number): Promise<void> {
+  private async beginLevel(index: number, token: number, skipPlayerSupply = false): Promise<void> {
     if (!this.alive(token)) return
     this.levelIndex = index
     this.phase = 'reloading'
@@ -1017,7 +1019,7 @@ export class GameEngine {
         `门前的补给还在你身上：${carried.map((item) => `【${ITEM_CATALOG[item].name}】`).join('')}。`,
       )
     }
-    this.giveSupply(this.player, level.supply)
+    if (!skipPlayerSupply) this.giveSupply(this.player, level.supply)
     this.giveSupply(this.boss, level.supply)
     if (this.carryOverBoss.length > 0) {
       const carried = this.carryOverBoss

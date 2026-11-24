@@ -1,5 +1,6 @@
 import type { SoundEngine } from '../audio/SoundEngine'
 import type { SceneManager } from '../scene/SceneManager'
+import type { DialogueChannel } from './dialogue'
 import {
   ENDING_B_BEATS,
   INTRO_BEATS,
@@ -23,6 +24,7 @@ export interface NarrativeSubtitle {
   readonly text: string
   readonly at: number
   readonly end: number
+  readonly channel: DialogueChannel
 }
 
 export interface NarrativeVisual {
@@ -54,6 +56,7 @@ export class NarrativeDirector {
   private rafId: number | null = null
   private lastTs: number | null = null
   private running = false
+  private mode: NarrativeMode = 'intro'
   private startedGame = false
   private visual: NarrativeVisual = { active: false, black: 0, focus: 0, letterbox: false, ledger: false, subtitle: null }
 
@@ -65,8 +68,13 @@ export class NarrativeDirector {
     return this.time
   }
 
+  bossDialogueAnchor(): { x: number; y: number; visible: boolean } {
+    return this.deps.scene.getBossDialogueAnchor()
+  }
+
   start(mode: NarrativeMode): void {
     this.stop()
+    this.mode = mode
     this.beats = BEATS_BY_MODE[mode]
     this.index = 0
     this.time = 0
@@ -101,10 +109,10 @@ export class NarrativeDirector {
     this.rafId = requestAnimationFrame(this.tick)
   }
 
-  /** 已读后跳过：直接交出控制权；入场会先补一次 startGame，保证引擎只启动一次 */
+  /** 已读后跳过：入场/重开补一次启动，章节过渡只结束剧情并保留引擎进度 */
   skip(): void {
     if (!this.visual.active) return
-    if (!this.startedGame) this.deps.onGameStart()
+    if (!this.startedGame && (this.mode === 'intro' || this.mode === 'restart')) this.deps.onGameStart()
     this.stop()
     this.deps.scene.resetNarrativeGrade()
     this.visual = { ...this.visual, active: false, subtitle: null, ledger: false }
@@ -174,7 +182,15 @@ export class NarrativeDirector {
     if (beat.letterbox !== undefined) next = { ...next, letterbox: beat.letterbox }
     if (beat.ledger !== undefined) next = { ...next, ledger: beat.ledger }
     if (beat.line) {
-      next = { ...next, subtitle: { text: beat.line, at: this.time, end: beat.lineEnd ?? this.time + 3 } }
+      next = {
+        ...next,
+        subtitle: {
+          text: beat.line,
+          at: this.time,
+          end: beat.lineEnd ?? this.time + 3,
+          channel: beat.channel ?? 'player',
+        },
+      }
     }
     if (next !== this.visual) {
       this.visual = next

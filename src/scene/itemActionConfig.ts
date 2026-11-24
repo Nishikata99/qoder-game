@@ -101,7 +101,6 @@ export const ITEM_ACTION_SPECS: Readonly<Record<ItemId, ItemActionSpec>> = {
       grip: { offset: [0, 0.02, -0.15], local: true },
       support: { offset: [-0.16, -0.1, 0.1], from: 'target' },
       leftRotation: [0.1, -0.4, Math.PI * 0.45],
-      rightRotation: [0, Math.PI - 0.15, 0],
       leftGrip: 0.45,
     },
   ),

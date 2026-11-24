@@ -1015,7 +1015,7 @@ export class SceneManager {
       cue: (item, cue) => this.callbacks.onItemActionCue?.(item, cue),
       status: (status) => this.callbacks.onItemActionStatus?.(status),
       restHands: (visible) => { if (this.introHands) this.introHands.visible = visible },
-      saw: () => this.presentSawCut(),
+      saw: (actor) => this.presentSawCut(actor),
       reload: () => this.playReload(),
     })
 
@@ -2056,8 +2056,8 @@ export class SceneManager {
   }
 
   /** 锯短枪管：在枪身下留一段断管与切痕，直到加成真正打出实弹才清 */
-  private presentSawCut(): void {
-    if (this.sawMarks.has('player')) return
+  private presentSawCut(actor: ActorId): void {
+    if (this.sawMarks.has(actor)) return
     const mark = new THREE.Group()
     const pipe = new THREE.Mesh(
       new THREE.CylinderGeometry(0.038, 0.038, 0.2, 12, 1, true),
@@ -2075,7 +2075,7 @@ export class SceneManager {
     mark.position.copy(GUN_PIVOT).add(new THREE.Vector3(-0.62, -0.01, 0.22))
     mark.rotation.y = Math.PI * 0.18
     this.scene.add(mark)
-    this.sawMarks.set('player', mark)
+    this.sawMarks.set(actor, mark)
     for (const obj of [pipe.geometry, smear.geometry]) this.disposableGeometries.add(obj)
     for (const mat of [pipe.material, smear.material]) this.disposableMaterials.add(mat as THREE.Material)
   }
@@ -3466,60 +3466,6 @@ export class SceneManager {
     }
   }
 
-  /**
-   * 磁铁换牌：一张牌从对手明牌位沿弧线飞到自己最后一张明牌位，
-   * 用一张临时贴图牌做替身，落位后销毁；快照同步会各自就位。
-   */
-  playMagnetSwap(card: Card): void {
-    if (this.disposed) return
-    const geo = new THREE.BoxGeometry(CARD_W, CARD_T, CARD_H)
-    this.disposableGeometries.add(geo)
-    const side = new THREE.MeshStandardMaterial({ color: 0x231b16, roughness: 0.88 })
-    this.disposableMaterials.add(side)
-    const face = new THREE.MeshStandardMaterial({
-      map: this.textures.get(this.textures.cardKey(card.rank, card.suit)),
-      roughness: 0.66,
-      metalness: 0.04,
-    })
-    this.disposableMaterials.add(face)
-    const back = new THREE.MeshStandardMaterial({
-      map: this.textures.get(this.textures.cardBackKey),
-      roughness: 0.76,
-      metalness: 0.05,
-    })
-    this.disposableMaterials.add(back)
-    const mesh = new THREE.Mesh(geo, [side, side, face, back, side, side])
-    mesh.castShadow = true
-
-    const bossCount = Math.max(1, this.handCount('boss'))
-    const playerCount = Math.max(1, this.handCount('player'))
-    const from = this.cardSlot('boss', bossCount - 1, bossCount).position.clone()
-    const to = this.cardSlot('player', playerCount - 1, playerCount).position.clone()
-    const lift = this.reducedMotion ? 0.08 : 0.55
-    mesh.position.copy(from)
-    mesh.position.y += 0.02
-    mesh.rotation.order = 'YXZ'
-    mesh.rotation.set(0, Math.PI, 0)
-    mesh.scale.setScalar(0.72)
-    this.cardGroup.add(mesh)
-
-    this.tween({
-      duration: this.reducedMotion ? 0.22 : 0.72,
-      onUpdate: (t) => {
-        const eased = easeInOutCubic(t)
-        mesh.position.lerpVectors(from, to, eased)
-        mesh.position.y += Math.sin(eased * Math.PI) * lift
-        mesh.rotation.y = Math.PI + eased * Math.PI * 2
-        mesh.rotation.z = Math.sin(eased * Math.PI) * 0.5
-        mesh.scale.setScalar(0.72 + eased * 0.28)
-      },
-      onComplete: () => {
-        mesh.removeFromParent()
-        this.disposeObject(mesh)
-      },
-    })
-  }
-
   private updateDust(dt: number): void {
     const geometry = this.dust.geometry
     const attribute = geometry.getAttribute('position')
@@ -4863,14 +4809,6 @@ export class SceneManager {
         })
       },
     })
-  }
-
-  private handCount(actor: ActorId): number {
-    let count = 0
-    for (const entry of this.cards.values()) {
-      if (entry.actor === actor) count += 1
-    }
-    return count
   }
 
   private cardSlot(actor: ActorId, index: number, count: number): { position: THREE.Vector3; angle: number } {

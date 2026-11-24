@@ -348,6 +348,17 @@ export interface GameEngineOptions {
   readonly itemLockMs?: number
 }
 
+interface CardChoiceState {
+  readonly kind: 'cutter' | 'seal'
+  readonly cards: Card[]
+  readonly item: ItemId
+  readonly itemIndex: number
+  readonly itemsUsedThisTurn: number
+  readonly logLength: number
+  readonly holeRevealed: boolean
+  readonly bossHand: HandState
+}
+
 interface BossProfile {
   readonly label: string
   readonly personality: BossPersonality
@@ -648,7 +659,7 @@ export class GameEngine {
   private supplyChoice: ItemId | null = null
   private supplyResolver: (() => void) | null = null
   /** 裁纸刀/封条等待点选的牌；暂停/换层/销毁时清空 */
-  private cardChoice: { kind: 'cutter' | 'seal'; cards: Card[] } | null = null
+  private cardChoice: CardChoiceState | null = null
   private cardChoiceResolver: (() => void) | null = null
   /** 层间三选一选中的道具：beginLevel 会重建 Actor，必须先寄存再注入 */
   private carryOver: ItemId[] = []
@@ -904,8 +915,15 @@ export class GameEngine {
   }
 
   cancelCardChoice(): boolean {
-    if (!this.cardChoice) return false
+    const choice = this.cardChoice
+    if (!choice) return false
     this.cardChoice = null
+    this.player.items.splice(choice.itemIndex, 0, choice.item)
+    this.player.itemsUsedThisTurn = choice.itemsUsedThisTurn
+    this.holeRevealed = choice.holeRevealed
+    this.boss.hand = choice.bossHand
+    this.logLines.length = choice.logLength
+    this.log(`你收起了【${ITEM_CATALOG[choice.item].name}】，本次没有消耗。`)
     this.cardChoiceResolver?.()
     this.cardChoiceResolver = null
     this.publish()
@@ -1621,7 +1639,11 @@ export class GameEngine {
         if (actor.hand.cards.length === 0) return this.reject('手里没有可以裁掉的牌。')
         if (actor.id === 'player') {
           // 玩家自选一张：进入待选状态，resolveCardChoice 结算
-          this.cardChoice = { kind: 'cutter', cards: [...actor.hand.cards] }
+          this.cardChoice = {
+            kind: 'cutter', cards: [...actor.hand.cards], item, itemIndex: index,
+            itemsUsedThisTurn: actor.itemsUsedThisTurn, logLength: this.logLines.length,
+            holeRevealed: this.holeRevealed, bossHand: this.boss.hand,
+          }
           detail = '亮出裁纸刀，选择要裁掉的一张牌。'
           break
         }
@@ -1656,6 +1678,9 @@ export class GameEngine {
         if (this.boss.hand.cards.length === 0) return this.reject('桌上还没有可以封的牌。')
         // 封牌是公开动作：先亮出底牌，再让玩家从明牌里任选一张
         const wasHidden = !this.holeRevealed
+        const previousHoleRevealed = this.holeRevealed
+        const previousBossHand = this.boss.hand
+        const previousLogLength = this.logLines.length
         this.holeRevealed = true
         this.boss.hand = withHoleCard(this.boss.hand, false)
         if (wasHidden) {
@@ -1665,7 +1690,11 @@ export class GameEngine {
         const visible = this.boss.hand.visible.filter((cardValue): cardValue is Card => cardValue !== null)
         if (visible.length === 0) return this.reject('对手没有可以封的明牌。')
         if (actor.id === 'player') {
-          this.cardChoice = { kind: 'seal', cards: visible }
+          this.cardChoice = {
+            kind: 'seal', cards: visible, item, itemIndex: index,
+            itemsUsedThisTurn: actor.itemsUsedThisTurn, logLength: previousLogLength,
+            holeRevealed: previousHoleRevealed, bossHand: previousBossHand,
+          }
           detail = '封条已经蘸好朱砂，选择对手的一张明牌。'
           break
         }

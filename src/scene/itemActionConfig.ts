@@ -98,7 +98,7 @@ export const ITEM_ACTION_SPECS: Readonly<Record<ItemId, ItemActionSpec>> = {
     {
       propScale: 0.52,
       target: [0.06, 0.43, -0.24],
-      grip: { offset: [0, 0.02, 0.15] },
+      grip: { offset: [0, 0.02, -0.15], local: true },
       support: { offset: [-0.16, -0.1, 0.1], from: 'target' },
       leftRotation: [0.1, -0.4, Math.PI * 0.45],
       leftGrip: 0.45,

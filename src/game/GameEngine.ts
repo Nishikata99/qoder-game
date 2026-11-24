@@ -663,6 +663,11 @@ export class GameEngine {
   private paused = false
   /** 场景演出闸门：枪放平、镜头回位后才允许重新发牌；测试/无场景时为 null */
   private presentationGate: (() => Promise<void>) | null = null
+  private itemPresentationGate: (() => Promise<void>) | null = null
+  private itemPresentationPending = false
+  private itemPresentationFinished = false
+  private itemEvents: GameEvent[] | null = null
+  private deferredItemEvents: GameEvent[] = []
   private runRounds = 0
   private phase: Phase = 'idle'
   private levelIndex = 0
@@ -815,8 +820,31 @@ export class GameEngine {
     }
     if (!this.applyItem(this.player, item)) return false
     if (this.resolveDeaths()) return true
-    this.lockInput(this.itemLockMs)
+    if (this.itemPresentationGate) {
+      this.clearInputDelay()
+      this.itemPresentationPending = true
+      this.itemPresentationFinished = false
+      this.inputLocked = true
+      const token = this.generation
+      this.publish()
+      void this.itemPresentationGate().then(() => {
+        if (!this.alive(token)) return
+        this.releaseDeferredItemEvents()
+        this.itemPresentationFinished = true
+        this.finishItemPresentation()
+      })
+    } else {
+      this.releaseDeferredItemEvents()
+      this.lockInput(this.itemLockMs)
+    }
     return true
+  }
+
+  private finishItemPresentation(): void {
+    if (!this.itemPresentationPending || !this.itemPresentationFinished || this.paused) return
+    this.itemPresentationPending = false
+    this.itemPresentationFinished = false
+    this.unlockInput()
   }
 
   advanceLevel(): boolean {
@@ -1113,6 +1141,9 @@ export class GameEngine {
       if (!this.alive(token) || this.phase !== 'bossTurn') return
       if (!this.applyItem(this.boss, item)) break
       if (this.resolveDeaths()) return
+      if (this.itemPresentationGate) await this.itemPresentationGate()
+      if (!this.alive(token) || this.phase !== 'bossTurn') return
+      this.releaseDeferredItemEvents()
       await this.wait(Math.max(160, think * 0.4))
       if (!this.alive(token) || this.phase !== 'bossTurn') return
     }
@@ -1225,6 +1256,20 @@ export class GameEngine {
   /** 注入场景演出闸门；传 null 恢复立即发牌（测试与无场景环境） */
   setPresentationGate(gate: (() => Promise<void>) | null): void {
     this.presentationGate = gate
+  }
+
+  /** 动作收尾前不允许再次行动，也不允许把未完成的结果提前交给 UI */
+  get hasPendingItemAction(): boolean {
+    return this.itemPresentationPending
+  }
+
+  setItemPresentationGate(gate: (() => Promise<void>) | null): void {
+    this.itemPresentationGate = gate
+    if (!gate && this.itemPresentationPending) {
+      this.releaseDeferredItemEvents()
+      this.itemPresentationFinished = true
+      this.finishItemPresentation()
+    }
   }
 
   /** 跳过处决悬念停顿，立即揭晓枪响结果；只在处决演出进行中有效 */
@@ -1470,6 +1515,36 @@ export class GameEngine {
   }
 
   private applyItem(actor: ActorRuntime, item: ItemId): boolean {
+    this.itemEvents = []
+    let success = false
+    let events: GameEvent[] = []
+    try {
+      success = this.applyItemEffect(actor, item)
+      events = this.itemEvents
+    } finally {
+      this.itemEvents = null
+    }
+    // 读数、换牌、重洗等结果要等动作演到接触点再发，否则会出现「手还没碰到枪，镜头已经特写」
+    const used = events.find((event) => event.type === 'itemUsed')
+    if (used) this.dispatch(used)
+    if (success) {
+      this.deferredItemEvents.push(...events.filter((event) => event !== used))
+      this.publish()
+    } else {
+      for (const event of events) this.dispatch(event)
+    }
+    return success
+  }
+
+  private releaseDeferredItemEvents(): void {
+    if (this.deferredItemEvents.length === 0) return
+    const events = this.deferredItemEvents
+    this.deferredItemEvents = []
+    for (const event of events) this.dispatch(event)
+    this.publish()
+  }
+
+  private applyItemEffect(actor: ActorRuntime, item: ItemId): boolean {
     const index = actor.items.indexOf(item)
     if (index === -1) {
       return this.reject(`${actorLabel(actor.id)}没有【${ITEM_CATALOG[item].name}】。`)
@@ -1921,6 +1996,7 @@ export class GameEngine {
   }
 
   private publish(): void {
+    if (this.itemEvents) return
     const snapshot = this.getSnapshot()
     for (const listener of [...this.listeners]) {
       try {
@@ -1932,6 +2008,7 @@ export class GameEngine {
   }
 
   private dispatch(event: GameEvent): void {
+    if (this.itemEvents) { this.itemEvents.push(event); return }
     const snapshot = this.getSnapshot()
     for (const listener of [...this.listeners]) {
       try {
@@ -1978,6 +2055,7 @@ export class GameEngine {
   resume(): void {
     if (!this.paused || this.destroyed) return
     this.paused = false
+    this.finishItemPresentation()
     for (const delay of this.delays) delay.resume()
     this.publish()
   }
@@ -2042,6 +2120,9 @@ export class GameEngine {
     this.executionDelay = null
     this.executionSkip = null
     this.inputLocked = false
+    this.itemPresentationPending = false
+    this.itemPresentationFinished = false
+    this.deferredItemEvents = []
     this.cardChoice = null
     this.cardChoiceResolver = null
     // 取消 supply 等待时也要放行挂起的 offerSupply，否则 Promise 永久悬空

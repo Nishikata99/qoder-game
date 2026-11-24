@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js'
@@ -57,16 +58,24 @@ const CorridorCrtShader = {
   `,
 }
 
-type Phase = 'loading' | 'ready' | 'walk' | 'choose' | 'openingL' | 'glitch' | 'black' | 'done'
+type Phase = 'loading' | 'ready' | 'walk' | 'choose' | 'glitch' | 'black' | 'done'
 
 interface CorridorCallbacks {
   readonly onReady: () => void
   readonly onDoorPhase: () => void
   readonly onComplete: () => void
-  /** 左门开到位：离开主游戏，进入蔓延子游戏 */
-  readonly onEnterMoyan: () => void
   /** 行走途中的独白字幕：text 为 null 表示到点收起 */
   readonly onWalkLine: (text: string | null) => void
+  /** ready 阶段点击画面：开始行走（组件负责解锁音频、启动引擎） */
+  readonly onRequestStart: () => void
+  /** 鼠标停在门上 / 移开 */
+  readonly onDoorHover: (side: 'L' | 'R' | null) => void
+  /** 左门：新开一局（清掉旧存档） */
+  readonly onNewRun: () => void
+  /** 右门（有存档时）：直接续玩 */
+  readonly onResume: () => void
+  /** 门已选定：收起选门提示 */
+  readonly onDoorChosen: () => void
 }
 
 /** 行走字幕时间表（秒，相对 beginWalk）：血契动机 → 21 袋底注 → 临近双门 */
@@ -84,7 +93,7 @@ function easeInOutSine(t: number): number {
   return -(Math.cos(Math.PI * t) - 1) / 2
 }
 
-/** 梦核走廊序章：独立 Three 场景，右门 CRT 故障黑场后回调，交由 App 接进入场导演层 */
+/** 梦核走廊序章：独立 Three 场景，左门 CRT 故障黑场后回调，交由 App 接进入场导演层 */
 export class CorridorScene {
   private readonly canvas: HTMLCanvasElement
   private readonly sound: SoundEngine
@@ -110,15 +119,27 @@ export class CorridorScene {
   private gazeX = 0
   private gazeY = 1.5
   private openFrom = 0
-  private openFromL = 0
-  private leftExited = false
   private walkLineIndex = 0
   private walkLineOpen = false
+  private readonly resumeLevel: number | null
+  private readonly raycaster = new THREE.Raycaster()
+  private readonly pointer = new THREE.Vector2()
+  private doorPlateL: THREE.Mesh | null = null
+  private doorPlateR: THREE.Mesh | null = null
+  private hoverDoor: 'L' | 'R' | null = null
+  private startRequested = false
+  private readonly plateTextures: THREE.Texture[] = []
 
-  constructor(canvas: HTMLCanvasElement, sound: SoundEngine, callbacks: CorridorCallbacks) {
+  constructor(
+    canvas: HTMLCanvasElement,
+    sound: SoundEngine,
+    callbacks: CorridorCallbacks,
+    resumeLevel: number | null = null,
+  ) {
     this.canvas = canvas
     this.sound = sound
     this.callbacks = callbacks
+    this.resumeLevel = resumeLevel
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -143,11 +164,13 @@ export class CorridorScene {
     this.composer.addPass(new OutputPass())
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(canvas)
+    canvas.addEventListener('pointermove', this.handlePointerMove)
+    canvas.addEventListener('pointerup', this.handlePointerUp)
     this.resize()
   }
 
   start(): void {
-    new GLTFLoader().load(`${import.meta.env.BASE_URL}models/corridor.glb`, (gltf) => {
+    new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).load(`${import.meta.env.BASE_URL}models/corridor.glb`, (gltf) => {
       if (this.disposed) {
         this.disposeObject(gltf.scene)
         return
@@ -157,6 +180,8 @@ export class CorridorScene {
       this.doorPivotR = gltf.scene.getObjectByName('DoorPivotR') ?? null
       this.retexture(gltf.scene)
       this.buildAtmosphere()
+      this.buildDoorPlates()
+      this.buildSealedDoor()
       if (this.phase === 'loading') {
         this.phase = 'ready'
         this.callbacks.onReady()
@@ -168,6 +193,8 @@ export class CorridorScene {
   /** 「开始」点击后才起走：音频已在 App 解锁，此时才开底噪 */
   beginWalk(): void {
     if (this.phase !== 'ready') return
+    this.setHover(null)
+    this.canvas.style.cursor = ''
     this.sound.startCorridorDrone()
     this.phase = 'walk'
     this.phaseTime = 0
@@ -175,23 +202,252 @@ export class CorridorScene {
     this.walkLineOpen = false
   }
 
+  /** 左门 = 新开一局（沿用 CRT 故障开场），右门 = 有存档才可续玩，否则封死 */
   chooseDoor(side: 'L' | 'R'): void {
-    if (this.phase !== 'choose' && this.phase !== 'openingL') return
-    if (side === 'L') {
-      // 左门开到位后整页切到蔓延子游戏（onEnterMoyan 在 tick 里回调）
-      this.phase = 'openingL'
-      this.phaseTime = 0
-      this.openFromL = this.doorPivotL?.rotation.y ?? 0
-      this.sound.playDoorCreak()
-      this.sound.playDoorLock()
+    if (this.phase !== 'choose') return
+    // 封死的门只回一声闷响：保留悬停提示，让玩家看清它进不去
+    if (side === 'R' && this.resumeLevel === null) {
+      this.sound.playLowThump()
       return
     }
+    this.setHover(null)
+    if (side === 'R') {
+      this.callbacks.onDoorChosen()
+      this.callbacks.onResume()
+      return
+    }
+    this.callbacks.onDoorChosen()
+    this.callbacks.onNewRun()
     this.phase = 'glitch'
     this.phaseTime = 0
-    this.openFrom = this.doorPivotR?.rotation.y ?? 0
+    this.openFrom = this.doorPivotL?.rotation.y ?? 0
     this.sound.playDoorCreak()
     this.sound.playTinnitus()
     this.sound.setCorridorDroneLevel(3.2, 0.6)
+  }
+
+  /** 选门/起步全部落在场景里：点画面起步；选门阶段点左门开新局，有存档时点右门续玩 */
+  private pickTarget(event: PointerEvent): 'L' | 'R' | null {
+    if (this.phase !== 'choose') return null
+    const rect = this.canvas.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) return null
+    this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+    this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+    this.raycaster.setFromCamera(this.pointer, this.camera)
+    let best: 'L' | 'R' | null = null
+    let bestDistance = Infinity
+    const targets: Array<readonly ['L' | 'R', THREE.Object3D | null]> = [
+      ['L', this.doorPivotL],
+      ['L', this.doorPlateL],
+      ['R', this.doorPivotR],
+      ['R', this.doorPlateR],
+    ]
+    for (const [side, object] of targets) {
+      if (!object) continue
+      const hit = this.raycaster.intersectObject(object, true)[0]
+      if (hit && hit.distance < bestDistance) {
+        best = side
+        bestDistance = hit.distance
+      }
+    }
+    return best
+  }
+
+  private setHover(door: 'L' | 'R' | null): void {
+    if (door !== this.hoverDoor) {
+      this.hoverDoor = door
+      this.callbacks.onDoorHover(door)
+    }
+    this.refreshPlateGlow()
+    const actionable = door === 'L' || (door === 'R' && this.resumeLevel !== null)
+    this.canvas.style.cursor = actionable ? 'pointer' : this.phase === 'ready' ? 'pointer' : ''
+  }
+
+  private refreshPlateGlow(): void {
+    const apply = (mesh: THREE.Mesh | null, active: boolean, base: number): void => {
+      const material = mesh?.material
+      if (material instanceof THREE.MeshBasicMaterial) material.color.setHex(active ? 0xffdfae : base)
+    }
+    apply(this.doorPlateL, this.hoverDoor === 'L', 0xc9bda0)
+    apply(this.doorPlateR, this.hoverDoor === 'R' && this.resumeLevel !== null, 0xc9bda0)
+  }
+
+  private readonly handlePointerMove = (event: PointerEvent): void => {
+    if (this.phase === 'ready') {
+      this.setHover(null)
+      return
+    }
+    if (this.phase === 'choose') {
+      this.setHover(this.pickTarget(event))
+      return
+    }
+    if (this.hoverDoor) this.setHover(null)
+  }
+
+  private readonly handlePointerUp = (event: PointerEvent): void => {
+    if (this.phase === 'ready') {
+      if (this.startRequested) return
+      this.startRequested = true
+      this.callbacks.onRequestStart()
+      return
+    }
+    if (this.phase === 'choose') {
+      const hit = this.pickTarget(event)
+      if (hit) this.chooseDoor(hit)
+    }
+  }
+
+  /** 门楣铜牌：左门写新局入口，右门按存档有无写「继续」或封条 */
+  private buildDoorPlates(): void {
+    this.doorPlateL = this.makeDoorPlate('左门', '血色底注', -0.85, 76)
+    if (this.resumeLevel !== null) {
+      this.doorPlateR = this.makeDoorPlate('右门', `继续第 ${this.resumeLevel} 层`, 0.85, 56, 0.64)
+    } else {
+      this.doorPlateR = this.makeSealedPlate(0.85)
+    }
+  }
+
+  private makeDoorPlate(
+    label: string,
+    name: string,
+    x: number,
+    mainSize = 92,
+    width = 0.54,
+  ): THREE.Mesh | null {
+    const canvas = document.createElement('canvas')
+    canvas.width = 512
+    canvas.height = 232
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    const bg = ctx.createLinearGradient(0, 0, 0, canvas.height)
+    bg.addColorStop(0, '#1b130c')
+    bg.addColorStop(1, '#0d0906')
+    ctx.fillStyle = bg
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.strokeStyle = '#8c652f'
+    ctx.lineWidth = 8
+    ctx.strokeRect(8, 8, canvas.width - 16, canvas.height - 16)
+    ctx.strokeStyle = 'rgba(140,101,47,0.4)'
+    ctx.lineWidth = 2
+    ctx.strokeRect(24, 24, canvas.width - 48, canvas.height - 48)
+    ctx.textAlign = 'center'
+    ctx.fillStyle = '#b9894f'
+    ctx.font = '600 30px "SimSun", "Songti SC", serif'
+    ctx.fillText(label, canvas.width / 2, 72)
+    ctx.fillStyle = '#ecd9ae'
+    ctx.font = `600 ${mainSize}px "SimSun", "Songti SC", serif`
+    ctx.fillText(name, canvas.width / 2, 178)
+    const mesh = this.makePlateMesh(canvas, width, 0.245)
+    if (!mesh) return null
+    mesh.position.set(x, 2.02, -13.86)
+    this.scene.add(mesh)
+    return mesh
+  }
+
+  /** 封死门牌：旧门牌被涂掉，压上红漆「封」 */
+  private makeSealedPlate(x: number): THREE.Mesh | null {
+    const canvas = document.createElement('canvas')
+    canvas.width = 512
+    canvas.height = 232
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    const bg = ctx.createLinearGradient(0, 0, 0, canvas.height)
+    bg.addColorStop(0, '#161009')
+    bg.addColorStop(1, '#0b0805')
+    ctx.fillStyle = bg
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.strokeStyle = 'rgba(118,88,52,0.45)'
+    ctx.lineWidth = 6
+    ctx.strokeRect(8, 8, canvas.width - 16, canvas.height - 16)
+    // 涂改痕迹
+    ctx.strokeStyle = 'rgba(190,170,140,0.07)'
+    ctx.lineWidth = 10
+    for (let i = 0; i < 6; i += 1) {
+      ctx.beginPath()
+      ctx.moveTo(30 + i * 18, 40 + i * 26)
+      ctx.lineTo(470 - i * 24, 60 + i * 24)
+      ctx.stroke()
+    }
+    ctx.textAlign = 'center'
+    ctx.fillStyle = 'rgba(150,110,70,0.5)'
+    ctx.font = '600 30px "SimSun", "Songti SC", serif'
+    ctx.fillText('右 门', canvas.width / 2, 72)
+    ctx.fillStyle = '#93372a'
+    ctx.font = '700 128px "SimSun", "Songti SC", serif'
+    ctx.fillText('封', canvas.width / 2, 194)
+    const mesh = this.makePlateMesh(canvas, 0.54, 0.245)
+    if (!mesh) return null
+    mesh.position.set(x, 2.02, -13.86)
+    this.scene.add(mesh)
+    return mesh
+  }
+
+  /** 无存档：右门钉板 + X 封条 + 铁链挂锁；有存档时直接跳过 */
+  private buildSealedDoor(): void {
+    if (this.resumeLevel !== null || !this.doorPivotR) return
+    const box = new THREE.Box3().setFromObject(this.doorPivotR)
+    const center = box.getCenter(new THREE.Vector3())
+    const width = Math.max(0.6, box.max.x - box.min.x)
+    const height = Math.max(1.2, box.max.y - box.min.y)
+    const frontZ = box.max.z + 0.02
+    const boardMat = new THREE.MeshStandardMaterial({ color: 0x46351f, roughness: 0.93, metalness: 0.02 })
+    const ironMat = new THREE.MeshStandardMaterial({ color: 0x4b423a, roughness: 0.45, metalness: 0.72 })
+    // 两块板各占一条门面对角线：横跨近满门宽、上下探到框沿，才读得出「钉死」
+    const spanX = width * 1.02
+    const spanY = height * 0.92
+    const boardLength = Math.hypot(spanX, spanY)
+    const boardAngle = Math.atan2(spanY, spanX)
+    const boardGeo = new THREE.BoxGeometry(boardLength, 0.15, 0.05)
+    for (const sign of [1, -1] as const) {
+      const board = new THREE.Mesh(boardGeo, boardMat)
+      board.position.set(center.x, center.y + 0.02, frontZ + 0.025)
+      board.rotation.z = sign * boardAngle
+      board.castShadow = true
+      board.receiveShadow = true
+      this.scene.add(board)
+    }
+    const linkGeo = new THREE.TorusGeometry(0.036, 0.009, 6, 10)
+    for (let i = 0; i < 13; i += 1) {
+      const t = i / 12
+      const link = new THREE.Mesh(linkGeo, ironMat)
+      link.position.set(
+        center.x - width * 0.43 + t * width * 0.86,
+        center.y - 0.1 - Math.sin(t * Math.PI) * 0.075,
+        frontZ + 0.06,
+      )
+      link.rotation.z = i % 2 === 0 ? 0.5 : -0.5
+      this.scene.add(link)
+    }
+    const lock = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.13, 0.045), ironMat)
+    lock.position.set(center.x, center.y - 0.26, frontZ + 0.08)
+    lock.castShadow = true
+    this.scene.add(lock)
+    const nailGeo = new THREE.SphereGeometry(0.02, 6, 6)
+    const cos = Math.cos(boardAngle)
+    const sin = Math.sin(boardAngle)
+    const half = boardLength / 2 - 0.08
+    // 每块斜板的两端各补一颗钉：板轴方向是 (±cos, ±sin)，斜向符号随板翻转
+    for (const slope of [1, -1] as const) {
+      for (const end of [1, -1] as const) {
+        const nail = new THREE.Mesh(nailGeo, ironMat)
+        nail.position.set(center.x + end * half * cos, center.y + 0.02 + end * half * sin * slope, frontZ + 0.055)
+        this.scene.add(nail)
+      }
+    }
+  }
+
+  private makePlateMesh(canvas: HTMLCanvasElement, width: number, height: number): THREE.Mesh | null {
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.colorSpace = THREE.SRGBColorSpace
+    texture.anisotropy = 4
+    this.plateTextures.push(texture)
+    const material = new THREE.MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      toneMapped: false,
+      depthWrite: false,
+    })
+    return new THREE.Mesh(new THREE.PlaneGeometry(width, height), material)
   }
 
   private readonly tick = (ts: number): void => {
@@ -234,29 +490,21 @@ export class CorridorScene {
         this.phaseTime = 0
         this.callbacks.onDoorPhase()
       }
-    } else if (this.phase === 'choose' || this.phase === 'openingL') {
+    } else if (this.phase === 'choose') {
       this.camera.position.y = 1.6 + breathe
       const k = Math.min(1, dt * 1.6)
       this.gazeX += (0 - this.gazeX) * k
       this.gazeY += (1.5 - this.gazeY) * k
       this.camera.lookAt(this.gazeX, this.gazeY, -14)
-      if (this.phase === 'openingL' && this.doorPivotL) {
-        const t = Math.min(1, this.phaseTime / OPEN_SECONDS)
-        this.doorPivotL.rotation.y = this.openFromL + easeInOutCubic(t) * 1.85
-        if (t >= 1 && !this.leftExited) {
-          this.leftExited = true
-          this.callbacks.onEnterMoyan()
-        }
-      }
     } else if (this.phase === 'glitch') {
       const t = Math.min(1, this.phaseTime / GLITCH_SECONDS)
       this.crtPass.uniforms.glitch!.value = t
       this.camera.position.y = 1.6 + breathe + (Math.random() - 0.5) * 0.05 * t
       this.camera.lookAt(this.gazeX, this.gazeY, -14)
       this.camera.rotateZ((Math.random() - 0.5) * 0.06 * t)
-      if (this.doorPivotR) {
+      if (this.doorPivotL) {
         const open = Math.min(1, this.phaseTime / OPEN_SECONDS)
-        this.doorPivotR.rotation.y = this.openFrom - easeInOutCubic(open) * 1.85
+        this.doorPivotL.rotation.y = this.openFrom + easeInOutCubic(open) * 1.85
       }
       if (t >= 1) {
         this.phase = 'black'
@@ -420,9 +668,12 @@ export class CorridorScene {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.canvas.removeEventListener('pointermove', this.handlePointerMove)
+    this.canvas.removeEventListener('pointerup', this.handlePointerUp)
     if (this.rafId !== null) cancelAnimationFrame(this.rafId)
     this.resizeObserver.disconnect()
     this.sound.stopCorridorDrone(0.4)
+    for (const texture of this.plateTextures) texture.dispose()
     this.disposeObject(this.scene)
     this.crtPass.dispose()
     this.composer.dispose()

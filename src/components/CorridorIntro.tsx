@@ -31,61 +31,103 @@ function TypedLine({ text }: { readonly text: string }) {
   return <>{text.slice(0, typed)}</>
 }
 
-/** 梦核走廊序章：点击「走进走廊」后触发；右门 → CRT 故障 → 黑场 → onIntroComplete；左门 → 蔓延子游戏 */
+/** 梦核走廊序章：点画面起步；左门开新局，右门无存档时封死、有存档时点牌/门续玩 */
 export function CorridorIntro({
   sound,
   onStart,
   onIntroComplete,
-  onEnterMoyan,
+  onNewRun,
+  resumeLevel,
+  onResumeLevel,
 }: {
   readonly sound: SoundEngine
   readonly onStart: () => void | Promise<void>
   readonly onIntroComplete: () => void
-  readonly onEnterMoyan: () => void
+  /** 左门：新开一局，需要清掉旧存档 */
+  readonly onNewRun: () => void
+  /** 有存档时显示为几层，null 则右门封死 */
+  readonly resumeLevel: number | null
+  readonly onResumeLevel: () => void
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const sceneRef = useRef<CorridorScene | null>(null)
   const completeRef = useRef(onIntroComplete)
   const startRef = useRef(onStart)
-  const enterMoyanRef = useRef(onEnterMoyan)
+  const newRunRef = useRef(onNewRun)
+  const resumeRef = useRef(onResumeLevel)
+  const resumeLevelRef = useRef(resumeLevel)
   const doneRef = useRef(false)
+  const startedRef = useRef(false)
+  const startWalkRef = useRef<() => void>(() => {})
   const [ready, setReady] = useState(false)
   const [started, setStarted] = useState(false)
   const [doorPhase, setDoorPhase] = useState(false)
+  const [chosen, setChosen] = useState(false)
+  const [hoveredDoor, setHoveredDoor] = useState<'L' | 'R' | null>(null)
   const [walkLine, setWalkLine] = useState<string | null>(null)
 
   useEffect(() => {
     completeRef.current = onIntroComplete
     startRef.current = onStart
-    enterMoyanRef.current = onEnterMoyan
-  }, [onIntroComplete, onStart, onEnterMoyan])
+    newRunRef.current = onNewRun
+    resumeRef.current = onResumeLevel
+    resumeLevelRef.current = resumeLevel
+  }, [onIntroComplete, onStart, onNewRun, onResumeLevel, resumeLevel])
 
   useEffect(() => {
-    const scene = new CorridorScene(canvasRef.current!, sound, {
-      onReady: () => setReady(true),
-      onDoorPhase: () => setDoorPhase(true),
-      onWalkLine: setWalkLine,
-      onComplete: () => {
-        if (doneRef.current) return
-        doneRef.current = true
-        completeRef.current()
+    const scene = new CorridorScene(
+      canvasRef.current!,
+      sound,
+      {
+        onReady: () => setReady(true),
+        onDoorPhase: () => setDoorPhase(true),
+        onWalkLine: setWalkLine,
+        onComplete: () => {
+          if (doneRef.current) return
+          doneRef.current = true
+          completeRef.current()
+        },
+        onRequestStart: () => startWalkRef.current(),
+        onDoorHover: setHoveredDoor,
+        onNewRun: () => newRunRef.current(),
+        onResume: () => resumeRef.current(),
+        onDoorChosen: () => setChosen(true),
       },
-      onEnterMoyan: () => enterMoyanRef.current(),
-    })
+      resumeLevelRef.current,
+    )
     sceneRef.current = scene
     scene.start()
+    if (import.meta.env.DEV) {
+      ;(window as unknown as { __corridorDebug?: CorridorScene }).__corridorDebug = scene
+    }
     return () => {
+      if (import.meta.env.DEV) {
+        delete (window as unknown as { __corridorDebug?: CorridorScene }).__corridorDebug
+      }
       scene.dispose()
     }
   }, [sound])
 
   async function handleStart() {
+    if (startedRef.current || doneRef.current) return
+    startedRef.current = true
     setStarted(true)
     await startRef.current()
     sceneRef.current?.beginWalk()
   }
+  startWalkRef.current = () => void handleStart()
 
   const subtitle = walkLine
+  const doorHint =
+    hoveredDoor === 'L'
+      ? '左门 · 血色底注'
+      : hoveredDoor === 'R'
+        ? resumeLevel !== null
+          ? `右门 · 继续第 ${resumeLevel} 层`
+          : '右门封着 · 锁眼被人灌了铅'
+        : resumeLevel !== null
+          ? '左门新开一局 · 右门继续'
+          : '左门新开一局 · 右门封死'
 
   return (
     <div className="absolute inset-0 z-40 bg-black" data-testid="corridor-intro">
@@ -98,25 +140,30 @@ export function CorridorIntro({
         </div>
       ) : null}
       {ready && !started && !doorPhase ? (
-        <div className="absolute inset-x-0 bottom-[10vh] flex justify-center">
-          <button type="button" className="metal-btn metal-btn--primary" onClick={() => void handleStart()}>
-            走进走廊
-          </button>
+        <div className="pointer-events-none absolute inset-x-0 bottom-[10vh] flex justify-center px-6">
+          <p className="font-display text-sm tracking-[0.3em] text-bone-200/60">点击画面 · 走进走廊</p>
         </div>
       ) : null}
-      {doorPhase ? (
-        <div className="absolute inset-x-0 bottom-[10vh] flex justify-center gap-6">
-          <button type="button" className="metal-btn" onClick={() => sceneRef.current?.chooseDoor('L')}>
-            左门 · 蔓延
-          </button>
-          <button
-            type="button"
-            className="metal-btn metal-btn--primary"
-            onClick={() => sceneRef.current?.chooseDoor('R')}
-          >
-            右门 · 贰拾壹
-          </button>
+      {doorPhase && !chosen ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-[10vh] flex justify-center px-6">
+          <p className="font-display text-base tracking-[0.26em] text-bone-200/80">{doorHint}</p>
         </div>
+      ) : null}
+      {/* 场景已接管指针；这些仅留给读屏与自动化测试 */}
+      {ready && !started && !doorPhase ? (
+        <button type="button" className="sr-only left-0 top-0" onClick={() => void handleStart()}>
+          走进走廊
+        </button>
+      ) : null}
+      {doorPhase ? (
+        <>
+          <button type="button" className="sr-only" onClick={() => sceneRef.current?.chooseDoor('L')}>
+            左门 · 血色底注
+          </button>
+          <button type="button" className="sr-only" onClick={() => sceneRef.current?.chooseDoor('R')}>
+            {resumeLevel !== null ? `右门 · 继续第 ${resumeLevel} 层` : '右门 · 封死'}
+          </button>
+        </>
       ) : null}
     </div>
   )

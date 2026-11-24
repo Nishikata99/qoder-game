@@ -421,3 +421,11 @@ body {
     transform: none;
   }
 }
+
+/* 窄屏首回合提示占用底边时，角落工具暂时让位（普通 opacity-100 会压过变体类） */
+@media (max-width: 420px) {
+  .corner-tools--defer {
+    opacity: 0;
+    pointer-events: none;
+  }
+}

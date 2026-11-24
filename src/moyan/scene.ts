@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { ITEM_ICON, ORGANS, ORGAN_NAMES, PENALTY_ITEMS, type ItemId, type Side } from './content'
 import type { Cell, PlayerView, Snapshot } from './engine'
 import type { CellLayer, CellVisual } from './textures'
@@ -396,7 +397,7 @@ export class MoyanScene {
   private readonly slotMeshes: THREE.Mesh[] = []
   private readonly slotInfo = new Map<string, SlotInfo>()
   private readonly callbacks: SceneCallbacks
-  private readonly loader = new GLTFLoader()
+  private readonly loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder)
   private readonly disposable: Array<{ dispose: () => void }> = []
   private readonly resizeObserver: ResizeObserver
   private readonly crtUnits: CrtUnit[] = []

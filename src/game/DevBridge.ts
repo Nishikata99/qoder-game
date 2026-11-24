@@ -54,14 +54,16 @@ export class DevBridge {
     this.internals = engine as unknown as EngineInternals
   }
 
-  winLevel(): void {
-    const phase = this.engine.getSnapshot().phase
-    if (phase === 'idle' || phase === 'levelClear' || phase === 'supply') return
-    if (phase === 'gameOver' || phase === 'victory') return
+  winLevel(): boolean {
+    const snap = this.engine.getSnapshot()
+    // 只在真正的对局阶段生效：清层、补给、层间过场里重复点击会打断过渡，导致卡在中间态
+    if (snap.paused) return false
+    if (snap.phase !== 'playerTurn' && snap.phase !== 'bossTurn' && snap.phase !== 'targeting') return false
     this.internals.generation += 1
     this.internals.cancelTimers()
     this.internals.boss.hp = 0
     this.internals.resolveDeaths()
+    return true
   }
 
   setPlayerTotal(total: number): void {

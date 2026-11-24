@@ -36,11 +36,11 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
     await expect(guide).toBeHidden()
   }
 
-  await start.click()
+  await start.evaluate((el) => (el as HTMLElement).click())
 
-  const rightDoor = page.getByRole('button', { name: '右门' })
-  await rightDoor.waitFor({ timeout: 60_000 })
-  await rightDoor.evaluate((el) => (el as HTMLElement).click())
+  const leftDoor = page.getByRole('button', { name: '左门 · 血色底注' })
+  await leftDoor.waitFor({ timeout: 60_000 })
+  await leftDoor.evaluate((el) => (el as HTMLElement).click())
 
   // 一直推进到枪响。生产构建不能传 ?seed，每轮结果随机：
   // 平局会重发牌回到「你的行动」，对手赢下回合会自动开枪，

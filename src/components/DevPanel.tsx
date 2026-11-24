@@ -21,6 +21,10 @@ export function DevPanel({
 }) {
   const [total, setTotal] = useState(21)
   const [item, setItem] = useState<ItemId>('magnifier')
+  const canWin =
+    snapshot !== null &&
+    !snapshot.paused &&
+    (snapshot.phase === 'playerTurn' || snapshot.phase === 'bossTurn' || snapshot.phase === 'targeting')
 
   return (
     <div
@@ -40,9 +44,19 @@ export function DevPanel({
       </p>
 
       <div className="space-y-3">
-        <button type="button" className={`${btn} w-full`} onClick={onWinLevel}>
-          直接赢下这一关
-        </button>
+        <div>
+          <button
+            type="button"
+            className={`${btn} w-full ${canWin ? '' : 'cursor-not-allowed opacity-35'}`}
+            onClick={onWinLevel}
+            disabled={!canWin}
+          >
+            直接赢下这一关
+          </button>
+          <p className="mt-1 text-[0.6rem] text-bone-200/40">
+            {canWin ? '赢层后选一件补给才开下一层' : '清层 / 补给 / 过场中不可用'}
+          </p>
+        </div>
 
         <div>
           <p className="mb-1 text-bone-200/60">手牌点数（2–21）</p>

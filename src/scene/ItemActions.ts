@@ -37,7 +37,7 @@ interface ActionDeps {
   cue: (item: ItemId, cue: ItemActionCue) => void
   status: (status: ItemActionStatus | null) => void
   restHands: (visible: boolean) => void
-  saw: () => void
+  saw: (actor: ActorId) => void
   reload: () => void
 }
 
@@ -587,7 +587,7 @@ export class ItemActions {
     if (!a.cancelled && a.time >= spec.contact && !a.contact) { a.contact = true; this.deps.cue(a.item, 'contact') }
     if (!a.cancelled && a.time >= spec.commit && !a.committed) {
       a.committed = true
-      if (a.item === 'saw') this.deps.saw()
+      if (a.item === 'saw') this.deps.saw(a.actor)
       if (a.item === 'dagger') this.deps.reload()
       this.deps.commit()
     }
@@ -869,14 +869,20 @@ export class ItemActions {
     a.left.root.removeFromParent(); a.right.root.removeFromParent()
     dispose(a.left.root); dispose(a.right.root)
     if (a.cancelled) {
-      for (const obj of a.parts.values()) obj.visible = false
-      a.prop.visible = true
-      a.prop.position.set(-0.75, 0.04, -0.13)
+      dispose(a.root)
+    } else {
+      if (a.item === 'magnet') for (const card of a.moving) dispose(card.obj)
+      if (a.item === 'handcuffs') {
+        const wrist = a.parts.get('targetWrist')
+        if (wrist) dispose(wrist)
+      }
+      if (a.item === 'sedative') {
+        const puncture = a.parts.get('puncture')
+        if (puncture) dispose(puncture)
+      }
+      a.root.name = `Used-${a.actor}-${a.item}`
+      this.remnants.push({ root: a.root, item: a.item, actor: a.actor, round: a.snapshot.round, level: a.snapshot.levelIndex, persistent: ['aegis', 'handcuffs', 'hourglass'].includes(a.item) })
     }
-    if (a.item === 'magnet') for (const card of a.moving) dispose(card.obj)
-    if (a.item === 'sedative') a.parts.get('puncture')?.removeFromParent()
-    a.root.name = `Used-${a.actor}-${a.item}`
-    this.remnants.push({ root: a.root, item: a.item, actor: a.actor, round: a.snapshot.round, level: a.snapshot.levelIndex, persistent: ['aegis', 'handcuffs', 'hourglass'].includes(a.item) })
     this.active = null
     this.deps.commit()
     this.deps.cue(a.item, 'finish')

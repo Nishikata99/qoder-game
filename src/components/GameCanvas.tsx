@@ -164,9 +164,6 @@ export function GameCanvas({
         // 派生事件（读数、换牌、沙漏反转）由引擎在动作收尾后才放
         scene.playItemUse(event.actor, event.item)
         break
-      case 'magnetSwap':
-        scene.playMagnetSwap(event.card)
-        break
       case 'hourglass':
         scene.playHourglass()
         break

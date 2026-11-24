@@ -816,8 +816,31 @@ describe('新道具：裁纸刀 / 借据 / 封条 / 单片眼镜', () => {
     expect(engine.useItem('aegis')).toBe(false)
     expect(engine.cancelCardChoice()).toBe(true)
     expect(engine.getSnapshot().cardChoice).toBeNull()
-    // 放弃后牌与道具都没变
+    // 放弃后牌、道具和本回合道具次数都没变
     expect(engine.getSnapshot().player.hand.total).toBe(15)
+    expect(engine.getSnapshot().player.items).toEqual(['cutter', 'aegis'])
+    expect(engine.getSnapshot().player.itemsUsedThisTurn).toBe(0)
+    expect(engine.useItem('cutter')).toBe(true)
+    expect(engine.getSnapshot().cardChoice?.kind).toBe('cutter')
+  })
+
+  it('封蜡放弃后恢复道具、回合次数和暗牌状态', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.boss.hand = { ...hand(6, 9), visible: [card(6), null] }
+    probe.holeRevealed = false
+    probe.player.items = ['seal', 'aegis']
+    expect(engine.useItem('seal')).toBe(true)
+    expect(engine.getSnapshot().boss.holeCardRevealed).toBe(true)
+    expect(engine.getSnapshot().player.itemsUsedThisTurn).toBe(1)
+
+    expect(engine.cancelCardChoice()).toBe(true)
+    const snapshot = engine.getSnapshot()
+    expect(snapshot.cardChoice).toBeNull()
+    expect(snapshot.player.items).toEqual(['seal', 'aegis'])
+    expect(snapshot.player.itemsUsedThisTurn).toBe(0)
+    expect(snapshot.boss.holeCardRevealed).toBe(false)
+    expect(snapshot.boss.hand.visible[1]).toBeNull()
   })
 
   it('裁纸刀每回合限一次，且爆牌时不可用', async () => {

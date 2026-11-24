@@ -14,6 +14,8 @@ import type { Cutscene2D, Playable2D } from './narrative/Cutscene2D'
 import type { GunHoverPayload, ItemHoverPayload } from './scene/SceneManager'
 import type { QualityPreset, SceneManager } from './scene/SceneManager'
 import type { BossPoseCue } from './scene/SceneManager'
+import type { ItemActionCue } from './scene/ItemActions'
+import { ITEM_ACTION_SPECS } from './scene/itemActionConfig'
 import type { ActorId, ActorView, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
 import {
   GameEngine,
@@ -424,6 +426,12 @@ export default function App() {
     noticeTimer.current = window.setTimeout(() => setNotice(null), 2400)
   }, [])
 
+  const handleItemCue = useCallback((item: ItemId, cue: ItemActionCue) => {
+    if (cue === 'pickup') sound.playItemUse()
+    else if (cue === 'contact') sound.playItemContact(ITEM_ACTION_SPECS[item].sound)
+    else if (ITEM_ACTION_SPECS[item].sound === 'paper') sound.playPaperRustle()
+  }, [sound])
+
   const handleEventSound = useCallback(
     (event: GameEvent) => {
       switch (event.type) {
@@ -475,10 +483,8 @@ export default function App() {
           }
           break
         case 'itemUsed':
-          sound.playItemUse()
           break
         case 'magnetSwap':
-          sound.playItemUse()
           showNotice(`磁铁换牌：你拿到 ${formatCardLabel(event.card)}`)
           break
         case 'hourglass':
@@ -496,24 +502,20 @@ export default function App() {
           }
           break
         case 'daggerReshuffle':
-          sound.playItemUse()
           sound.playReload()
           showNotice(`匕首献祭：重装 ${event.live} 实 ${event.blank} 空`)
           break
         case 'cardCuttered':
-          sound.playItemUse()
           if (event.actor === 'player') {
             showNotice(`裁纸刀：裁掉了 ${formatCardLabel(event.old)}`)
           }
           break
         case 'iouSigned':
-          sound.playItemUse()
           if (event.actor === 'player') {
             showNotice('借据落印：本局赢下的实弹 +2，输掉时挨的实弹 +1')
           }
           break
         case 'cardSealed':
-          sound.playItemUse()
           if (event.actor === 'player') {
             showNotice(`封条贴住 ${formatCardLabel(event.card)}，本局不计点`)
           }
@@ -754,12 +756,14 @@ export default function App() {
       use: (item: ItemId) => game.useItem(item),
       status: () => sceneRef.current?.itemActionStatus() ?? null,
       skip: () => sceneRef.current?.skipItemAction() ?? false,
+      cancel: () => sceneRef.current?.cancelItemAction(),
       seek: (t: number) => sceneRef.current?.seekItemAction(t) ?? null,
       hold: (v: boolean) => sceneRef.current?.holdItemAction(v),
       preview: (item: ItemId, actor: 'player' | 'boss' = 'player') => sceneRef.current?.previewItemAction(item, actor) ?? false,
       cards: () => sceneRef.current?.previewItemCards() ?? [],
       pick: (index: number) => sceneRef.current?.previewChooseCard(index) ?? false,
       probe: () => sceneRef.current?.previewItemProbe() ?? null,
+      memory: () => sceneRef.current?.previewRenderMemory() ?? null,
       phase: () => game.getSnapshot().phase,
       items: () => [...game.getSnapshot().player.items],
       choose: (index: number) => game.resolveCardChoice(index),
@@ -1030,6 +1034,7 @@ export default function App() {
               return action === 'hit' ? game.hit() : game.stand()
             }}
             onItemUse={handleItemUse}
+            onItemCue={handleItemCue}
             onSupplyPick={(item) => game.chooseSupply(item)}
             onTargetPick={(target) => game.chooseTarget(target)}
             onHoverChange={setHover}

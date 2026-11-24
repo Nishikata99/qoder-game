@@ -370,6 +370,30 @@ export class SoundEngine {
     this.noiseHit(t + 0.29, 0.14, 3400, 2, 0.12, 'bandpass')
   }
 
+  playItemContact(kind: 'metal' | 'paper' | 'glass' | 'soft'): void {
+    const ctx = this.ensureContext()
+    const t = ctx.currentTime + 0.005
+    if (kind === 'paper') {
+      this.noiseHit(t, 0.08, 2200, 1.4, 0.12, 'bandpass')
+      this.tone(t + 0.02, 0.06, 180, 120, 0.04, 'sine')
+      return
+    }
+    if (kind === 'glass') {
+      this.tone(t, 0.16, 1850, 1180, 0.07, 'sine')
+      this.tone(t + 0.01, 0.12, 2780, 1960, 0.035, 'triangle')
+      this.noiseHit(t, 0.04, 4200, 2.2, 0.06, 'highpass')
+      return
+    }
+    if (kind === 'soft') {
+      this.tone(t, 0.12, 210, 135, 0.06, 'sine')
+      this.noiseHit(t, 0.05, 620, 1.1, 0.05, 'lowpass')
+      return
+    }
+    this.noiseHit(t, 0.035, 3200, 1.2, 0.16, 'highpass')
+    this.tone(t, 0.07, 2400, 1600, 0.07, 'triangle')
+    this.tone(t + 0.01, 0.09, 170, 110, 0.05, 'sine')
+  }
+
   /** 沙漏逆转：机械秒针连走四拍，随后一声低沉的玻璃共鸣 */
   playHourglass(): void {
     const ctx = this.ensureContext()

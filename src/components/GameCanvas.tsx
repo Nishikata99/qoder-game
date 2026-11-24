@@ -4,6 +4,7 @@ import type { GameEngine } from '../game/GameEngine'
 import { SceneManager } from '../scene/SceneManager'
 import type { GunHoverPayload, ItemHoverPayload, TableAction } from '../scene/SceneManager'
 import type { BossPoseCue, SceneLoadProgress } from '../scene/SceneManager'
+import type { ItemActionCue, ItemActionStatus } from '../scene/ItemActions'
 import { itemFlavor } from '../narrative/copy'
 
 export interface GameCanvasProps {
@@ -21,6 +22,10 @@ export interface GameCanvasProps {
   readonly onSceneReady?: (scene: SceneManager) => void
   readonly onLoadProgress?: (progress: SceneLoadProgress) => void
   readonly onLoadError?: (key: string, error: unknown) => void
+  readonly onItemCue?: (item: ItemId, cue: ItemActionCue) => void
+  readonly onItemActionStatus?: (status: ItemActionStatus | null) => void
+  readonly onItemPresented?: (event: GameEvent) => void
+  readonly onItemSnapshot?: (snapshot: GameSnapshot) => void
 }
 
 export function GameCanvas({
@@ -38,20 +43,24 @@ export function GameCanvas({
   onSceneReady,
   onLoadProgress,
   onLoadError,
+  onItemCue,
+  onItemActionStatus,
+  onItemPresented,
+  onItemSnapshot,
 }: GameCanvasProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sceneRef = useRef<SceneManager | null>(null)
-  const callbacksRef = useRef({ onTableAction, onItemUse, onSupplyPick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onLoadProgress, onLoadError })
+  const callbacksRef = useRef({ onTableAction, onItemUse, onSupplyPick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot })
   const readyRef = useRef(onSceneReady)
   const [error, setError] = useState<string | null>(null)
   const setErrorRef = useRef(setError)
 
   useEffect(() => {
-    callbacksRef.current = { onTableAction, onItemUse, onSupplyPick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onLoadProgress, onLoadError }
+    callbacksRef.current = { onTableAction, onItemUse, onSupplyPick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot }
     readyRef.current = onSceneReady
     setErrorRef.current = setError
-  }, [onTableAction, onItemUse, onSupplyPick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onSceneReady, onLoadProgress, onLoadError, setError])
+  }, [onTableAction, onItemUse, onSupplyPick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onSceneReady, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot, setError])
 
   useEffect(() => {
     const host = hostRef.current
@@ -70,6 +79,10 @@ export function GameCanvas({
         onBossPoseCue: (cue) => callbacksRef.current.onBossPoseCue?.(cue),
         onLoadProgress: (progress) => callbacksRef.current.onLoadProgress?.(progress),
         onLoadError: (key, err) => callbacksRef.current.onLoadError?.(key, err),
+        onItemActionCue: (item, cue) => callbacksRef.current.onItemCue?.(item, cue),
+        onItemActionStatus: (status) => callbacksRef.current.onItemActionStatus?.(status),
+        onItemPresented: (event) => callbacksRef.current.onItemPresented?.(event),
+        onItemSnapshot: (snapshot) => callbacksRef.current.onItemSnapshot?.(snapshot),
       })
     } catch (err) {
       setErrorRef.current(err instanceof Error ? err.message : '无法创建 WebGL 场景')
@@ -79,9 +92,11 @@ export function GameCanvas({
     sceneRef.current = manager
     // 发牌闸门：等枪放平、镜头回位后再让引擎进入下一回合
     engine.setPresentationGate(() => manager.whenReadyForDeal())
+    engine.setItemPresentationGate(() => manager.whenItemReady())
     readyRef.current?.(manager)
 
     return () => {
+      engine.setItemPresentationGate(null)
       engine.setPresentationGate(null)
       manager?.dispose()
       sceneRef.current = null
@@ -125,6 +140,8 @@ export function GameCanvas({
         })
         break
       case 'shot':
+        // 护心镜的碎裂必须写在枪口命中这一刻，而不是举起镜子时
+        if (event.blocked === 'shield') scene.breakItemShield(event.target)
         scene.playShot({
           by: event.by,
           target: event.target,
@@ -144,6 +161,7 @@ export function GameCanvas({
         }
         break
       case 'itemUsed':
+        // 派生事件（读数、换牌、沙漏反转）由引擎在动作收尾后才放
         scene.playItemUse(event.actor, event.item)
         break
       case 'magnetSwap':

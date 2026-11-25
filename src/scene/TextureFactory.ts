@@ -1048,8 +1048,8 @@ export class TextureFactory {
    */
   startWatching(): void {
     if (this.watchTimer !== null || this.disposed) return
-    void this.scan(true)
     if (import.meta.env.DEV) {
+      void this.scan(true)
       this.watchTimer = window.setInterval(() => {
         if (document.hidden) return
         void this.scan(false)

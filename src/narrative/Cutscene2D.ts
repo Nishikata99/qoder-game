@@ -160,9 +160,12 @@ export class Cutscene2D {
       this.lastTs = ts
       return
     }
+    if (document.hidden) {
+      this.lastTs = null
+      return
+    }
     const raw = (ts - this.lastTs) / 1000
     this.lastTs = ts
-    if (document.hidden) return
     this.time += raw
 
     this.syncCues()

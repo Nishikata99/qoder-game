@@ -468,7 +468,7 @@ export const ENDINGS: Readonly<Record<'win' | 'lose', EndingSpec>> = {
     skippable: false,
     lines: [
       { text: '哥？', at: 1.6, end: 2.4, channel: 'sister' },
-      { text: '小棠……我在。', at: 2.6, end: 3.6, channel: 'player' },
+      { text: '小棠……我在。', at: 2.6, end: 3.7, channel: 'player' },
       { text: '别碰线。先找到我的名字。', at: 3.9, end: 5.4, channel: 'sister' },
       { text: '找到了。', at: 5.6, end: 6.2, channel: 'player' },
       { text: '把最后一针缝完。', at: 6.4, end: 7.6, channel: 'sister' },
@@ -492,7 +492,7 @@ export const ENDINGS: Readonly<Record<'win' | 'lose', EndingSpec>> = {
       { text: '轮到你的名字了。', at: 1.4, end: 2.6, channel: 'enemy' },
       { text: '小棠……', at: 2.8, end: 3.6, channel: 'player' },
       { text: '不用挣了。缝进去就不疼了。', at: 3.8, end: 5.2, channel: 'enemy' },
-      { text: '名单还很长。下一位已经在门外了。', at: 5.6, end: 6.8, channel: 'enemy' },
+      { text: '名单还很长。下一位已经在门外了。', at: 5.3, end: 6.9, channel: 'enemy' },
     ],
     cues: [
       { at: 0.05, sfx: 'lowThump' },

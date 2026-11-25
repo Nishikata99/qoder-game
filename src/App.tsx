@@ -286,6 +286,10 @@ export default function App() {
   const [showTargetHint, setShowTargetHint] = useState(false)
   const targetHintShownRef = useRef(false)
   const [paused, setPaused] = useState(false)
+  const pausedRef = useRef(false)
+  const pauseSourceRef = useRef<'user' | 'background' | null>(null)
+  const backgroundPausedRef = useRef(false)
+  const pauseRef = useRef<HTMLDivElement>(null)
   const [checkpoint, setCheckpoint] = useState<StoredCheckpoint | null>(() => readCheckpoint())
   const [loadProgress, setLoadProgress] = useState<{ loaded: number; total: number } | null>(null)
   const [loadFailed, setLoadFailed] = useState(false)
@@ -392,14 +396,22 @@ export default function App() {
     (next: boolean) => {
       if (next) {
         if (!startedRef.current || finishedRef.current) return
+        backgroundPausedRef.current = false
+        pauseSourceRef.current = 'user'
+        pausedRef.current = true
         game.pause()
         directorRef.current?.pause()
         cutsceneDirectorRef.current?.pause()
+        pauseClueTimers()
         sound.suspend()
       } else {
+        backgroundPausedRef.current = false
+        pauseSourceRef.current = null
+        pausedRef.current = false
         game.resume()
         directorRef.current?.resume()
         cutsceneDirectorRef.current?.resume()
+        resumeClueTimers()
         sound.resume()
       }
       setPaused(next)
@@ -418,8 +430,13 @@ export default function App() {
     scene.setQuality(resolved)
   }, [])
 
-  useDialogFocus(guideRef, () => setGuideOpen(false), guideOpen)
-  useDialogFocus(logRef, () => setLogOpen(false), logOpen)
+  const closeGuide = useCallback(() => setGuideOpen(false), [])
+  const closeLog = useCallback(() => setLogOpen(false), [])
+  const closeRules = useCallback(() => setModal(null), [])
+  const closePause = useCallback(() => togglePause(false), [togglePause])
+  useDialogFocus(guideRef, closeGuide, guideOpen)
+  useDialogFocus(logRef, closeLog, logOpen)
+  useDialogFocus(pauseRef, closePause, paused)
 
   const showNotice = useCallback((message: string) => {
     setNotice(message)
@@ -618,12 +635,19 @@ export default function App() {
         return
       }
       const snap = snapshotRef.current
-      // 2D 过场期间吞掉所有游戏键。
-      // 关卡间过场与失败结局：Space/Esc 跳过；胜利结局不可跳过（长按兜底在覆盖层里处理）。
+      if (devOpen) {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          setDevOpen(false)
+        }
+        return
+      }
+      if (modal !== null || logOpen) return
+      // 2D 过场只接管跳过键，Tab/Enter 仍交给跳过按钮和辅助技术。
       if (cutsceneActiveRef.current) {
-        event.preventDefault()
         if (cutsceneKindRef.current === 'ending' && !cutsceneSkippableRef.current) return
         if (event.code === 'Space' || event.key === ' ' || event.key === 'Escape') {
+          event.preventDefault()
           skipCutscene()
         }
         return
@@ -689,7 +713,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [game, togglePause, paused, modal, skipCutscene])
+  }, [game, togglePause, paused, modal, logOpen, devOpen, skipCutscene])
 
   const hpRatio =
     snapshot && snapshot.player.maxHp > 0 ? snapshot.player.hp / snapshot.player.maxHp : 1
@@ -699,26 +723,35 @@ export default function App() {
     if (!alive) return
     // 外层鼓点也得跟着 bpm 走，否则血越少只有双拍间距变、整体节奏不变
     const id = window.setInterval(() => {
-      if (document.hidden) return
+      if (document.hidden || paused) return
       sound.playHeartbeat(bpm)
     }, Math.round(60000 / bpm))
     return () => window.clearInterval(id)
-  }, [alive, bpm, sound])
+  }, [alive, bpm, paused, sound])
 
-  // 切后台冻结音频图并暂停整局：回来不自动续，避免 Boss 回合在后台跑完
+  // 后台暂停与用户暂停分开：返回时只恢复后台暂停，手动暂停保持挂起。
   useEffect(() => {
     const onVisibility = () => {
       if (document.hidden) {
+        backgroundPausedRef.current = true
         sound.suspend()
         directorRef.current?.pause()
-        if (startedRef.current && !finishedRef.current) togglePause(true)
-      } else {
-        sound.resume()
+        cutsceneDirectorRef.current?.pause()
+        pauseClueTimers()
+        if (startedRef.current && !finishedRef.current && !pausedRef.current) {
+          pauseSourceRef.current = 'background'
+          pausedRef.current = true
+          game.pause()
+          setPaused(true)
+        }
+      } else if (backgroundPausedRef.current) {
+        backgroundPausedRef.current = false
+        if (pauseSourceRef.current === 'background' || !pausedRef.current) togglePause(false)
       }
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => document.removeEventListener('visibilitychange', onVisibility)
-  }, [sound, togglePause])
+  }, [game, sound, togglePause])
 
   useEffect(() => {
     startedRef.current = snapshot?.started ?? false
@@ -844,28 +877,73 @@ export default function App() {
   }
 
   const pendingClueRef = useRef<readonly ClueLine[] | null>(null)
-  const clueTimer = useRef<number | null>(null)
-  const clueTimersRef = useRef<number[]>([])
+  const clueTimersRef = useRef<Array<{ id: number; callback: () => void; deadline: number; remaining: number }>>([])
+  const clueHideTimerRef = useRef<{ id: number; callback: () => void; deadline: number; remaining: number } | null>(null)
+  const cluePauseStartedRef = useRef<number | null>(null)
+
+  function runClueTimer(entry: { id: number; callback: () => void; deadline: number; remaining: number }) {
+    clueTimersRef.current = clueTimersRef.current.filter((timer) => timer !== entry)
+    if (clueHideTimerRef.current === entry) clueHideTimerRef.current = null
+    entry.callback()
+  }
+
+  function scheduleClue(callback: () => void, delay: number) {
+    const remaining = Math.max(0, delay)
+    const entry = { id: 0, callback, deadline: performance.now() + remaining, remaining }
+    if (cluePauseStartedRef.current !== null) clueTimersRef.current.push(entry)
+    else {
+      entry.id = window.setTimeout(() => runClueTimer(entry), remaining)
+      clueTimersRef.current.push(entry)
+    }
+  }
+
+  function pauseClueTimers() {
+    if (cluePauseStartedRef.current !== null) return
+    const now = performance.now()
+    cluePauseStartedRef.current = now
+    for (const entry of clueTimersRef.current) {
+      entry.remaining = Math.max(0, entry.deadline - now)
+      window.clearTimeout(entry.id)
+      entry.id = 0
+    }
+  }
+
+  function resumeClueTimers() {
+    if (cluePauseStartedRef.current === null) return
+    cluePauseStartedRef.current = null
+    for (const entry of clueTimersRef.current) {
+      entry.deadline = performance.now() + entry.remaining
+      entry.id = window.setTimeout(() => runClueTimer(entry), entry.remaining)
+    }
+  }
 
   function clearClueTimers() {
-    if (clueTimer.current !== null) window.clearTimeout(clueTimer.current)
-    clueTimer.current = null
-    for (const timer of clueTimersRef.current) window.clearTimeout(timer)
+    for (const entry of clueTimersRef.current) window.clearTimeout(entry.id)
     clueTimersRef.current = []
+    clueHideTimerRef.current = null
+    cluePauseStartedRef.current = null
   }
 
   function showClueLine(text: string, durationMs = 6000, channel: DialogueChannel = 'player') {
     setClueLine({ text, durationMs, channel })
-    if (clueTimer.current !== null) window.clearTimeout(clueTimer.current)
-    clueTimer.current = window.setTimeout(() => setClueLine(null), durationMs)
+    if (clueHideTimerRef.current) {
+      window.clearTimeout(clueHideTimerRef.current.id)
+      clueTimersRef.current = clueTimersRef.current.filter((entry) => entry !== clueHideTimerRef.current)
+    }
+    const entry = { id: 0, callback: () => setClueLine(null), deadline: performance.now() + durationMs, remaining: durationMs }
+    if (cluePauseStartedRef.current !== null) clueTimersRef.current.push(entry)
+    else {
+      entry.id = window.setTimeout(() => runClueTimer(entry), durationMs)
+      clueTimersRef.current.push(entry)
+    }
+    clueHideTimerRef.current = entry
   }
 
   function showDialogueSequence(lines: readonly ClueLine[]) {
     clearClueTimers()
     let delay = 0
     for (const line of lines) {
-      const timer = window.setTimeout(() => showClueLine(line.text, line.durationMs, line.channel), delay)
-      clueTimersRef.current.push(timer)
+      scheduleClue(() => showClueLine(line.text, line.durationMs, line.channel), delay)
       delay += line.durationMs
     }
   }
@@ -1003,6 +1081,7 @@ export default function App() {
     ;(window as unknown as { __narrativeDebug?: unknown }).__narrativeDebug = {
       play: (mode: NarrativeMode) => beginNarrative(mode),
       scene: () => sceneRef.current,
+      now: () => directorRef.current?.now() ?? null,
       game,
     }
     ;(window as unknown as { __cutsceneDebug?: unknown }).__cutsceneDebug = {
@@ -1010,6 +1089,7 @@ export default function App() {
       playEnding: (id: EndingSpec['id']) => beginEnding(id),
       skip: () => skipCutscene(),
       active: () => cutsceneActiveRef.current,
+      now: () => cutsceneDirectorRef.current?.now() ?? null,
       seek: (seconds: number) => {
         const director = cutsceneDirectorRef.current as
           | (Cutscene2D & { debugSeek?: (t: number) => void })
@@ -1076,7 +1156,7 @@ export default function App() {
               const current = game.getSnapshot()
               if (current.phase !== 'playerTurn' || current.paused || current.inputLocked ||
                 current.player.skipTurn || current.cardChoice || narrativeRef.current ||
-                directorRef.current || modal !== null) return false
+                directorRef.current || modal !== null || logOpen || devOpen) return false
               finishFirstTurnHint()
               return action === 'hit' ? game.hit() : game.stand()
             }}
@@ -1204,6 +1284,14 @@ export default function App() {
               </>
             ) : null}
           </div>
+        ) : phase === 'playerTurn' ? (
+          <div className="sr-only focus-within:not-sr-only focus-within:absolute focus-within:bottom-4 focus-within:left-1/2 focus-within:-translate-x-1/2 focus-within:flex focus-within:flex-wrap focus-within:justify-center focus-within:gap-2 focus-within:bg-black focus-within:p-3">
+            {snapshot?.player.items.map((item, index) => (
+              <button key={`${item}-${index}`} type="button" disabled={locked} onClick={() => game.useItem(item)}>
+                使用{ITEM_CATALOG[item].name}
+              </button>
+            ))}
+          </div>
         ) : null}
 
         <div className="flex items-center gap-2 text-[9px] tracking-[0.2em] text-bone-200/30 uppercase">
@@ -1223,10 +1311,8 @@ export default function App() {
           窄屏横排贴底避开桌沿按键；只有枪口选择阶段抬到操作栏上方，
           首回合提示显示期间先让位（提示条占同一条底边） */}
       <div
-        className={`absolute right-4 bottom-4 flex flex-col items-end gap-2 transition-opacity duration-700 max-[420px]:right-3 max-[420px]:flex-row max-[420px]:items-center ${
-          snapshot?.phase === 'targeting' && snapshot?.pendingShot === 'player'
-            ? 'max-[420px]:bottom-[6.25rem]'
-            : 'max-[420px]:bottom-4'
+        className={`corner-tools absolute flex flex-col items-end gap-2 transition-opacity duration-700 max-[420px]:flex-row max-[420px]:items-center ${
+          snapshot?.phase === 'targeting' && snapshot?.pendingShot === 'player' ? 'corner-tools--targeting' : ''
         } ${showFirstTurnHint ? 'corner-tools--defer' : ''} ${
           narrativeActive ? 'pointer-events-none opacity-0' : 'opacity-100'
         }`}
@@ -1353,6 +1439,7 @@ export default function App() {
           onClick={() => setLogOpen(false)}
         >
           <div
+            ref={logRef}
             className="max-h-[82dvh] w-full max-w-xl overflow-y-auto border border-rust-500/30 bg-abyss-900/95 p-5 shadow-2xl shadow-black/80"
             onClick={(event) => event.stopPropagation()}
           >
@@ -1383,6 +1470,9 @@ export default function App() {
       <p aria-live="polite" className="sr-live">
         {spokenLine}
       </p>
+      <p className="sr-live">
+        你的生命 {snapshot?.player.hp ?? 0}，对手生命 {snapshot?.boss.hp ?? 0}；你的点数 {snapshot?.player.visibleHand.total ?? 0}，对手明牌点数 {snapshot?.boss.visibleHand.total ?? 0}。
+      </p>
 
       {/* 首层关键模型加载进度：程序化画面先跑，不黑屏 */}
       {corridorState === 'done' && loadProgress && loadProgress.loaded < loadProgress.total && !finished ? (
@@ -1402,7 +1492,7 @@ export default function App() {
 
       {/* Death / victory end screens. */}
       {paused && !finished ? (
-        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-5 bg-black/80 px-6 text-center backdrop-blur-sm">
+        <div ref={pauseRef} role="dialog" aria-modal="true" aria-label="游戏暂停" className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-5 bg-black/80 px-6 text-center backdrop-blur-sm">
           <p className="text-[9px] tracking-[0.5em] text-rust-400/70 uppercase">the table waits</p>
           <h2 className="font-display text-3xl text-bone-200/90">暂停</h2>
           <p className="max-w-xs text-[11px] leading-relaxed text-bone-200/40">
@@ -1464,7 +1554,7 @@ export default function App() {
                   </dd>
                 </div>
               </dl>
-              <div className="mt-2 flex gap-3">
+              <div className="mt-2 flex max-[420px]:flex-col gap-3">
                 <MetalButton tone="primary" onClick={() => beginNarrative('restart')}>
                   再次推开铁门
                 </MetalButton>
@@ -1500,7 +1590,7 @@ export default function App() {
                   </dd>
                 </div>
               </dl>
-              <div className="mt-2 flex gap-3">
+              <div className="mt-2 flex max-[420px]:flex-col gap-3">
                 <MetalButton tone="primary" onClick={() => beginNarrative('restart')}>
                   重新坐上牌桌
                 </MetalButton>
@@ -1555,7 +1645,7 @@ export default function App() {
 
       {notice ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-32 flex justify-center">
-          <p className="rounded-sm border border-white/8 bg-black/70 px-4 py-1.5 text-[10px] tracking-[0.15em] text-bone-200/65">
+          <p role="status" aria-live="polite" className="rounded-sm border border-white/8 bg-black/70 px-4 py-1.5 text-[10px] tracking-[0.15em] text-bone-200/65">
             {notice}
           </p>
         </div>
@@ -1612,7 +1702,7 @@ export default function App() {
         </div>
       ) : null}
 
-      {modal ? <RulesModal initialTab={modal} onClose={() => setModal(null)} /> : null}
+      {modal ? <RulesModal initialTab={modal} onClose={closeRules} /> : null}
 
       {snapshot?.cardChoice && !narrativeActive ? (
         <div className="absolute inset-x-0 bottom-28 z-30 flex justify-center px-4">

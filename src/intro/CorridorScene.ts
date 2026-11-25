@@ -535,6 +535,10 @@ export class CorridorScene {
   private readonly tick = (ts: number): void => {
     if (this.disposed) return
     this.rafId = requestAnimationFrame(this.tick)
+    if (document.hidden) {
+      this.lastTs = null
+      return
+    }
     if (this.lastTs === null) {
       this.lastTs = ts
       return

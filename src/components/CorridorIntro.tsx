@@ -2,10 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { SoundEngine } from '../audio/SoundEngine'
 import { CorridorScene } from '../intro/CorridorScene'
 import { LongPressSkipIndicator } from './LongPressSkipIndicator'
-
-const CHAR_MS = 65
-const PAUSE_MS = 260
-const PAUSE_CHARS = '，。、！？…—'
+import { TYPE_CHAR_MS, TYPE_PAUSE_CHARS, TYPE_PAUSE_MS } from '../narrative/dialogue'
 
 /** 打字机字幕：与 NarrativeOverlay 同一节奏，走廊独白用 */
 function TypedLine({ text }: { readonly text: string }) {
@@ -22,7 +19,7 @@ function TypedLine({ text }: { readonly text: string }) {
       for (const ch of text) {
         if (elapsed < acc) break
         count += 1
-        acc += CHAR_MS + (PAUSE_CHARS.includes(ch) ? PAUSE_MS : 0)
+        acc += TYPE_CHAR_MS + (TYPE_PAUSE_CHARS.includes(ch) ? TYPE_PAUSE_MS : 0)
       }
       setTyped(count)
     }
@@ -137,6 +134,7 @@ export function CorridorIntro({
   return (
     <div className="absolute inset-0 z-40 bg-black" data-testid="corridor-intro">
       <canvas ref={canvasRef} className="h-full w-full" />
+      <span className="sr-live" aria-live="polite">{walkLine}</span>
       {loadError ? (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-black/85 px-6 text-center" role="alert">
           <p className="font-display text-base tracking-[0.12em] text-bone-200">{loadError}</p>

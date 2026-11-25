@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { describe, expect, it } from 'vitest'
 import { ITEM_IDS } from '../game/GameEngine'
 import { ITEM_ACTION_SPECS, itemActionCamera } from './itemActionConfig'
-import { actionEase, disposeActionObject, gripEnvelope, resolveActionAnchor } from './ItemActions'
+import { ITEM_ACTION_CUES, actionEase, disposeActionObject, gripEnvelope, resolveActionAnchor } from './ItemActions'
 
 describe('item action config', () => {
   it('为每件道具定义完整且有序的时间轴', () => {
@@ -13,6 +13,18 @@ describe('item action config', () => {
       expect(spec.timings.contact).toBeLessThanOrEqual(spec.timings.commit)
       expect(spec.timings.commit).toBeLessThan(spec.timings.release)
       expect(spec.timings.release).toBeLessThan(spec.timings.end)
+    }
+  })
+
+  it('每件道具都有唯一且落在执行段的语义音效节点', () => {
+    for (const item of ITEM_IDS) {
+      const cues = ITEM_ACTION_CUES[item]
+      expect(cues?.length, item).toBeGreaterThan(0)
+      expect(new Set(cues?.map(([cue]) => cue)).size, item).toBe(cues?.length)
+      for (const [, time] of cues ?? []) {
+        expect(time, item).toBeGreaterThanOrEqual(ITEM_ACTION_SPECS[item].timings.contact)
+        expect(time, item).toBeLessThanOrEqual(ITEM_ACTION_SPECS[item].timings.commit)
+      }
     }
   })
 

@@ -5,6 +5,7 @@ export default defineConfig({
   testDir: './e2e',
   // 用 .e2e.ts 后缀与 Vitest 的 *.spec.ts 区分，避免两个 runner 互相捡文件
   testMatch: '**/*.e2e.ts',
+  testIgnore: '**/*.dev.e2e.ts',
   // 无头环境是软件渲染，引擎定时器会比真机慢一个数量级，超时给足
   timeout: 480_000,
   expect: { timeout: 30_000 },

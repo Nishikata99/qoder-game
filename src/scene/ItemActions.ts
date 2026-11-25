@@ -96,7 +96,9 @@ export function disposeActionObject(root: THREE.Object3D): void {
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
     if (!obj.userData.sharedGeometry) geometries.add(obj.geometry)
-    for (const mat of Array.isArray(obj.material) ? obj.material : [obj.material]) materials.add(mat)
+    if (!obj.userData.sharedMaterial) {
+      for (const mat of Array.isArray(obj.material) ? obj.material : [obj.material]) materials.add(mat)
+    }
   })
   root.removeFromParent()
   for (const geo of geometries) geo.dispose()
@@ -124,7 +126,12 @@ class ActionHand {
       model.updateMatrixWorld(true)
       model.traverse((obj) => {
         if (!(obj instanceof THREE.Mesh)) return
-        if (!obj.name.includes('Skin') && !obj.name.includes('Nail')) { obj.visible = false; return }
+        if (!obj.name.includes('Skin') && !obj.name.includes('Nail')) {
+          obj.visible = false
+          obj.userData.sharedGeometry = true
+          obj.userData.sharedMaterial = true
+          return
+        }
         obj.geometry = toFloatGeometry(obj.geometry)
         obj.geometry.applyMatrix4(obj.matrixWorld)
         obj.position.set(0, 0, 0)
@@ -391,6 +398,7 @@ export class ItemActions {
         if (mat.transparent || mat.opacity < 1) {
           obj.castShadow = false
           mat.side = THREE.DoubleSide
+          mat.forceSinglePass = true
           mat.depthWrite = false
           continue
         }

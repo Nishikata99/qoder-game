@@ -674,7 +674,24 @@ function makeStandardMaterial(color: number, metalness: number, roughness: numbe
 }
 
 function cardFaceTopIndex(): number {
-  return 2
+  return 1
+}
+
+function createCardGeometry(): THREE.BoxGeometry {
+  const geometry = new THREE.BoxGeometry(CARD_W, CARD_T, CARD_H)
+  const index = geometry.index!
+  const order = [0, 1, 4, 5, 2, 3]
+  const reordered: number[] = []
+  for (const groupIndex of order) {
+    const group = geometry.groups[groupIndex]!
+    for (let i = group.start; i < group.start + group.count; i += 1) reordered.push(index.getX(i))
+  }
+  geometry.setIndex(reordered)
+  geometry.clearGroups()
+  geometry.addGroup(0, 24, 0)
+  geometry.addGroup(24, 6, 1)
+  geometry.addGroup(30, 6, 2)
+  return geometry
 }
 
 export class SceneManager {
@@ -928,6 +945,7 @@ export class SceneManager {
   private impactLight: THREE.PointLight | null = null
   private impactGeneration = 0
   private revealGlowLife = 0
+  private shadowElapsed = 0
   private aimTarget: ActorId = 'boss'
   /** 处决推近进度 0..1；作为视线方向上的偏移叠在相机基座上 */
   private executionPush = 0
@@ -1013,6 +1031,8 @@ export class SceneManager {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFShadowMap
+    this.renderer.shadowMap.autoUpdate = false
+    this.renderer.shadowMap.needsUpdate = true
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 0.98
     // composer 一帧内多次 render，自动重置会把 calls/tris 冲成最后一趟的值；DEV 下改为手动 reset
@@ -1087,6 +1107,9 @@ export class SceneManager {
     this.gunShake.name = 'GunShake'
     this.gunAim.add(this.gunShake)
     this.gunShake.add(gun.root)
+    this.revealLight = new THREE.PointLight(0xff2a18, 0, 1.6, 2)
+    this.revealLight.position.set(0, 0.135, -0.09)
+    this.gunShake.add(this.revealLight)
     this.gunGroup.add(this.gunAim)
     this.holsterGun()
     this.drum = gun.drum
@@ -1364,13 +1387,7 @@ export class SceneManager {
     glow.material.color.setHex(live ? 0xff2a18 : 0x2f8cff)
     glow.material.opacity = 0
     glow.scale.setScalar(0.2)
-    if (!this.revealLight) {
-      const light = new THREE.PointLight(0xff2a18, 0, 1.6, 2)
-      light.position.set(0, cylinderY + 0.06, -0.09)
-      this.gunShake.add(light)
-      this.revealLight = light
-    }
-    const light = this.revealLight
+    const light = this.revealLight!
     light.color.setHex(live ? 0xff2a18 : 0x2f8cff)
     light.intensity = 0
     this.tween({
@@ -2533,19 +2550,11 @@ export class SceneManager {
 
   /** 异步载入 GLB：首层关键 → 空闲次级 → Boss2/3 进层补齐；失败保持缺失并回退程序化几何 */
   private preloadModels(): void {
-    const critical: ModelKey[] = [
-      'table_gothic',
-      'room_environment',
-      'shotgun',
-      'player_hand',
-      'boss_1',
+    const critical: ModelKey[] = ['table_gothic', 'room_environment', 'shotgun', 'player_hand', 'boss_1']
+    const interactive: ModelKey[] = [
       'item_magnifier',
       'item_syringe',
       'item_saw',
-      'marble_bust_01',
-    ]
-    const secondary: ModelKey[] = [
-      'gothic_statue',
       'item_magnet',
       'item_handcuffs',
       'item_hourglass',
@@ -2557,6 +2566,7 @@ export class SceneManager {
       'item_iou',
       'item_monocle',
     ]
+    const decorative: ModelKey[] = ['gothic_statue', 'marble_bust_01']
     // 大件场景模型不必和道具一样压那么暗，否则整个桌面沉进黑里
     const dimFor = (key: ModelKey): number => {
       if (key === 'table_gothic') return 0.82
@@ -2577,18 +2587,14 @@ export class SceneManager {
     }
 
     const criticalTask = this.loadModelBatch(critical, dimFor, albedoDimFor, true)
-    this.pendingModels.push(criticalTask)
+    const interactiveTask = this.loadModelBatch(interactive, dimFor, albedoDimFor, false)
+    this.pendingModels.push(criticalTask, interactiveTask)
     void criticalTask.then(() => {
       const idle = (cb: () => void): void => {
-        // 这里必须带超时：对局中渲染循环一直在跑，页面几乎没有真正空闲的窗口，
-        // 不带 timeout 的 requestIdleCallback 会被无限饿死，二级道具就一直停在程序化兜底几何上
-        if (typeof window.requestIdleCallback === 'function') {
-          window.requestIdleCallback(cb, { timeout: 1200 })
-        } else {
-          window.setTimeout(cb, 400)
-        }
+        if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(cb, { timeout: 1200 })
+        else window.setTimeout(cb, 400)
       }
-      idle(() => this.pendingModels.push(this.loadModelBatch(secondary, dimFor, albedoDimFor, false)))
+      idle(() => this.pendingModels.push(this.loadModelBatch(decorative, dimFor, albedoDimFor, false)))
     })
   }
 
@@ -2640,12 +2646,19 @@ export class SceneManager {
   private async loadModelWithRetry(key: ModelKey): Promise<GLTF> {
     let delay = 1000
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      let timeout: number | null = null
       try {
-        return await this.gltfLoader.loadAsync(`${MODEL_BASE}/${key}.glb`)
+        const request = this.gltfLoader.loadAsync(`${MODEL_BASE}/${key}.glb`)
+        const deadline = new Promise<never>((_, reject) => {
+          timeout = window.setTimeout(() => reject(new Error(`模型 ${key} 加载超时`)), 12_000)
+        })
+        return await Promise.race([request, deadline])
       } catch (error) {
         if (attempt === 2 || this.disposed) throw error
         await new Promise<void>((resolve) => window.setTimeout(resolve, delay))
         delay *= 3
+      } finally {
+        if (timeout !== null) window.clearTimeout(timeout)
       }
     }
     throw new Error(`模型 ${key} 加载失败`)
@@ -3135,26 +3148,32 @@ export class SceneManager {
     this.timer.update()
     const rawDt = this.timer.getDelta()
     const dt = Math.min(rawDt, 1 / 20)
-    this.elapsed += dt
-    this.updateTweens(dt)
+    const animationDt = Math.min(rawDt, 0.25)
+    this.shadowElapsed += rawDt
+    if (this.shadowElapsed >= 1 / 30) {
+      this.renderer.shadowMap.needsUpdate = true
+      this.shadowElapsed = 0
+    }
+    this.elapsed += animationDt
+    this.updateTweens(animationDt)
     this.updateLighting()
-    this.updateBoss(dt)
+    this.updateBoss(animationDt)
     this.updateDust(dt)
     this.updateBlood(dt)
     this.updateSparks(dt)
-    this.updateHourglass(dt)
-    this.updateNarrativeGrade(dt)
-    this.updateChains(dt)
-    this.updateGunAim(dt)
+    this.updateHourglass(animationDt)
+    this.updateNarrativeGrade(animationDt)
+    this.updateChains(animationDt)
+    this.updateGunAim(animationDt)
     if (this.gunMotionActive) this.keepGunAboveTable()
-    this.updateGunShake(dt)
+    this.updateGunShake(animationDt)
     this.updateArmedRacks()
-    this.updateItems(dt)
-    this.updateCards(dt)
-    this.itemActions.update(dt)
-    this.updateCamera(dt)
-    this.updateActionButtons(dt)
-    this.composer.render(dt)
+    this.updateItems(animationDt)
+    this.updateCards(animationDt)
+    this.itemActions.update(animationDt)
+    this.updateCamera(animationDt)
+    this.updateActionButtons(animationDt)
+    this.composer.render(animationDt)
     this.sampleStats(rawDt)
     if (devStatsEnabled) this.renderer.info.reset()
   }
@@ -5049,24 +5068,24 @@ export class SceneManager {
 
   private buildDeckPile(): void {
     const back = this.textures.get(this.textures.cardBackKey)
+    const geometry = createCardGeometry()
+    const side = new THREE.MeshStandardMaterial({ color: 0x2c221c, roughness: 0.86 })
+    const face = new THREE.MeshStandardMaterial({ map: back, roughness: 0.74, metalness: 0.06 })
+    this.disposableGeometries.add(geometry)
+    this.disposableMaterials.add(side)
+    this.disposableMaterials.add(face)
+    const pile = new THREE.InstancedMesh(geometry, [side, face, face], 12)
+    const transform = new THREE.Object3D()
     for (let i = 0; i < 12; i += 1) {
-      const geo = new THREE.BoxGeometry(CARD_W, CARD_T, CARD_H)
-      this.disposableGeometries.add(geo)
-      const side = new THREE.MeshStandardMaterial({ color: 0x2c221c, roughness: 0.86 })
-      this.disposableMaterials.add(side)
-      const face = new THREE.MeshStandardMaterial({
-        map: back,
-        roughness: 0.74,
-        metalness: 0.06,
-      })
-      this.disposableMaterials.add(face)
-      const mesh = new THREE.Mesh(geo, [side, side, face, side, side, side])
-      mesh.position.set(0, i * (CARD_T + 0.0015), 0)
-      mesh.rotation.y = (Math.random() - 0.5) * 0.12
-      mesh.castShadow = true
-      mesh.receiveShadow = true
-      this.deckGroup.add(mesh)
+      transform.position.set(0, i * (CARD_T + 0.0015), 0)
+      transform.rotation.set(0, (Math.random() - 0.5) * 0.12, 0)
+      transform.updateMatrix()
+      pile.setMatrixAt(i, transform.matrix)
     }
+    pile.instanceMatrix.needsUpdate = true
+    pile.castShadow = true
+    pile.receiveShadow = true
+    this.deckGroup.add(pile)
   }
 
   private applyLevel(levelIndex: number): void {
@@ -5421,7 +5440,7 @@ export class SceneManager {
 
   /** 对手的底牌占位：仅渲染牌背 */
   private spawnHoleCard(actor: ActorId, index: number, count: number): CardEntry {
-    const geo = new THREE.BoxGeometry(CARD_W, CARD_T, CARD_H)
+    const geo = createCardGeometry()
     this.disposableGeometries.add(geo)
     const side = new THREE.MeshStandardMaterial({ color: 0x231b16, roughness: 0.88 })
     this.disposableMaterials.add(side)
@@ -5432,7 +5451,7 @@ export class SceneManager {
     })
     this.disposableMaterials.add(back)
     // 与 spawnCard 保持同一朝向：+y 为「朝上」面，翻面时整个牌绕 X 轴翻转
-    const materials: THREE.Material[] = [side, side, back, back, side, side]
+    const materials: THREE.Material[] = [side, back, back]
     const mesh = new THREE.Mesh(geo, materials)
     mesh.castShadow = true
     mesh.receiveShadow = true
@@ -5456,7 +5475,7 @@ export class SceneManager {
   }
 
   private spawnCard(actor: ActorId, index: number, card: Card, count: number): CardEntry {
-    const geo = new THREE.BoxGeometry(CARD_W, CARD_T, CARD_H)
+    const geo = createCardGeometry()
     this.disposableGeometries.add(geo)
     const side = new THREE.MeshStandardMaterial({ color: 0x231b16, roughness: 0.88 })
     this.disposableMaterials.add(side)
@@ -5472,7 +5491,7 @@ export class SceneManager {
       metalness: 0.05,
     })
     this.disposableMaterials.add(back)
-    const materials: THREE.Material[] = [side, side, face, back, side, side]
+    const materials: THREE.Material[] = [side, face, back]
     const mesh = new THREE.Mesh(geo, materials)
     mesh.castShadow = true
     mesh.receiveShadow = true
@@ -5741,9 +5760,7 @@ export class SceneManager {
 
   private buildItemGrid(): void {
     const baseGeo = new THREE.BoxGeometry(ITEM_GRID.slotSize, 0.006, ITEM_GRID.slotSize)
-    this.disposableGeometries.add(baseGeo)
     const borderGeo = new THREE.EdgesGeometry(baseGeo)
-    this.disposableGeometries.add(borderGeo)
     const baseMat = new THREE.MeshStandardMaterial({
       color: 0x1c1714,
       metalness: 0.35,
@@ -5761,37 +5778,16 @@ export class SceneManager {
     })
     const horizontalGeo = new THREE.BoxGeometry(ITEM_GRID.slotSize, 0.004, 0.006)
     const verticalGeo = new THREE.BoxGeometry(0.006, 0.004, ITEM_GRID.slotSize)
+    this.disposableGeometries.add(baseGeo)
     this.disposableGeometries.add(horizontalGeo)
     this.disposableGeometries.add(verticalGeo)
     this.disposableMaterials.add(baseMat)
     this.disposableMaterials.add(borderMat)
     this.disposableMaterials.add(barMat)
+
+    const slots: THREE.Vector3[] = []
     for (const actor of ['player', 'boss'] as const) {
-      for (let index = 0; index < 8; index += 1) {
-        const slot = new THREE.Group()
-        slot.name = `ItemSlot-${actor}-${index + 1}`
-        slot.userData.slotIndex = index
-        slot.position.copy(this.itemSlot(actor, index))
-        const base = new THREE.Mesh(baseGeo, baseMat)
-        base.position.y = -0.003
-        base.receiveShadow = true
-        slot.add(base)
-        const border = new THREE.LineSegments(borderGeo, borderMat)
-        border.position.y = 0.001
-        slot.add(border)
-        const edge = ITEM_GRID.slotSize / 2 - 0.003
-        for (const z of [-edge, edge]) {
-          const bar = new THREE.Mesh(horizontalGeo, barMat)
-          bar.position.set(0, 0.002, z)
-          slot.add(bar)
-        }
-        for (const x of [-edge, edge]) {
-          const bar = new THREE.Mesh(verticalGeo, barMat)
-          bar.position.set(x, 0.002, 0)
-          slot.add(bar)
-        }
-        this.itemGrid.add(slot)
-      }
+      for (let index = 0; index < 8; index += 1) slots.push(this.itemSlot(actor, index))
       const grid = actor === 'player' ? ITEM_GRID.player : ITEM_GRID.boss
       const gridLight = new THREE.PointLight(0xffc083, actor === 'player' ? 1.3 : 1.1, 2.3, 2)
       gridLight.position.set(
@@ -5801,6 +5797,39 @@ export class SceneManager {
       )
       this.itemGrid.add(gridLight)
     }
+
+    const transform = new THREE.Object3D()
+    const bases = new THREE.InstancedMesh(baseGeo, baseMat, slots.length)
+    const horizontals = new THREE.InstancedMesh(horizontalGeo, barMat, slots.length * 2)
+    const verticals = new THREE.InstancedMesh(verticalGeo, barMat, slots.length * 2)
+    const edge = ITEM_GRID.slotSize / 2 - 0.003
+    const borderPositions: number[] = []
+    const sourceBorder = borderGeo.getAttribute('position')
+    slots.forEach((slot, index) => {
+      transform.position.set(slot.x, slot.y - 0.003, slot.z)
+      transform.updateMatrix()
+      bases.setMatrixAt(index, transform.matrix)
+      for (let side = 0; side < 2; side += 1) {
+        transform.position.set(slot.x, slot.y + 0.002, slot.z + (side === 0 ? -edge : edge))
+        transform.updateMatrix()
+        horizontals.setMatrixAt(index * 2 + side, transform.matrix)
+        transform.position.set(slot.x + (side === 0 ? -edge : edge), slot.y + 0.002, slot.z)
+        transform.updateMatrix()
+        verticals.setMatrixAt(index * 2 + side, transform.matrix)
+      }
+      for (let i = 0; i < sourceBorder.count; i += 1) {
+        borderPositions.push(sourceBorder.getX(i) + slot.x, sourceBorder.getY(i) + slot.y + 0.001, sourceBorder.getZ(i) + slot.z)
+      }
+    })
+    const mergedBorder = new THREE.BufferGeometry()
+    mergedBorder.setAttribute('position', new THREE.Float32BufferAttribute(borderPositions, 3))
+    this.disposableGeometries.add(mergedBorder)
+    this.disposableGeometries.add(borderGeo)
+    bases.instanceMatrix.needsUpdate = true
+    horizontals.instanceMatrix.needsUpdate = true
+    verticals.instanceMatrix.needsUpdate = true
+    bases.receiveShadow = true
+    this.itemGrid.add(bases, horizontals, verticals, new THREE.LineSegments(mergedBorder, borderMat))
     this.itemRoot.add(this.itemGrid)
   }
 
@@ -7607,7 +7636,7 @@ export class SceneManager {
     }
     if (key === 'card-back') {
       for (const entry of this.cards.values()) {
-        const back = entry.mesh.material[3]
+        const back = entry.mesh.material[2]
         if (back instanceof THREE.MeshStandardMaterial) {
           back.map = texture
           back.needsUpdate = true
@@ -7617,7 +7646,7 @@ export class SceneManager {
         if (!(child instanceof THREE.Mesh)) continue
         const materials = child.material
         if (!Array.isArray(materials)) continue
-        const topFace = materials[2]
+        const topFace = materials[1]
         if (topFace instanceof THREE.MeshStandardMaterial) {
           topFace.map = texture
           topFace.needsUpdate = true
@@ -7667,6 +7696,7 @@ export class SceneManager {
     object.traverse((child) => {
       if (child instanceof THREE.Mesh || child instanceof THREE.Points || child instanceof THREE.Sprite) {
         if (!child.userData.sharedGeometry) child.geometry.dispose()
+        if (child.userData.sharedMaterial) return
         const material = child.material
         if (Array.isArray(material)) material.forEach((entry) => entry.dispose())
         else material.dispose()

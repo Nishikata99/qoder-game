@@ -358,9 +358,17 @@ export class BossPoseController {
   }
 
   update(dt: number): void {
+    let remaining = Math.min(Math.max(dt, 0), 0.25)
+    while (remaining > 0) {
+      const step = Math.min(remaining, MAX_STEP)
+      this.step(step)
+      remaining -= step
+    }
+  }
+
+  private step(step: number): void {
     if (this.plantHold && this.stateValue === 'plant') return
     if (this.stillHold && this.stateValue === 'still') return
-    const step = Math.min(Math.max(dt, 0), MAX_STEP)
     if (step <= 0) return
     this.stateTime += step
 

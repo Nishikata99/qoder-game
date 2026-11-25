@@ -32,6 +32,7 @@ import {
 } from './game/GameEngine'
 import { bossName, levelTitle, narrativeLog } from './narrative/copy'
 import { useDialogFocus } from './components/useDialogFocus'
+import { installRuntimeErrorReporter } from './runtimeErrors'
 
 interface LootBanner {
   readonly id: number
@@ -443,6 +444,16 @@ export default function App() {
     if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current)
     noticeTimer.current = window.setTimeout(() => setNotice(null), 2400)
   }, [])
+
+  useEffect(() => {
+    const uninstall = installRuntimeErrorReporter()
+    const onRuntimeError = () => showNotice('游戏遇到运行时错误，请刷新后重试。')
+    window.addEventListener('blood-ante:runtime-error', onRuntimeError)
+    return () => {
+      window.removeEventListener('blood-ante:runtime-error', onRuntimeError)
+      uninstall()
+    }
+  }, [showNotice])
 
   const handleItemCue = useCallback((item: ItemId, cue: ItemActionCue) => {
     if (cue === 'pickup') sound.playItemUse()

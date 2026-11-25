@@ -100,7 +100,7 @@ src/
 
 ### 血量（3D 血袋，不进 HUD）
 
-每格生命对应架上一只血袋：`syncBlood()` 以 `ActorView.maxHp` 决定袋数、`hp` 决定注满的袋数，掉血从右往左排空、回血重新注满；`maxHp` 变化时整架重建。位置/尺寸集中在 `BLOOD_RACK_LAYOUT`（玩家小架在桌面左前角，Boss 落地架在左后侧），单袋液体盒高度取满袋液高，`liquid.scale.y` 就是填充比例——**不要把液体几何高度写成 1 再用 scale 当比例**，会变成一米高的红板。细管（汇流管→各自身体）挂在独立 `extra` 组里用世界坐标，换架时随 `rack.extra` 一并销毁。改布局后必须按真实游戏镜头截图确认双方都能读出剩余袋数。
+每格生命对应架上一只血袋：`syncBlood()` 以 `ActorView.maxHp` 决定袋数、`hp` 决定注满的袋数，掉血从右往左排空、回血重新注满；`maxHp` 变化时整架重建。位置/尺寸集中在 `BLOOD_RACK_LAYOUT`（玩家小架在桌面左前角，Boss 落地架在左后侧），单袋液体盒高度取满袋液高，`liquid.scale.y` 就是填充比例——**不要把液体几何高度写成 1 再用 scale 当比例**，会变成一米高的红板。细管（汇流管→各自身体）挂在独立 `extra` 组里用世界坐标，换架时随 `rack.extra` 一并销毁。改布局后必须按真实游戏镜头截图确认双方都能读出剩余袋数，并比对 `docs/screenshots/` 的关键状态基线。
 
 ## 三、规则要点（易踩坑）
 
@@ -183,7 +183,7 @@ src/moyan/scene.ts    3D 棋盘表现（CRT 器官屏只在蔓延页保留）
 src/scene/PixelArt.ts 器官像素画，仅蔓延页使用
 ```
 
-- 入口链路：走廊序章点「左门」→ `CorridorScene.chooseDoor('L')` 开门动画结束 → `onEnterMoyan` → `window.location.assign('./moyan.html')`；蔓延页「返回走廊」回 `./`。
+- 入口链路：走廊序章左门新开一局并清除旧检查点，右门在有检查点时续档；`moyan.html` 保留独立入口，不在当前走廊双门链路中。
 - `vite.config.ts` 的 `rollupOptions.input` 必须同时保留 `main` 与 `moyan` 两个入口，`manualChunks` 不要删。
 - 主游戏牌面保持花色字形（♠♥♦♣），右门场景无 CRT；器官像素画与 CRT 数据屏只属于蔓延页。
 - 规则文档：`docs/游戏规则.md`。

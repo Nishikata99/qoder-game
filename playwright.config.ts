@@ -1,6 +1,6 @@
 import { defineConfig } from '@playwright/test'
 
-/** 冒烟测试跑生产构建：先在本地 npm run build，CI 里 build 步骤已在前 */
+/** 冒烟测试始终针对当前源码重新构建的生产包 */
 export default defineConfig({
   testDir: './e2e',
   // 用 .e2e.ts 后缀与 Vitest 的 *.spec.ts 区分，避免两个 runner 互相捡文件
@@ -25,7 +25,7 @@ export default defineConfig({
   },
   webServer: {
     // 显式绑定 127.0.0.1：CI 上 localhost 可能先解析到 ::1，导致探测一直超时
-    command: 'npm run preview -- --port 4173 --strictPort --host 127.0.0.1',
+    command: 'npm run build && npm run preview -- --port 4173 --strictPort --host 127.0.0.1',
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

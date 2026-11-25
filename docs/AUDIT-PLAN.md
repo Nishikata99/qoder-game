@@ -214,10 +214,12 @@ tune(game): 伤害改为点差驱动，奖励高风险高点数
 
 ---
 
-## [ ] P1-4 玩家血量不可读的流程风险：缺少界面截图回归
+## [x] P1-4 玩家血量不可读的流程风险：缺少界面截图回归
+
+> 审计结论：可读。已在 `docs/screenshots/` 保存固定种子实拍基线：三层桌面、targeting、execution、胜利与失败结算。三层主镜头下双方血袋架可辨数量，台面点数贴片清楚；后续改动须比对基线，不得悄悄把血量/点数搬回 HUD。
 
 **问题**
-血量与点数被刻意移出 HUD，改由 3D 血袋与台面贴片呈现（见 AGENTS.md）。这是合理的美术选择，但项目**没有任何截图回归基线**。第 3 关 Boss 有 9 个血袋，在暗光与透视下能否读出是未经验证的；任何布局改动都可能让读数失效却无人发现。
+血量与点数被刻意移出 HUD，改由 3D 血袋与台面贴片呈现（见 AGENTS.md）。这是合理的美术选择，但审计前项目**没有任何截图回归基线**。第 3 关 Boss 有 8 个血袋，在暗光与透视下能否读出是未经验证的；任何布局改动都可能让读数失效却无人发现。
 
 **审计**
 1. 读取 `BLOOD_RACK_LAYOUT` 与 `SceneManager.buildBloodRack` / `syncBlood`。
@@ -309,7 +311,7 @@ feat(audio): 实弹耳鸣时长按枪口目标区分，避免打 Boss 时拖沓
 
 ## [x] P2-1 `GameEngine` 因内置 `setTimeout` 无法独立测试，与 AGENTS.md 承诺不符
 
-> 审计结论：属实。`wait()` 直接用 `setTimeout`/`clearTimeout`，`beginLevel` 有 2.6s 等待，仓库零测试文件。**负责人选定方案 B（只改文档）**：已把 AGENTS.md 的「可以被独立测试的纯状态机」改为「纯逻辑状态机，内部依赖 `setTimeout`，测试须配假定时器或后续引入时钟注入」，删除不实承诺。未改引擎代码。
+> 审计结论：审计时属实（`wait()` 直接用 `setTimeout`/`clearTimeout`，`beginLevel` 有 2.6s 等待，仓库当时零测试文件）。**该风险现已关闭**：已引入 Vitest + fake timers，并覆盖引擎、道具动作、Boss 姿态与叙事字幕；生产 E2E 与 DEV 集成也已建立。
 
 **问题**
 AGENTS.md 称 `GameEngine` 是「可以被独立测试的纯状态机」，但它直接调用 `setTimeout` / `clearTimeout`（`wait()` 方法），且 `beginLevel` 有 2.6 秒真实等待。这使得无法用假时钟做测试，承诺不成立。
@@ -607,7 +609,7 @@ fix(ui): 合并重复的中弹模糊定义，避免 filter 与 backdrop-filter �
  - src/game/GameEngine.ts bossTarget / wouldLose —— `hourglassActive` 只剩玩家侧来源，Boss 侧的 `return 0` 分支仍保留（正确：玩家开沙漏后 Boss 应立即停牌）—— 无需改动 —— P3
  - src/scene/SceneManager.ts 全类 —— 3209 行 God Object，本轮未拆（负责人决定另起专项）—— 建议按 CameraRig / CardStage / PropStage / BloodStage / ModelLoader 逐个小步抽离 —— P2
  - vite.config.ts —— 已拆分 three / react / gsap，但 React + Three 仍在首屏拉取；真正按需加载需把 SceneManager 改成点击「坐下」后再动态 import —— 建议下一轮做 —— P3
- - 测试 —— 仓库仍零测试文件，P2-1 选了方案 B（只改文档），P3-6 需要先定框架（建议 Vitest + fake timers）—— P2
+ - 测试 —— 旧结论已过期：仓库已建立 Vitest + fake timers、ItemActions 状态机测试、生产 E2E 与 DEV 道具集成；当前 176 个单测、9 个生产 E2E、3 个 DEV 集成 —— 已完成
 ```
 
 ---
@@ -623,10 +625,10 @@ fix(ui): 合并重复的中弹模糊定义，避免 filter 与 backdrop-filter �
 | P1-1 | 沙漏为 Boss 必胜按钮 | P1 | ✅ 已完成 |
 | P1-2 | 碾压规则几乎不触发 | P1 | ⏭️ 审计后跳过（不成立） |
 | P1-3 | 伤害曲线恒定 | P1 | ⏭️ 负责人决定保留现状 |
-| P1-4 | 血量可读性缺截图回归 | P1 | ⬜ 未开始 |
+| P1-4 | 血量可读性缺截图回归 | P1 | ✅ 已完成 |
 | P1-5 | 处决 2.9s 纯阻塞 | P1 | ⏭️ 负责人决定保留 |
 | P1-6 | 耳鸣长尾一视同仁 | P1 | ✅ 已完成 |
-| P2-1 | 引擎定时器不可测 | P2 | ✅ 已完成（方案 B） |
+| P2-1 | 引擎定时器不可测 | P2 | ✅ 已完成（Vitest + fake timers） |
 | P2-2 | 降级路径用 console.warn | P2 | ✅ 已完成 |
 | P2-3 | applySnapshot 无脏检查 | P2 | ⏭️ 审计后跳过（前提不成立） |
 | P2-4 | SceneManager 3200 行 | P2 | ⏭️ 负责人决定另起专项 |

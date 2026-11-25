@@ -5,6 +5,9 @@ on:
     - cron: '0 18 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: nightly-${{ github.ref }}
   cancel-in-progress: true
@@ -12,6 +15,7 @@ concurrency:
 jobs:
   browser-regression:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -26,11 +30,33 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
       - name: Install Playwright Chromium
+        timeout-minutes: 10
         run: npx playwright install --with-deps chromium
 
       - name: Full production E2E
+        timeout-minutes: 25
         run: npm run test:e2e
 
       - name: Item action DEV integration
+        timeout-minutes: 12
         run: npm run test:e2e:dev
+
+      - name: Upload browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-browser-failure-${{ github.run_id }}
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7

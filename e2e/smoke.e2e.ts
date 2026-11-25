@@ -55,14 +55,18 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
   const fired = () =>
     page.evaluate(() => Boolean((window as unknown as { __fired?: boolean }).__fired))
 
+  let remainingBeforeShot = Number(await page.locator('main').getAttribute('data-cylinder-remaining'))
+
   // CI 软件渲染比本地慢数倍，轮询预算要留到接近用例总超时
   const deadline = Date.now() + 300_000
   while (Date.now() < deadline) {
     if (await fired()) break
     if (await fireAtBoss.isVisible().catch(() => false)) {
+      remainingBeforeShot = Number(await page.locator('main').getAttribute('data-cylinder-remaining'))
       await domClick(fireAtBoss)
       await page.waitForTimeout(600)
     } else if ((await stand.count()) > 0 && (await stand.isEnabled().catch(() => false))) {
+      remainingBeforeShot = Number(await page.locator('main').getAttribute('data-cylinder-remaining'))
       await domClick(stand)
       // 等这一回合确实离开玩家回合，避免下一轮循环重复点击
       await page
@@ -76,4 +80,13 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
   }
 
   expect(await fired()).toBe(true)
+  await page.waitForFunction(
+    (remaining) => {
+      const main = document.querySelector('main')
+      return main?.getAttribute('data-engine-phase') !== 'execution' &&
+        Number(main?.getAttribute('data-cylinder-remaining')) < remaining
+    },
+    remainingBeforeShot,
+    { timeout: 60_000 },
+  )
 })

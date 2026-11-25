@@ -142,7 +142,7 @@ export const ITEM_ACTION_SPECS: Readonly<Record<ItemId, ItemActionSpec>> = {
     { start: 0.5, contact: 1, commit: 1.9, end: 2.7, release: 2.3 },
     {
       hero: 'cutter',
-      grip: { offset: [0.12, 0.018, 0] },
+      grip: { offset: [0.025, 0.018, 0] },
       support: { offset: [-0.16, 0.025, 0.12], from: 'target' },
       leftRotation: [0.12, -0.35, Math.PI * 0.42],
       leftGrip: 0.28,
@@ -153,7 +153,7 @@ export const ITEM_ACTION_SPECS: Readonly<Record<ItemId, ItemActionSpec>> = {
     { start: 0.7, contact: 1.55, commit: 2.1, end: 3, release: 2.6 },
     {
       hero: 'paper',
-      target: [-0.1, 0.045, -0.3],
+      target: [-0.1, 0.006, -0.3],
       support: { offset: [-0.2, 0.04, 0.06], from: 'paper' },
       rightRotation: [0, -0.15, -0.35],
       remnant: 'round',

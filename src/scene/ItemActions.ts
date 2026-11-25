@@ -6,8 +6,27 @@ export function isItemPresentationEvent(event: GameEvent): boolean {
   return ['itemUsed', 'chamberRevealed', 'magnetSwap', 'hourglass', 'daggerReshuffle', 'cardCuttered', 'iouSigned', 'cardSealed', 'deckPeeked'].includes(event.type)
 }
 
-export type ItemActionCue = 'pickup' | 'contact' | 'finish'
+export type ItemActionCue =
+  | 'pickup' | 'contact' | 'finish'
+  | 'needleSeat' | 'bladeCut' | 'cardExchange' | 'stampPress' | 'flipComplete'
+  | 'sawCut' | 'hammerImpact' | 'cuffLock' | 'shieldRaise' | 'focus'
 export interface ItemActionStatus { item: ItemId; actor: ActorId; time: number; phase: '起手' | '等待选牌' | '执行' | '收尾'; canSkip: boolean }
+
+export const ITEM_ACTION_CUES: Readonly<Partial<Record<ItemId, readonly (readonly [ItemActionCue, number])[]>>> = {
+  sedative: [['needleSeat', 1.25]],
+  dagger: [['bladeCut', 1.35]],
+  magnifier: [['focus', 1]],
+  monocle: [['focus', 1]],
+  saw: [['sawCut', 2.6]],
+  hammer: [['hammerImpact', 1.35]],
+  handcuffs: [['cuffLock', 1.65]],
+  aegis: [['shieldRaise', 1.5]],
+  magnet: [['cardExchange', 2]],
+  cutter: [['bladeCut', 1.8]],
+  iou: [['stampPress', 2.1]],
+  seal: [['stampPress', 1.78]],
+  hourglass: [['flipComplete', 1.65]],
+}
 
 interface ActionDeps {
   scene: THREE.Scene
@@ -90,10 +109,12 @@ export function disposeActionObject(root: THREE.Object3D): void {
 class ActionHand {
   readonly root = new THREE.Group()
   private readonly parts: { mesh: THREE.Mesh; points: Float32Array }[] = []
+  private readonly fallbackFingers: THREE.Mesh[] = []
+  private fallbackThumb: THREE.Mesh | null = null
   private curl = -1
   /** 手掌在动作特写里应有的长度（米）；按实际包围盒归一化，不依赖模型的导出单位 */
   private static readonly HAND_LENGTH = 0.165
-  constructor(template: THREE.Object3D | undefined, left: boolean, actor: ActorId, level: number) {
+  constructor(template: THREE.Object3D | undefined, private readonly left: boolean, actor: ActorId, level: number) {
     const skin = material(actor === 'player' ? 0x80604f : level === 1 ? 0x40332e : 0x6e685f)
     skin.roughness = 0.88
     const model = template?.clone(true)
@@ -134,13 +155,21 @@ class ActionHand {
       model.position.z = 0.062
       this.root.add(model)
     } else {
+      const fallback = new THREE.Group()
+      fallback.scale.set(left ? -0.54 : 0.54, 0.54, 0.54)
+      this.root.add(fallback)
       const palm = mesh(new THREE.SphereGeometry(1, 16, 12), skin)
       palm.scale.set(0.095, 0.037, 0.115)
-      this.root.add(palm)
-      for (let i = 0; i < 5; i += 1) {
-        const finger = mesh(new THREE.CapsuleGeometry(0.018, 0.13, 4, 8), skin, v((i - 2) * 0.035, 0, -0.11))
+      fallback.add(palm)
+      const thumb = mesh(new THREE.CapsuleGeometry(0.018, 0.09, 4, 8), skin, v(-0.075, -0.005, -0.055))
+      thumb.rotation.set(1.1, 0, 0.35)
+      fallback.add(thumb)
+      this.fallbackThumb = thumb
+      for (let i = 1; i <= 4; i += 1) {
+        const finger = mesh(new THREE.CapsuleGeometry(0.018, 0.13, 4, 8), skin, v((i - 2.5) * 0.035, 0, -0.11))
         finger.rotation.x = Math.PI / 2
-        this.root.add(finger)
+        fallback.add(finger)
+        this.fallbackFingers.push(finger)
       }
     }
     // 近景机位沿 +z 正对玩家手部且俯角较大：任何朝 +z 或朝下的袖筒/前臂
@@ -156,6 +185,17 @@ class ActionHand {
     const amount = Math.round(value * 20) / 20
     if (Math.abs(amount - this.curl) < 0.025) return
     this.curl = amount
+    if (this.parts.length === 0) {
+      if (this.fallbackThumb) {
+        this.fallbackThumb.rotation.x = 1.1 - amount * 0.75
+        this.fallbackThumb.rotation.z = (this.left ? -1 : 1) * (0.35 + amount * 0.45)
+      }
+      this.fallbackFingers.forEach((finger, index) => {
+        finger.rotation.x = Math.PI / 2 - amount * (1.05 + index * 0.05)
+        finger.rotation.z = (index - 1.5) * 0.02 * amount
+      })
+      return
+    }
     for (const part of this.parts) {
       const pos = part.mesh.geometry.attributes.position!
       for (let i = 0; i < pos.count; i += 1) {
@@ -184,7 +224,7 @@ interface ActiveAction {
   item: ItemId; actor: ActorId; snapshot: GameSnapshot; time: number; waiting: boolean; chosen: boolean; cancelled: boolean
   root: THREE.Group; prop: THREE.Group; left: ActionHand; right: ActionHand; target: THREE.Vector3; from: THREE.Vector3
   parts: Map<string, THREE.Object3D>; moving: MovingCard[]; contact: boolean; committed: boolean; resolve: () => void; ready: Promise<void>
-  choiceMove: ChoiceMove | null; leftAnchor: THREE.Vector3; rightAnchor: THREE.Vector3
+  choiceMove: ChoiceMove | null; leftAnchor: THREE.Vector3; rightAnchor: THREE.Vector3; cues: Set<ItemActionCue>
 }
 
 export class ItemActions {
@@ -203,6 +243,42 @@ export class ItemActions {
   }
   get waiting(): boolean { return this.active?.waiting ?? false }
   get committed(): boolean { return this.active?.committed ?? false }
+  getContactProbe(): { gap?: number; alignment?: number } | null {
+    const a = this.active
+    if (!a) return null
+    a.root.updateWorldMatrix(true, true)
+    const gap = (moving: THREE.Object3D, surface: THREE.Object3D) => {
+      const movingBox = new THREE.Box3().setFromObject(moving)
+      const surfaceBox = new THREE.Box3().setFromObject(surface)
+      return +(movingBox.min.y - surfaceBox.max.y).toFixed(4)
+    }
+    if (a.item === 'hammer') {
+      const head = a.prop.getObjectByName('Hammer_IronHead') ?? a.prop
+      const workpiece = a.parts.get('workpiece')
+      return workpiece ? { gap: gap(head, workpiece) } : null
+    }
+    if (a.item === 'cutter' && a.moving[0]) {
+      const blade = a.parts.get('blade')
+      return blade ? { gap: gap(blade, a.moving[0].obj) } : null
+    }
+    if (a.item === 'iou') {
+      const paper = a.parts.get('paper')!
+      const held = a.time < 1.82 ? a.parts.get('pen')! : a.parts.get('stampTool')!
+      return { gap: gap(held, paper) }
+    }
+    if (a.item === 'seal') {
+      const strip = a.parts.get('strip')!
+      const sealTool = a.parts.get('sealTool')!
+      return { gap: gap(sealTool, strip) }
+    }
+    if (a.item === 'handcuffs') {
+      const wrist = a.parts.get('targetWrist')!
+      const cuffNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(a.prop.getWorldQuaternion(new THREE.Quaternion()))
+      const wristAxis = new THREE.Vector3(0, 0, 1).applyQuaternion(wrist.getWorldQuaternion(new THREE.Quaternion()))
+      return { alignment: +Math.abs(cuffNormal.dot(wristAxis)).toFixed(4) }
+    }
+    return null
+  }
   getGripProbe(): { leftError: number; rightError: number; leftAnchor: number[]; rightAnchor: number[] } | null {
     const a = this.active
     if (!a) return null
@@ -244,8 +320,10 @@ export class ItemActions {
     this.cancel()
     const root = new THREE.Group()
     root.name = `ItemAction-${actor}-${item}`
-    root.position.set(0, this.deps.tableY, actor === 'player' ? 1.12 : -1.12)
+    root.position.set(actor === 'player' ? 0 : 0.5, this.deps.tableY, actor === 'player' ? 1.12 : -0.82)
     root.rotation.y = actor === 'player' ? 0 : Math.PI
+    const bossScale = item === 'handcuffs' ? 1.12 : item === 'magnet' ? 1.24 : 1.45
+    root.scale.setScalar(actor === 'player' ? 1 : bossScale)
     this.deps.scene.add(root)
     const prop = this.deps.prop(item)
     const actionSpec = ITEM_ACTION_SPECS[item]
@@ -264,7 +342,7 @@ export class ItemActions {
       actor, item, snapshot: before, root, prop, left, right, from: root.worldToLocal(from.clone()), target: v(...actionSpec.target),
       time: 0, waiting: actor === 'player' && (item === 'cutter' || item === 'seal'), chosen: false, cancelled: false,
       parts: new Map(), moving: [], contact: false, committed: false, resolve, ready,
-      choiceMove: null, leftAnchor: v(0, 0, 0), rightAnchor: v(0, 0, 0),
+      choiceMove: null, leftAnchor: v(0, 0, 0), rightAnchor: v(0, 0, 0), cues: new Set(),
     }
     this.active = a
     this.setup(a)
@@ -447,6 +525,11 @@ export class ItemActions {
       const wax = mesh(new THREE.CylinderGeometry(0.032, 0.035, 0.009, 20), material(0x8f1d18, 0.05, 0.55))
       wax.visible = false
       add('wax', wax)
+      const sealTool = new THREE.Group()
+      sealTool.add(mesh(new THREE.CylinderGeometry(0.03, 0.033, 0.012, 18), material(0x6f1b16, 0.05, 0.6), v(0, 0.006, 0)))
+      sealTool.add(mesh(new THREE.CylinderGeometry(0.011, 0.015, 0.052, 12), material(0x5b3b25), v(0, 0.038, 0)))
+      sealTool.visible = false
+      add('sealTool', sealTool)
     }
     if (item === 'cutter') {
       // Imported cutter is a solid dagger; the close-up needs an independently retractable blade.
@@ -564,7 +647,7 @@ export class ItemActions {
     a.waiting = false; a.chosen = true
     const actor = a.item === 'seal' ? 'boss' : a.actor
     const copy = this.copyCard(a, actor, card)
-    if (copy) a.target.copy(copy.from).add(v(0, 0.035, 0))
+    if (copy) a.target.copy(copy.from).add(v(0, a.item === 'seal' ? 0.006 : 0.035, 0))
     // 选牌后道具下移到牌面，机位跟着降到牌面高度，避免只拍到桌沿；
     // 但不能贴到牌面上，否则持刀手会挡满整个画面。
     // 注意 a.target 是动作根本地坐标（根已抬高到桌面），不能拿世界桌高来比
@@ -605,6 +688,12 @@ export class ItemActions {
       if (expired) { disposeActionObject(r.root); this.remnants.splice(i, 1) }
     }
   }
+  private cue(a: ActiveAction, cue: ItemActionCue, due: boolean): void {
+    if (!due || a.cues.has(cue)) return
+    a.cues.add(cue)
+    this.deps.cue(a.item, cue)
+  }
+
   update(dt: number): void {
     const a = this.active
     if (!a || this.paused || this.held) { if (a && this.held) this.pose(a); return }
@@ -613,6 +702,9 @@ export class ItemActions {
     if (a.waiting) a.time = Math.min(a.time, actionSpec.start)
     this.pose(a)
     if (!a.cancelled && a.time >= actionSpec.contact && !a.contact) { a.contact = true; this.deps.cue(a.item, 'contact') }
+    if (!a.cancelled) {
+      for (const [cue, time] of ITEM_ACTION_CUES[a.item] ?? []) this.cue(a, cue, a.time >= time)
+    }
     if (!a.cancelled && a.time >= actionSpec.commit && !a.committed) {
       a.committed = true
       if (a.item === 'saw') this.deps.saw(a.actor)
@@ -676,7 +768,7 @@ export class ItemActions {
       cap.position.set(-0.3, 0.03 + (1 - span(t, 0.3, 0.8)) * 0.3, -0.08)
       cap.rotation.z = span(t, 0.2, 0.8) * Math.PI * 1.5
       const dot = parts.get('puncture')!
-      dot.visible = t > 2.95; dot.position.set(-0.23, 0.415, -0.02)
+      dot.visible = t > 1.25; dot.position.set(-0.23, 0.415, -0.02)
     } else if (item === 'dagger') {
       left.grip(span(t, 1, 1.4) * 0.6 * (1 - out))
       tool.rotation.set(0.1, 1.25, -0.3)
@@ -712,10 +804,10 @@ export class ItemActions {
       glint.position.x = -0.025 + span(t, 1.25, 1.95) * 0.05
       glint.rotation.z = span(t, 1.25, 1.95) * 0.5
     } else if (item === 'saw') {
-      const stroke = t > 0.7 && t < 2.6 ? Math.sin((t - actionSpec.timings.start) * Math.PI * 3.2) : 0
-      const down = (1 - Math.cos((t - actionSpec.timings.start) * Math.PI * 3.2)) * 0.5
-      tool.rotation.set(0, 0, stroke * 0.035 * motion)
-      tool.position.copy(target).add(v(stroke * 0.1, -0.015 - down * 0.012, 0.02))
+      const stroke = t > 0.7 && t < 2.6 ? Math.sin((t - actionSpec.timings.start) * Math.PI * 2.4) : 0
+      const down = (1 - Math.cos((t - actionSpec.timings.start) * Math.PI * 2.4)) * 0.5
+      tool.rotation.set(0, 0, stroke * 0.045 * motion)
+      tool.position.copy(target).add(v(stroke * 0.12, -0.015 - down * 0.018, 0.02))
       if (t < actionSpec.timings.start) tool.position.lerpVectors(a.from, target.clone().add(v(0, -0.015, 0.02)), take)
       const offcut = parts.get('offcut')!
       const fall = span(t, 2.6, 3.1)
@@ -725,6 +817,7 @@ export class ItemActions {
     } else if (item === 'hammer') {
       const impact = span(t, 1.05, 1.35)
       tool.position.y += (0.52 * take * (1 - impact)) + Math.sin(span(t, 1.35, 1.8) * Math.PI) * 0.14
+      tool.position.y -= impact * 0.0702
       tool.rotation.x = -0.55 * (1 - impact)
       tool.rotation.y = Math.PI
       right.root.rotation.x = tool.rotation.x
@@ -737,7 +830,7 @@ export class ItemActions {
       flashMat.opacity = burst * 0.75
       left.root.rotation.x += burst * 0.035 * motion
     } else if (item === 'handcuffs') {
-      tool.rotation.x = Math.PI / 2 * span(t, 0.7, 1.4)
+      tool.rotation.x = (1 - span(t, 0.7, 1.4)) * Math.PI / 2
       tool.rotation.z = Math.sin((t - 1.65) * 9) * 0.025 * motion * span(t, 1.65, 1.9) * (1 - span(t, 2.2, 2.6))
       tool.position.y += (1 - span(t, 0.6, 1.5)) * 0.1
       tool.position.y -= Math.sin(span(t, 1.45, 1.7) * Math.PI) * 0.012 * motion
@@ -781,9 +874,10 @@ export class ItemActions {
         // 等待玩家点牌：刀已亮出、片已推出，但手停在手牌右侧不再前进
         tool.position.set(0.3, 0.19, 0.08)
         tool.rotation.set(0, Math.PI / 2, 0.18)
+        right.root.rotation.set(0, Math.PI / 2, 0.09)
         blade.scale.z = Math.max(0.02, take)
         support = restL.clone()
-        gripOffset.set(0.11, 0.01, 0)
+        gripOffset.set(0.025, 0.018, 0)
       } else if (a.cancelled) {
         tool.position.set(-0.5, 0.05, -0.1)
         tool.rotation.set(0, Math.PI / 2, 0)
@@ -791,9 +885,10 @@ export class ItemActions {
         support = restL.clone()
       } else {
         const cut = span(t, 0.9, 1.8)
-        const position = target.clone().add(v(-0.13 + cut * 0.26, 0.055, 0.04))
+        const position = target.clone().add(v(-0.13 + cut * 0.26, -0.029, 0.04))
         const rotation = new THREE.Euler(0, Math.PI / 2, Math.sin(cut * Math.PI) * 0.08 * motion)
         this.moveChosenProp(a, tool, position, rotation)
+        right.root.rotation.set(0, Math.PI / 2, tool.rotation.z * 0.5)
         blade.scale.z = Math.max(0.02, span(t, 0.35, 0.75) * (1 - out))
         if (t >= 1.8 && a.moving[0]) {
           const c = a.moving[0]
@@ -808,7 +903,7 @@ export class ItemActions {
           }
           const half = parts.get('half')!
           const split = span(t, 1.8, 2.4)
-          c.obj.position.copy(c.from).add(v(-0.09 - split * 0.32, 0.012, 0.1 * split))
+          c.obj.position.copy(c.from).add(v(-0.09 - split * 0.32, 0.001, 0.1 * split))
           half.position.copy(c.from).add(v(0.09 + split * 0.08, 0.018, 0.22 * split))
           half.rotation.y = split * 0.4
         }
@@ -828,12 +923,12 @@ export class ItemActions {
       const press = span(t, 1.98, 2.1) * (1 - span(t, 2.2, 2.45))
       signature.visible = signed > 0.01
       signature.scale.x = Math.max(0.01, signed)
-      const penWrite = paper.position.clone().add(v(-0.055 + sign * 0.12, 0.025 + (1 - sign) * 0.12 - Math.abs(Math.sin(t * 18)) * 0.003 * motion * sign, 0.07))
+      const penWrite = paper.position.clone().add(v(-0.055 + sign * 0.12, 0.011 + (1 - sign) * 0.12 - Math.abs(Math.sin(t * 18)) * 0.003 * motion * sign, 0.07))
       const penRest = paper.position.clone().add(v(-0.22, 0.018, 0.14))
       pen.position.lerpVectors(penWrite, penRest, putPen)
       pen.rotation.set(0.35, 0, -0.5 + Math.sin(t * 18) * 0.06 * motion * sign * (1 - putPen))
       const stampReady = paper.position.clone().add(v(0.24, 0.018, 0.14))
-      const stampPress = paper.position.clone().add(v(0.04, 0.012, 0.12))
+      const stampPress = paper.position.clone().add(v(0.04, 0.001, 0.12))
       const stampPosition = stampReady.lerp(stampPress.add(v(0, (1 - press) * 0.15, 0)), stampTake)
       stampTool.visible = t >= 1.74 && out < 0.8
       stampTool.position.copy(stampPosition)
@@ -842,7 +937,7 @@ export class ItemActions {
       const penGrip = v(0, 0.07, 0).applyQuaternion(pen.quaternion)
       gripOffset.copy(penGrip).lerp(v(0, 0.045, 0), stampTake)
       const stamp = parts.get('stamp')!
-      stamp.visible = t > 2.02; stamp.position.copy(paper.position).add(v(0.04, 0.004, 0.12))
+      stamp.visible = t > 2.02; stamp.position.copy(paper.position).add(v(0.04, 0.002, 0.12))
       const stampPop = span(t, 2.02, 2.14)
       stamp.scale.set(0.65 * Math.max(0.01, stampPop), 0.65 * Math.max(0.01, stampPop), 1)
     } else if (item === 'seal') {
@@ -850,17 +945,19 @@ export class ItemActions {
       const strip = parts.get('strip')!
       const place = span(t, 0.75, 1.2)
       const position = target.clone().add(v(0, (1 - place) * 0.18, 0))
-      const rotation = new THREE.Euler(0, 0, 0.12 * (1 - place))
+      const rotation = new THREE.Euler(-Math.PI / 2, 0, 0.12 * (1 - place))
       if (!a.chosen) strip.position.set(0, 0.26, -0.42)
       else this.moveChosenProp(a, strip, position, rotation)
       const press = span(t, 1.55, 1.78) * (1 - span(t, 2.0, 2.25))
-      if (t < 1.55) {
-        tool.position.copy(strip.position).add(v(0, 0.035, 0))
-        gripOffset.set(0.14, 0.02, 0)
-      } else {
-        tool.position.copy(strip.position).add(v(0, 0.035 + (1 - press) * 0.08, 0.055))
-        gripOffset.set(0, 0.025, 0.075)
-      }
+      const handoff = span(t, 1.35, 1.6)
+      const carry = strip.position.clone().add(v(0, 0.04, 0))
+      const stamp = strip.position.clone().add(v(0, (1 - press) * 0.08, 0.055))
+      tool.position.copy(carry).lerp(stamp, handoff)
+      gripOffset.set(0.14, 0.02, 0).lerp(v(0, 0.025, 0.075), handoff)
+      const sealTool = parts.get('sealTool')!
+      sealTool.visible = out < 0.8
+      sealTool.position.copy(tool.position)
+      sealTool.rotation.set(0, 0, Math.sin(t * 10) * 0.025 * motion * (1 - press))
       const wax = parts.get('wax')!
       wax.visible = t > 1.72
       wax.position.copy(strip.position).add(v(0, 0.009, 0))
@@ -878,6 +975,7 @@ export class ItemActions {
     }
     const used = v(-0.75, 0.035, -0.13)
     if (!['aegis', 'handcuffs', 'hourglass', 'seal', 'iou'].includes(item)) tool.position.lerp(used, out)
+    if (item === 'magnet') tool.position.lerp(v(-0.52, 0.08, -0.05), out)
     if (item === 'hourglass') { tool.position.lerp(v(-0.62, 0.115, -0.35), out) }
     if (item === 'handcuffs' || item === 'aegis') tool.position.y -= out * 0.02
     if (actionSpec.grip.local) gripOffset.applyQuaternion(tool.quaternion)
@@ -897,6 +995,11 @@ export class ItemActions {
     right.root.position.lerp(restR, out)
     if (t < actionSpec.timings.start && !['sedative', 'dagger'].includes(item)) right.root.position.lerpVectors(restR, a.rightAnchor, take)
     left.root.position.lerpVectors(restL, support, supportTake * (1 - out))
+    const handExit = span(t, actionSpec.timings.release + (actionSpec.timings.end - actionSpec.timings.release) * 0.45, actionSpec.timings.end)
+    right.root.position.y -= handExit * 0.22
+    left.root.position.y -= handExit * 0.22
+    right.root.scale.setScalar(1 - handExit * 0.12)
+    left.root.scale.setScalar(1 - handExit * 0.12)
     right.root.visible = out < 0.995
     left.root.visible = out < 0.995
   }

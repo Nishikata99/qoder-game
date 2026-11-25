@@ -2429,6 +2429,7 @@ export class SceneManager {
       leftRotation: handL ? [handL.rotation.x, handL.rotation.y, handL.rotation.z].map((n) => +n.toFixed(2)) : null,
       rightRotation: handR ? [handR.rotation.x, handR.rotation.y, handR.rotation.z].map((n) => +n.toFixed(2)) : null,
       grip: this.itemActions.getGripProbe(),
+      contact: this.itemActions.getContactProbe(),
       camera: this.camera.position.toArray().map((n) => +n.toFixed(3)),
       fov: +this.camera.fov.toFixed(1),
     }
@@ -6581,23 +6582,34 @@ export class SceneManager {
           emissive: 0x2f7d55,
           emissiveIntensity: 0.3,
         })
-        this.disposableMaterials.add(glassMat)
         const liquidMat = makeStandardMaterial(0x3fae78, 0.2, 0.35)
         liquidMat.emissive = new THREE.Color(0x1e6b47)
         liquidMat.emissiveIntensity = 0.4
-        const capMat = makeStandardMaterial(0x8a8578, 0.7, 0.4)
+        const metalMat = makeStandardMaterial(0x9aa2a6, 0.9, 0.28)
         add(new THREE.CylinderGeometry(0.05, 0.05, 0.17, 14), glassMat, (mesh) => {
-          mesh.position.y = 0.085
+          mesh.name = 'GlassTube'
+          mesh.position.z = -0.0064
+          mesh.rotation.x = Math.PI / 2
         })
         add(new THREE.CylinderGeometry(0.036, 0.036, 0.09, 12), liquidMat, (mesh) => {
-          mesh.position.y = 0.05
+          mesh.name = 'SerumFluid'
+          mesh.position.z = -0.02
+          mesh.rotation.x = Math.PI / 2
         })
-        add(new THREE.CylinderGeometry(0.03, 0.03, 0.04, 12), capMat, (mesh) => {
-          mesh.position.y = 0.19
+        add(new THREE.CylinderGeometry(0.008, 0.008, 0.12, 8), metalMat, (mesh) => {
+          mesh.name = 'Needle'
+          mesh.position.z = -0.15
+          mesh.rotation.x = Math.PI / 2
         })
-        add(new THREE.CylinderGeometry(0.008, 0.008, 0.2, 8), capMat, (mesh) => {
-          mesh.position.set(0.05, 0.1, 0)
-          mesh.rotation.z = 0.4
+        add(new THREE.CylinderGeometry(0.018, 0.018, 0.012, 12), metalMat, (mesh) => {
+          mesh.name = 'PlungerStop'
+          mesh.position.z = 0.043
+          mesh.rotation.x = Math.PI / 2
+        })
+        add(new THREE.CylinderGeometry(0.006, 0.006, 0.06, 10), metalMat, (mesh) => {
+          mesh.name = 'Plunger'
+          mesh.position.z = 0.077
+          mesh.rotation.x = Math.PI / 2
         })
         break
       }
@@ -6629,16 +6641,26 @@ export class SceneManager {
       case 'magnet': {
         const bodyMat = makeStandardMaterial(0x9e2f24, 0.45, 0.55)
         const tipMat = makeStandardMaterial(0x9fa9b2, 0.95, 0.25)
-        add(new THREE.TorusGeometry(0.12, 0.03, 12, 24, Math.PI), bodyMat, (mesh) => {
-          mesh.position.y = 0.12
-          mesh.rotation.z = Math.PI
-        })
-        add(new THREE.CylinderGeometry(0.03, 0.03, 0.13, 12), tipMat, (mesh) => {
-          mesh.position.set(-0.12, 0.075, 0)
-        })
-        add(new THREE.CylinderGeometry(0.03, 0.03, 0.13, 12), tipMat, (mesh) => {
-          mesh.position.set(0.12, 0.075, 0)
-        })
+        const parts = [
+          add(new THREE.TorusGeometry(0.12, 0.03, 12, 24, Math.PI), bodyMat, (mesh) => {
+            mesh.position.y = 0.12
+            mesh.rotation.z = Math.PI
+          }),
+          add(new THREE.CylinderGeometry(0.03, 0.03, 0.13, 12), tipMat, (mesh) => {
+            mesh.position.set(-0.12, 0.075, 0)
+          }),
+          add(new THREE.CylinderGeometry(0.03, 0.03, 0.13, 12), tipMat, (mesh) => {
+            mesh.position.set(0.12, 0.075, 0)
+          }),
+        ]
+        const magnet = new THREE.Group()
+        magnet.name = 'MagnetFallback'
+        magnet.rotation.x = Math.PI / 2
+        for (const part of parts) {
+          group.remove(part)
+          magnet.add(part)
+        }
+        group.add(magnet)
         break
       }
       case 'handcuffs': {
@@ -6646,6 +6668,7 @@ export class SceneManager {
         const linkMat = makeStandardMaterial(0x5d6367, 0.95, 0.35)
         for (const x of [-0.09, 0.09]) {
           add(new THREE.TorusGeometry(0.075, 0.016, 10, 22), steelMat, (mesh) => {
+            mesh.name = x > 0 ? 'CuffB' : 'CuffA'
             mesh.position.set(x, 0.075, 0)
             mesh.rotation.x = Math.PI / 2
           })
@@ -6690,6 +6713,11 @@ export class SceneManager {
             mesh.position.set(x, 0.13, 0)
           })
         }
+        const sandMat = makeStandardMaterial(0xd8b46a, 0, 1)
+        add(new THREE.CylinderGeometry(0.006, 0.006, 0.1, 6), sandMat, (mesh) => {
+          mesh.name = 'SandStream'
+          mesh.position.set(0, 0.13, 0)
+        })
         break
       }
       case 'dagger': {
@@ -6697,21 +6725,24 @@ export class SceneManager {
         const guardMat = makeStandardMaterial(0x7a4a22, 0.9, 0.35)
         const bloodMat = makeStandardMaterial(0x5e1410, 0.35, 0.55)
         add(new THREE.ConeGeometry(0.04, 0.3, 4), bladeMat, (mesh) => {
-          mesh.position.set(0, 0.2, 0)
-          mesh.rotation.y = Math.PI / 4
-          mesh.scale.z = 0.4
+          mesh.name = 'Blade'
+          mesh.position.set(0, 0, -0.12)
+          mesh.rotation.x = -Math.PI / 2
+          mesh.scale.x = 0.4
         })
         add(new THREE.BoxGeometry(0.19, 0.024, 0.045), guardMat, (mesh) => {
-          mesh.position.y = 0.06
+          mesh.position.set(0, 0, 0.02)
         })
         add(new THREE.CylinderGeometry(0.021, 0.024, 0.11, 10), guardMat, (mesh) => {
-          mesh.position.y = 0.005
+          mesh.name = 'Handle'
+          mesh.position.set(0, 0, 0.08)
+          mesh.rotation.x = Math.PI / 2
         })
         add(new THREE.SphereGeometry(0.03, 10, 8), guardMat, (mesh) => {
-          mesh.position.y = -0.05
+          mesh.position.set(0, 0, 0.145)
         })
-        add(new THREE.BoxGeometry(0.012, 0.06, 0.012), bloodMat, (mesh) => {
-          mesh.position.set(0.02, 0.16, 0.01)
+        add(new THREE.BoxGeometry(0.012, 0.012, 0.06), bloodMat, (mesh) => {
+          mesh.position.set(0.02, 0, -0.08)
           mesh.rotation.z = 0.2
         })
         break

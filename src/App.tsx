@@ -427,8 +427,16 @@ export default function App() {
 
   const handleItemCue = useCallback((item: ItemId, cue: ItemActionCue) => {
     if (cue === 'pickup') sound.playItemUse()
-    else if (cue === 'contact') sound.playItemContact(ITEM_ACTION_SPECS[item].sound)
-    else if (ITEM_ACTION_SPECS[item].sound === 'paper') sound.playPaperRustle()
+    else if (cue === 'finish') {
+      if (ITEM_ACTION_SPECS[item].sound === 'paper') sound.playPaperRustle()
+    } else if (cue === 'needleSeat') sound.playItemContact('soft')
+    else if (cue === 'bladeCut' || cue === 'cuffLock') sound.playItemContact('metal')
+    else if (cue === 'cardExchange') sound.playPaperRustle()
+    else if (cue === 'stampPress') {
+      sound.playLowThump()
+      sound.playPaperRustle()
+    } else if (cue === 'flipComplete' || cue === 'shieldRaise' || cue === 'focus') sound.playItemContact('glass')
+    else if (cue === 'sawCut' || cue === 'hammerImpact') sound.playLowThump()
   }, [sound])
 
   const handleEventSound = useCallback(
@@ -748,6 +756,8 @@ export default function App() {
     host.__itemActionDebug = {
       grant: (item: ItemId) => devBridge.grantItem(item),
       hp: (value: number) => devBridge.setPlayerHp(value),
+      chamber: (value: 'live' | 'blank') => devBridge.forceChamber(value),
+      budget: () => devBridge.resetItemBudget(),
       use: (item: ItemId) => game.useItem(item),
       status: () => sceneRef.current?.itemActionStatus() ?? null,
       skip: () => sceneRef.current?.skipItemAction() ?? false,
@@ -761,7 +771,12 @@ export default function App() {
       memory: () => sceneRef.current?.previewRenderMemory() ?? null,
       phase: () => game.getSnapshot().phase,
       items: () => [...game.getSnapshot().player.items],
-      choose: (index: number) => game.resolveCardChoice(index),
+      choose: (index: number) => {
+        const card = game.getSnapshot().cardChoice?.cards[index]
+        if (card) sceneRef.current?.chooseItemCard(card)
+        return game.resolveCardChoice(index)
+      },
+      cancelChoice: () => game.cancelCardChoice(),
     }
     return () => { delete host.__itemActionDebug }
   }, [game, devBridge])
@@ -1040,7 +1055,14 @@ export default function App() {
   const level = snapshot?.level ?? (LEVELS[0] as (typeof LEVELS)[number])
 
   return (
-    <main className="relative h-full w-full overflow-hidden bg-abyss-950">
+    <main
+      className="relative h-full w-full overflow-hidden bg-abyss-950"
+      data-engine-phase={snapshot?.phase}
+      data-input-locked={snapshot?.inputLocked}
+      data-player-hp={snapshot?.player.hp}
+      data-boss-hp={snapshot?.boss.hp}
+      data-cylinder-remaining={snapshot?.cylinder.remaining}
+    >
       <div className="absolute inset-0">
         {corridorState === 'done' ? (
           <GameCanvas

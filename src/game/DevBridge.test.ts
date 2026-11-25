@@ -105,6 +105,17 @@ describe('DevBridge.forceChamber', () => {
   })
 })
 
+describe('DevBridge.resetItemBudget', () => {
+  it('清零双方本回合道具计数并刷新快照', () => {
+    const { bridge, engine, probe } = setup()
+    probe.player.itemsUsedThisTurn = 3
+    probe.boss.itemsUsedThisTurn = 2
+    bridge.resetItemBudget()
+    expect(engine.getSnapshot().player.itemsUsedThisTurn).toBe(0)
+    expect(engine.getSnapshot().boss.itemsUsedThisTurn).toBe(0)
+  })
+})
+
 describe('DevBridge.grantItem', () => {
   it('直接入包，满 8 件替换最早一件', () => {
     const { bridge, engine } = setup()

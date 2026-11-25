@@ -1178,3 +1178,72 @@ describe('道具动作演出闸门', () => {
     expect(engine.getSnapshot().phase).toBe('playerTurn')
   })
 })
+
+describe('道具效果补充覆盖', () => {
+  it('献祭匕首扣血、重发手牌并重装弹仓', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.player.hp = 3
+    probe.player.items = ['dagger']
+    const events: string[] = []
+    engine.subscribe((event) => { if (event.type === 'daggerReshuffle') events.push(event.type) })
+    expect(engine.useItem('dagger')).toBe(true)
+    expect(engine.getSnapshot().player.hp).toBe(2)
+    expect(engine.getSnapshot().player.hand.cards).toHaveLength(2)
+    expect(engine.getSnapshot().boss.hand.cards).toHaveLength(2)
+    expect(events).toEqual(['daggerReshuffle'])
+  })
+
+  it('沙漏成功翻转低分胜规则', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.player.items = ['hourglass']
+    expect(engine.useItem('hourglass')).toBe(true)
+    expect(engine.getSnapshot().hourglassActive).toBe(true)
+  })
+
+  it('镇定剂恢复一点生命', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.player.hp = probe.player.maxHp - 1
+    probe.player.items = ['sedative']
+    expect(engine.useItem('sedative')).toBe(true)
+    expect(engine.getSnapshot().player.hp).toBe(probe.player.maxHp)
+  })
+
+  it('手铐标记对手跳过下一次行动', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.player.items = ['handcuffs']
+    expect(engine.useItem('handcuffs')).toBe(true)
+    expect(engine.getSnapshot().boss.skipTurn).toBe(true)
+  })
+})
+
+describe('Boss 合法道具池', () => {
+  it('三种人格合并后恰好八件合法道具', () => {
+    const legal = new Set(Object.values(BOSS_ITEM_POOLS).flat())
+    expect([...legal].sort()).toEqual(['aegis', 'dagger', 'hammer', 'handcuffs', 'magnet', 'magnifier', 'saw', 'sedative'])
+    for (const item of ['cutter', 'iou', 'seal', 'monocle', 'hourglass']) expect(legal.has(item as ItemId)).toBe(false)
+  })
+
+  const cases: { item: ItemId; level: number; prepare: (probe: Probe) => void }[] = [
+    { item: 'magnifier', level: 0, prepare: (probe) => { probe.cylinder.chambers = ['blank', 'blank']; probe.cylinder.cursor = 0 } },
+    { item: 'sedative', level: 0, prepare: (probe) => { probe.boss.hp = probe.boss.maxHp - 1 } },
+    { item: 'saw', level: 0, prepare: (probe) => { probe.boss.hand = hand(10, 5); probe.player.hand = hand(10); probe.cylinder.chambers = ['live', 'live', 'live', 'live']; probe.cylinder.cursor = 0 } },
+    { item: 'magnet', level: 1, prepare: (probe) => { probe.boss.hand = hand(10); probe.player.hand = hand(10, 8) } },
+    { item: 'handcuffs', level: 1, prepare: (probe) => { probe.boss.hand = hand(10); probe.player.hand = hand(10, 8) } },
+    { item: 'aegis', level: 2, prepare: (probe) => { probe.boss.hand = hand(10); probe.player.hand = hand(10, 10); probe.cylinder.chambers = ['live']; probe.cylinder.cursor = 0 } },
+    { item: 'dagger', level: 2, prepare: (probe) => { probe.boss.hp = 5; probe.boss.hand = hand(10); probe.player.hand = hand(10, 10); probe.cylinder.chambers = ['live', 'live']; probe.cylinder.cursor = 0 } },
+    { item: 'hammer', level: 2, prepare: (probe) => { probe.boss.hand = hand(10, 10); probe.player.hand = hand(10); probe.cylinder.chambers = ['blank']; probe.cylinder.cursor = 0 } },
+  ]
+
+  it.each(cases)('$item 在对应人格条件下会被选中', ({ item, level, prepare }) => {
+    const { probe } = newEngine()
+    probe.levelIndex = level
+    probe.boss.items = [item]
+    probe.revealedBy = { player: null, boss: null }
+    prepare(probe)
+    expect(probe.chooseBossItem(new Set())).toBe(item)
+  })
+})

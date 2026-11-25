@@ -2509,6 +2509,11 @@ export class SceneManager {
         else material.dispose()
       }
     })
+    const modelTemplates = new Set<THREE.Object3D>([
+      ...this.models.values(),
+      ...this.itemModelTemplates.values(),
+    ])
+    for (const template of modelTemplates) this.disposeObject(template)
     const debugHost = window as unknown as { __scene?: unknown }
     if (debugHost.__scene === this || debugHost.__scene === this.sceneDebugFacade) delete debugHost.__scene
     this.textures.dispose()
@@ -2609,7 +2614,10 @@ export class SceneManager {
       keys.map(async (key) => {
         try {
           const gltf = await this.loadModelWithRetry(key)
-          if (this.disposed) return
+          if (this.disposed) {
+            this.disposeObject(gltf.scene)
+            return
+          }
           const root = gltf.scene
           const tuned = new Set<THREE.Material>()
           const dim = dimFor(key)

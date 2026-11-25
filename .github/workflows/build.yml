@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
@@ -13,6 +16,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -25,16 +29,40 @@ jobs:
         run: npm ci
 
       - name: Unit tests
+        timeout-minutes: 5
         run: npm test
 
       - name: Typecheck & build
+        timeout-minutes: 8
         run: npm run build
 
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
       - name: Install Playwright Chromium
+        timeout-minutes: 10
         run: npx playwright install --with-deps chromium
 
       - name: Production smoke
+        timeout-minutes: 15
         run: npx playwright test e2e/smoke.e2e.ts
 
       - name: Item action DEV integration
+        timeout-minutes: 12
         run: npm run test:e2e:dev
+
+      - name: Upload browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-browser-failure-${{ github.run_id }}
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7

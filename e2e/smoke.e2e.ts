@@ -90,3 +90,12 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
     { timeout: 60_000 },
   )
 })
+
+test('运行时错误显示可恢复提示', async ({ page }) => {
+  await page.goto('./')
+  await expect(page.getByRole('button', { name: '走进走廊', exact: true })).toBeVisible({ timeout: 30_000 })
+  await page.evaluate(() => {
+    window.dispatchEvent(new ErrorEvent('error', { message: 'E2E 运行时错误探针' }))
+  })
+  await expect(page.getByRole('status')).toHaveText('游戏遇到运行时错误，请刷新后重试。')
+})

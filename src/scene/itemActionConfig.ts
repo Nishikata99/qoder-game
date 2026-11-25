@@ -12,7 +12,7 @@ export interface ItemActionSpec {
   readonly hero?: 'cutter' | 'monocle' | 'saw' | 'paper' | 'strip'
   readonly focusOffset: Vec3Tuple
   readonly grip: { readonly offset: Vec3Tuple; readonly local?: boolean }
-  readonly support: { readonly offset: Vec3Tuple; readonly from: 'target' | 'tool' | 'paper' | 'strip' }
+  readonly support: { readonly offset: Vec3Tuple; readonly from: 'target' | 'tool' | 'paper' | 'strip'; readonly local?: boolean }
   readonly leftRotation: Vec3Tuple
   readonly rightRotation: Vec3Tuple
   readonly leftGrip: number
@@ -178,7 +178,7 @@ export const ITEM_ACTION_SPECS: Readonly<Record<ItemId, ItemActionSpec>> = {
       propScale: 0.42,
       focusOffset: [-0.14, 0, 0],
       grip: { offset: [0.078, 0, 0.055], local: true },
-      support: { offset: [-0.078, 0, 0.055], from: 'tool' },
+      support: { offset: [-0.078, 0, 0.055], from: 'tool', local: true },
       leftGrip: 0.62,
       rightGrip: 0.72,
       remnant: 'hourglass',

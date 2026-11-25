@@ -2415,6 +2415,9 @@ export class SceneManager {
       parts,
       left: handL ? toWorld(handL) : null,
       right: handR ? toWorld(handR) : null,
+      leftRotation: handL ? [handL.rotation.x, handL.rotation.y, handL.rotation.z].map((n) => +n.toFixed(2)) : null,
+      rightRotation: handR ? [handR.rotation.x, handR.rotation.y, handR.rotation.z].map((n) => +n.toFixed(2)) : null,
+      grip: this.itemActions.getGripProbe(),
       camera: this.camera.position.toArray().map((n) => +n.toFixed(3)),
       fov: +this.camera.fov.toFixed(1),
     }

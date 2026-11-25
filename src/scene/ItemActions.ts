@@ -31,6 +31,15 @@ const smooth = (n: number) => { const t = clamp(n); return t * t * (3 - 2 * t) }
 const span = (t: number, a: number, b: number) => smooth((t - a) / (b - a))
 const v = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z)
 
+export function actionEase(value: number, phase: 'pickup' | 'release'): number {
+  const t = clamp(value)
+  return phase === 'pickup' ? 1 - (1 - t) ** 3 : t ** 3
+}
+
+export function gripEnvelope(t: number, start: number, release: number, end: number): number {
+  return span(t, start * 0.55, start) * (1 - span(t, release, release + (end - release) * 0.4))
+}
+
 export function resolveActionAnchor(base: THREE.Vector3, offset: Vec3Tuple, local: boolean, orientation?: THREE.Quaternion): THREE.Vector3 {
   const point = v(...offset)
   if (local && orientation) point.applyQuaternion(orientation)
@@ -259,6 +268,18 @@ export class ItemActions {
     }
     this.active = a
     this.setup(a)
+    if (actor === 'boss' && (item === 'cutter' || item === 'seal')) {
+      const node = item === 'seal' ? a.parts.get('strip')! : a.parts.get('cutter')!
+      a.chosen = true
+      a.choiceMove = {
+        at: 0,
+        duration: item === 'seal' ? 0.62 : 0.42,
+        fromPosition: item === 'seal' ? v(0, 0.26, -0.42) : v(0.3, 0.19, 0.08),
+        fromRotation: item === 'seal' ? new THREE.Euler(0, 0, 0.12) : new THREE.Euler(0, Math.PI / 2, 0.18),
+      }
+      node.position.copy(a.choiceMove.fromPosition)
+      node.rotation.copy(a.choiceMove.fromRotation)
+    }
     this.deps.restHands(false)
     this.deps.focus(root.localToWorld(this.peakFocus(a)), actor, item)
     this.deps.cue(item, 'pickup')
@@ -621,8 +642,10 @@ export class ItemActions {
     const { prop, left, right, item, time: t, target, parts } = a
     const actionSpec = ITEM_ACTION_SPECS[item]
     const motion = this.deps.reducedMotion() ? 0 : 1
-    const take = span(t, 0, actionSpec.timings.start)
-    const out = span(t, actionSpec.timings.release, actionSpec.timings.end)
+    const take = actionEase(t / actionSpec.timings.start, 'pickup')
+    const out = actionEase((t - actionSpec.timings.release) / (actionSpec.timings.end - actionSpec.timings.release), 'release')
+    const grip = gripEnvelope(t, actionSpec.timings.start, actionSpec.timings.release, actionSpec.timings.end)
+    const supportTake = span(t, actionSpec.timings.start * 0.35, actionSpec.timings.start)
     const restR = v(0.43, 0.1, 0.25), restL = v(-0.43, 0.1, 0.25)
     const tool = item === 'cutter' ? parts.get('cutter')! : item === 'monocle' ? parts.get('monocle')! : item === 'saw' ? parts.get('saw')! : prop
     tool.position.lerpVectors(a.from, target, take)
@@ -631,14 +654,16 @@ export class ItemActions {
     let support = target.clone()
     left.root.rotation.set(...actionSpec.leftRotation)
     right.root.rotation.set(...actionSpec.rightRotation)
-    right.grip(take * (1 - out) * actionSpec.rightGrip)
-    left.grip(take * (1 - out) * actionSpec.leftGrip)
+    right.grip(grip * actionSpec.rightGrip)
+    left.grip(grip * actionSpec.leftGrip)
     if (item === 'sedative') {
       left.grip(span(t, 1.1, 1.4) * (1 - span(t, 2.9, 3.5)) * 0.7)
       // 针筒横在左前臂上方，针尖朝腕部；推药时只有活塞向后走
       tool.rotation.set(0.08, Math.PI / 2, Math.PI / 2)
       const insert = span(t, 0.85, 1.25)
+      const seat = span(t, 1.18, 1.3) * (1 - span(t, 1.3, 1.48))
       tool.position.copy(v(-0.23, 0.53, -0.02)).lerp(v(-0.23, 0.47, -0.02), insert * (1 - span(t, 2.8, 3.1)))
+      tool.position.x -= seat * 0.008 * motion
       if (t < actionSpec.timings.start) tool.position.lerpVectors(a.from, v(-0.23, 0.53, -0.02), take)
       const pushed = span(t, 1.4, 2.8)
       prop.traverse((obj) => {
@@ -649,6 +674,7 @@ export class ItemActions {
       })
       const cap = parts.get('cap')!
       cap.position.set(-0.3, 0.03 + (1 - span(t, 0.3, 0.8)) * 0.3, -0.08)
+      cap.rotation.z = span(t, 0.2, 0.8) * Math.PI * 1.5
       const dot = parts.get('puncture')!
       dot.visible = t > 2.95; dot.position.set(-0.23, 0.415, -0.02)
     } else if (item === 'dagger') {
@@ -657,7 +683,10 @@ export class ItemActions {
       const draw = span(t, 0.8, 1.35)
       tool.position.set(0.15 - draw * 0.27, 0.34 + Math.sin(draw * Math.PI) * 0.07, -0.16)
       const cuts = span(t, 1.35, 2.55) * (1 - span(t, 2.55, 2.7))
-      tool.position.y -= Math.abs(Math.sin((t - 1.35) * Math.PI * 2.4)) * 0.035 * cuts
+      const slice = Math.sin(clamp((t - 1.35) / 1.2) * Math.PI * 4)
+      tool.position.x -= Math.max(0, slice) * 0.045 * cuts * motion
+      tool.position.y -= Math.abs(slice) * 0.025 * cuts
+      tool.rotation.z -= slice * 0.16 * cuts * motion
       if (t < 0.8) tool.position.lerpVectors(a.from, v(0.15, 0.34, -0.16), take)
       right.root.rotation.set(tool.rotation.x * 0.4, tool.rotation.y, tool.rotation.z * 0.5)
       const drop = parts.get('blood')!
@@ -665,14 +694,17 @@ export class ItemActions {
       drop.position.set(-0.2, 0.275 * (1 - span(t, 1.4, 1.85)) + 0.006, -0.18)
       drop.scale.set(1, t > 1.85 ? 0.35 : 1, 1)
     } else if (item === 'magnifier') {
-      tool.rotation.set(0, Math.PI + 0.18, -0.08)
-      tool.position.y += Math.sin(t * 4) * 0.008 * motion * (1 - out)
+      const inspect = span(t, 0.9, 2.6) * (1 - out)
+      tool.rotation.set(0, Math.PI + 0.18, -0.08 + Math.sin(t * 2.2) * 0.035 * motion * inspect)
+      tool.position.x += Math.sin((t - 0.9) * 2.1) * 0.032 * motion * inspect
+      tool.position.y += Math.sin(t * 4) * 0.008 * motion * inspect
     } else if (item === 'monocle') {
       const lift = span(t, 0.55, 1.05)
       const inspect = span(t, 1, 2.5) * (1 - out)
-      tool.position.set(0.02, 0.42 + lift * 0.15 + Math.sin(t * 3) * 0.006 * motion * inspect, 0.1)
+      const scan = Math.sin((t - 1) * 2.1) * motion * inspect
+      tool.position.set(0.02 + scan * 0.018, 0.42 + lift * 0.15 + Math.sin(t * 3) * 0.006 * motion * inspect, 0.1)
       if (t < actionSpec.timings.start) tool.position.lerpVectors(a.from, v(0.02, 0.57, 0.1), take)
-      tool.rotation.set(-0.2, 0.12, Math.sin(t * 2) * 0.06 * motion * inspect)
+      tool.rotation.set(-0.2, 0.12 + scan * 0.09, scan * 0.07)
       const glint = parts.get('glint')!
       const shine = span(t, 1.25, 1.45) * (1 - span(t, 1.75, 1.95))
       glint.visible = shine > 0.01
@@ -680,14 +712,16 @@ export class ItemActions {
       glint.position.x = -0.025 + span(t, 1.25, 1.95) * 0.05
       glint.rotation.z = span(t, 1.25, 1.95) * 0.5
     } else if (item === 'saw') {
-      tool.rotation.set(0, 0, 0)
       const stroke = t > 0.7 && t < 2.6 ? Math.sin((t - actionSpec.timings.start) * Math.PI * 3.2) : 0
-      tool.position.copy(target).add(v(stroke * 0.1, -0.015, 0.02))
+      const down = (1 - Math.cos((t - actionSpec.timings.start) * Math.PI * 3.2)) * 0.5
+      tool.rotation.set(0, 0, stroke * 0.035 * motion)
+      tool.position.copy(target).add(v(stroke * 0.1, -0.015 - down * 0.012, 0.02))
       if (t < actionSpec.timings.start) tool.position.lerpVectors(a.from, target.clone().add(v(0, -0.015, 0.02)), take)
       const offcut = parts.get('offcut')!
+      const fall = span(t, 2.6, 3.1)
       offcut.visible = t >= 2.6
-      offcut.position.copy(target).add(v(-0.12 - span(t, 2.6, 3.1) * 0.16, -0.09, 0.02))
-      offcut.rotation.set(0, 0, span(t, 2.6, 3.1) * Math.PI)
+      offcut.position.copy(target).add(v(-0.12 - fall * 0.16, -0.09 - fall * fall * 0.055, 0.02))
+      offcut.rotation.set(0, 0, fall * Math.PI)
     } else if (item === 'hammer') {
       const impact = span(t, 1.05, 1.35)
       tool.position.y += (0.52 * take * (1 - impact)) + Math.sin(span(t, 1.35, 1.8) * Math.PI) * 0.14
@@ -701,18 +735,21 @@ export class ItemActions {
       flash.position.copy(target).add(v(0, -0.065, 0.02))
       flash.scale.setScalar(0.7 + span(t, 1.3, 1.75) * 1.8)
       flashMat.opacity = burst * 0.75
+      left.root.rotation.x += burst * 0.035 * motion
     } else if (item === 'handcuffs') {
       tool.rotation.x = Math.PI / 2 * span(t, 0.7, 1.4)
       tool.rotation.z = Math.sin((t - 1.65) * 9) * 0.025 * motion * span(t, 1.65, 1.9) * (1 - span(t, 2.2, 2.6))
       tool.position.y += (1 - span(t, 0.6, 1.5)) * 0.1
+      tool.position.y -= Math.sin(span(t, 1.45, 1.7) * Math.PI) * 0.012 * motion
       const cuff = prop.getObjectByName('CuffB')
       if (cuff) cuff.rotation.z = (1 - span(t, 1.3, 1.65)) * 1.2
     } else if (item === 'aegis') {
       const raise = span(t, 0.55, 1.35)
       const brace = Math.sin(span(t, 1.35, 1.75) * Math.PI) * 0.035 * motion
-      tool.position.set(0, 0.08 + raise * 0.38 + brace, 0.3 - raise * 0.08)
+      const settle = span(t, 1.35, 1.62) * (1 - span(t, 1.62, 1.9))
+      tool.position.set(0, 0.08 + raise * 0.38 + brace - settle * 0.018, 0.3 - raise * 0.08)
       if (t < actionSpec.timings.start) tool.position.lerpVectors(a.from, v(0, 0.08, 0.3), take)
-      tool.rotation.set(-0.12 * raise, 0, Math.sin(t * 2.2) * 0.025 * motion * raise)
+      tool.rotation.set(-0.12 * raise + brace * 0.6, 0, Math.sin(t * 2.2) * 0.025 * motion * raise)
       tool.position.lerp(v(-0.78, 0.02, -0.2), out)
       const pulse = parts.get('shieldPulse') as THREE.Mesh
       const pulseMat = pulse.material as THREE.MeshBasicMaterial
@@ -723,13 +760,16 @@ export class ItemActions {
       pulse.scale.setScalar(0.85 + span(t, 1.5, 2.2) * 0.65)
       pulseMat.opacity = glow * 0.72
     } else if (item === 'magnet') {
-      const p = span(t, 0.75, 1.95)
       a.moving.forEach((card, i) => {
+        const p = actionEase((t - (i === 0 ? 0.75 : 0.85)) / 1.2, 'pickup')
         card.obj.position.lerpVectors(card.from, card.to, p)
         card.obj.position.y += Math.sin(p * Math.PI) * (i === 0 ? 0.12 : 0.22)
         card.obj.rotation.z = Math.sin(p * Math.PI) * (i === 0 ? 0.12 : -0.12)
       })
-      if (a.moving[0]) tool.position.copy(a.moving[0].obj.position).add(v(0, 0.12, 0.05))
+      const pull = Math.sin(span(t, 0.75, 1.95) * Math.PI)
+      const follow = a.target.clone().add(v(-pull * 0.06, 0.04 + pull * 0.1, 0.05 + pull * 0.08))
+      if (t < actionSpec.timings.start) tool.position.lerpVectors(a.from, follow, take)
+      else tool.position.copy(follow)
       tool.rotation.z = Math.sin(t * 4) * 0.06 * motion * (1 - out)
       const field = parts.get('magnetField')!
       field.visible = t > 0.75 && t < 2.05
@@ -750,10 +790,11 @@ export class ItemActions {
         blade.scale.z = 0.02
         support = restL.clone()
       } else {
-        const position = target.clone().add(v(-0.13 + span(t, 0.9, 1.8) * 0.26, 0.055, 0.04))
-        const rotation = new THREE.Euler(0, Math.PI / 2, 0)
+        const cut = span(t, 0.9, 1.8)
+        const position = target.clone().add(v(-0.13 + cut * 0.26, 0.055, 0.04))
+        const rotation = new THREE.Euler(0, Math.PI / 2, Math.sin(cut * Math.PI) * 0.08 * motion)
         this.moveChosenProp(a, tool, position, rotation)
-        blade.scale.z = Math.max(0.02, 1 - out)
+        blade.scale.z = Math.max(0.02, span(t, 0.35, 0.75) * (1 - out))
         if (t >= 1.8 && a.moving[0]) {
           const c = a.moving[0]
           if (!parts.has('half')) {
@@ -787,7 +828,7 @@ export class ItemActions {
       const press = span(t, 1.98, 2.1) * (1 - span(t, 2.2, 2.45))
       signature.visible = signed > 0.01
       signature.scale.x = Math.max(0.01, signed)
-      const penWrite = paper.position.clone().add(v(-0.055 + sign * 0.12, 0.025 + (1 - sign) * 0.12, 0.07))
+      const penWrite = paper.position.clone().add(v(-0.055 + sign * 0.12, 0.025 + (1 - sign) * 0.12 - Math.abs(Math.sin(t * 18)) * 0.003 * motion * sign, 0.07))
       const penRest = paper.position.clone().add(v(-0.22, 0.018, 0.14))
       pen.position.lerpVectors(penWrite, penRest, putPen)
       pen.rotation.set(0.35, 0, -0.5 + Math.sin(t * 18) * 0.06 * motion * sign * (1 - putPen))
@@ -824,9 +865,10 @@ export class ItemActions {
       wax.visible = t > 1.72
       wax.position.copy(strip.position).add(v(0, 0.009, 0))
       const waxPop = span(t, 1.72, 1.9)
-      wax.scale.set(Math.max(0.01, waxPop), 1, Math.max(0.01, waxPop))
+      const waxPress = span(t, 1.72, 1.86) * (1 - span(t, 1.86, 2.05))
+      wax.scale.set(Math.max(0.01, waxPop), 1 - waxPress * 0.22, Math.max(0.01, waxPop))
     } else if (item === 'hourglass') {
-      const flip = span(t, 0.7, 1.65)
+      const flip = actionEase((t - 0.7) / 0.95, 'pickup')
       const lift = span(t, 0.55, 1.1)
       tool.rotation.set(-0.12, 0, Math.PI / 2 + flip * Math.PI)
       tool.position.set(0.04, 0.25 + lift * 0.12 + Math.sin(lift * Math.PI) * 0.025 * motion, 0.12)
@@ -853,8 +895,8 @@ export class ItemActions {
     a.leftAnchor.copy(support)
     right.root.position.copy(a.rightAnchor)
     right.root.position.lerp(restR, out)
-    if (t < actionSpec.timings.start && !['sedative', 'dagger'].includes(item)) right.root.position.lerpVectors(restR, tool.position.clone().add(gripOffset), Math.min(1, take * 2))
-    left.root.position.lerpVectors(restL, support, take * (1 - out))
+    if (t < actionSpec.timings.start && !['sedative', 'dagger'].includes(item)) right.root.position.lerpVectors(restR, a.rightAnchor, take)
+    left.root.position.lerpVectors(restL, support, supportTake * (1 - out))
     right.root.visible = out < 0.995
     left.root.visible = out < 0.995
   }

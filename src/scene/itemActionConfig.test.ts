@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { describe, expect, it } from 'vitest'
 import { ITEM_IDS } from '../game/GameEngine'
 import { ITEM_ACTION_SPECS, itemActionCamera } from './itemActionConfig'
-import { actionEase, gripEnvelope, resolveActionAnchor } from './ItemActions'
+import { actionEase, disposeActionObject, gripEnvelope, resolveActionAnchor } from './ItemActions'
 
 describe('item action config', () => {
   it('为每件道具定义完整且有序的时间轴', () => {
@@ -14,6 +14,24 @@ describe('item action config', () => {
       expect(spec.timings.commit).toBeLessThan(spec.timings.release)
       expect(spec.timings.release).toBeLessThan(spec.timings.end)
     }
+  })
+
+  it('动作销毁共享模板几何时只释放自有几何', () => {
+    const shared = new THREE.BoxGeometry(1, 1, 1)
+    const owned = new THREE.BoxGeometry(1, 1, 1)
+    const material = new THREE.MeshBasicMaterial()
+    const sharedMesh = new THREE.Mesh(shared, material)
+    sharedMesh.userData.sharedGeometry = true
+    const ownedMesh = new THREE.Mesh(owned, material)
+    const root = new THREE.Group()
+    root.add(sharedMesh, ownedMesh)
+    let sharedDisposed = 0
+    let ownedDisposed = 0
+    shared.addEventListener('dispose', () => { sharedDisposed += 1 })
+    owned.addEventListener('dispose', () => { ownedDisposed += 1 })
+    disposeActionObject(root)
+    expect(sharedDisposed).toBe(0)
+    expect(ownedDisposed).toBe(1)
   })
 
   it('拾取与释放使用不同的速度曲线', () => {

@@ -71,12 +71,12 @@ function toFloatGeometry(source: THREE.BufferGeometry): THREE.BufferGeometry {
   if (source.index) geometry.setIndex(source.index.clone())
   return geometry
 }
-function dispose(root: THREE.Object3D): void {
+export function disposeActionObject(root: THREE.Object3D): void {
   const geometries = new Set<THREE.BufferGeometry>()
   const materials = new Set<THREE.Material>()
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
-    geometries.add(obj.geometry)
+    if (!obj.userData.sharedGeometry) geometries.add(obj.geometry)
     for (const mat of Array.isArray(obj.material) ? obj.material : [obj.material]) materials.add(mat)
   })
   root.removeFromParent()
@@ -602,7 +602,7 @@ export class ItemActions {
       const policy = ITEM_ACTION_SPECS[r.item].remnant
       const expired = r.level !== snapshot.levelIndex || snapshot.phase === 'reloading' || snapshot.phase === 'idle' ||
         (policy === 'shield' ? view.shield === 0 : policy === 'cuffs' ? !foe.skipTurn : policy === 'hourglass' ? !snapshot.hourglassActive : r.round !== snapshot.round)
-      if (expired) { dispose(r.root); this.remnants.splice(i, 1) }
+      if (expired) { disposeActionObject(r.root); this.remnants.splice(i, 1) }
     }
   }
   update(dt: number): void {
@@ -655,7 +655,7 @@ export class ItemActions {
     left.root.rotation.set(...actionSpec.leftRotation)
     right.root.rotation.set(...actionSpec.rightRotation)
     right.grip(grip * actionSpec.rightGrip)
-    left.grip(grip * actionSpec.leftGrip)
+    if (item !== 'sedative' && item !== 'dagger') left.grip(grip * actionSpec.leftGrip)
     if (item === 'sedative') {
       left.grip(span(t, 1.1, 1.4) * (1 - span(t, 2.9, 3.5)) * 0.7)
       // 针筒横在左前臂上方，针尖朝腕部；推药时只有活塞向后走
@@ -903,18 +903,18 @@ export class ItemActions {
   private finish(a: ActiveAction): void {
     for (const card of a.moving) card.original.visible = true
     a.left.root.removeFromParent(); a.right.root.removeFromParent()
-    dispose(a.left.root); dispose(a.right.root)
+    disposeActionObject(a.left.root); disposeActionObject(a.right.root)
     if (a.cancelled) {
-      dispose(a.root)
+      disposeActionObject(a.root)
     } else {
-      if (a.item === 'magnet') for (const card of a.moving) dispose(card.obj)
+      if (a.item === 'magnet') for (const card of a.moving) disposeActionObject(card.obj)
       if (a.item === 'handcuffs') {
         const wrist = a.parts.get('targetWrist')
-        if (wrist) dispose(wrist)
+        if (wrist) disposeActionObject(wrist)
       }
       if (a.item === 'sedative') {
         const puncture = a.parts.get('puncture')
-        if (puncture) dispose(puncture)
+        if (puncture) disposeActionObject(puncture)
       }
       a.root.name = `Used-${a.actor}-${a.item}`
       this.remnants.push({ root: a.root, item: a.item, actor: a.actor, round: a.snapshot.round, level: a.snapshot.levelIndex })
@@ -938,14 +938,14 @@ export class ItemActions {
     if (!a) return
     this.active = null
     for (const card of a.moving) card.original.visible = true
-    dispose(a.root)
+    disposeActionObject(a.root)
     this.deps.status(null)
     this.deps.restHands(true)
     a.resolve()
   }
   dispose(): void {
     this.cancel()
-    for (const r of this.remnants) dispose(r.root)
+    for (const r of this.remnants) disposeActionObject(r.root)
     this.remnants.length = 0
   }
 }

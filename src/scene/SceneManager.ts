@@ -49,6 +49,7 @@ export interface SceneLoadProgress {
 }
 
 export type TableAction = 'hit' | 'stand'
+export interface TableActionRect { left: number; top: number; right: number; bottom: number }
 
 interface ActionButton {
   readonly root: THREE.Group
@@ -698,6 +699,7 @@ export class SceneManager {
   private readonly dealingCards = new WeakSet<CardEntry>()
   private readonly items = new Map<string, ItemEntry>()
   private readonly actionButtons = new Map<TableAction, ActionButton>()
+  private sceneDebugFacade: { canUseTableActions: () => boolean; getTableActionLayout: () => Record<TableAction, TableActionRect> } | null = null
   private actionHovered: TableAction | null = null
   private actionPressed: TableAction | null = null
   private tableActionsAllowed = false
@@ -711,8 +713,9 @@ export class SceneManager {
   private supplyTrays: { player: SupplyTrayView; boss: SupplyTrayView } | null = null
   private supplyHovered: ItemEntry | null = null
   private bulletTray: BulletTrayView | null = null
-  private readonly disposableGeometries = new Set<THREE.BufferGeometry>()
-  private readonly disposableMaterials = new Set<THREE.Material>()
+  // 动态资源释放后不能仍被强引用；这里只做弱追踪，真正销毁由 disposeObject 负责。
+  private readonly disposableGeometries = new WeakSet<THREE.BufferGeometry>()
+  private readonly disposableMaterials = new WeakSet<THREE.Material>()
   private readonly raycaster = new THREE.Raycaster()
   private readonly pointer = new THREE.Vector2()
   private readonly listenerCleanup: Array<() => void> = []
@@ -1064,7 +1067,15 @@ export class SceneManager {
     // 命中闪光同样预建：每次命中加/拆点光都会让全场景材质重编译，枪响当帧卡一下
     this.impactLight = new THREE.PointLight(0xff2a14, 0, 4.5, 2)
     this.scene.add(this.impactLight)
-    ;(window as unknown as { __scene?: unknown }).__scene = this
+    const debugHost = window as unknown as { __scene?: unknown }
+    if (import.meta.env.DEV) debugHost.__scene = this
+    else {
+      this.sceneDebugFacade = {
+        canUseTableActions: () => this.canUseTableActions(),
+        getTableActionLayout: () => this.tableActionLayout(),
+      }
+      debugHost.__scene = this.sceneDebugFacade
+    }
 
     this.buildRoom()
     this.buildTable()
@@ -2480,6 +2491,8 @@ export class SceneManager {
         else material.dispose()
       }
     })
+    const debugHost = window as unknown as { __scene?: unknown }
+    if (debugHost.__scene === this || debugHost.__scene === this.sceneDebugFacade) delete debugHost.__scene
     this.textures.dispose()
     for (const plate of this.scorePlates.values()) plate.texture.dispose()
     for (const button of this.actionButtons.values()) button.texture.dispose()
@@ -3119,7 +3132,8 @@ export class SceneManager {
     if (this.disposed) return
     this.rafId = requestAnimationFrame(this.tick)
     this.timer.update()
-    const dt = Math.min(this.timer.getDelta(), 1 / 20)
+    const rawDt = this.timer.getDelta()
+    const dt = Math.min(rawDt, 1 / 20)
     this.elapsed += dt
     this.updateTweens(dt)
     this.updateLighting()
@@ -3140,7 +3154,7 @@ export class SceneManager {
     this.updateCamera(dt)
     this.updateActionButtons(dt)
     this.composer.render(dt)
-    this.sampleStats(dt)
+    this.sampleStats(rawDt)
     if (devStatsEnabled) this.renderer.info.reset()
   }
 
@@ -4399,6 +4413,28 @@ export class SceneManager {
     return this.tableActionsAllowed && this.shot === 'table' && this.cameraBlend >= 1 &&
       !this.isBloodCloseupActive() && snapshot?.phase === 'playerTurn' &&
       !snapshot.paused && !snapshot.inputLocked && !snapshot.player.skipTurn && !snapshot.cardChoice
+  }
+
+  tableActionLayout(): Record<TableAction, TableActionRect> {
+    const rect = this.canvas.getBoundingClientRect()
+    const layout = {} as Record<TableAction, TableActionRect>
+    for (const [action, button] of this.actionButtons) {
+      button.root.updateWorldMatrix(true, true)
+      let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity
+      for (const x of [-0.32, 0.32]) {
+        for (const y of [-0.045, 0.1025]) {
+          for (const z of [-0.22, 0.22]) {
+            const ndc = new THREE.Vector3(x, y, z).applyMatrix4(button.root.matrixWorld).project(this.camera)
+            const sx = rect.left + (ndc.x + 1) * 0.5 * rect.width
+            const sy = rect.top + (1 - ndc.y) * 0.5 * rect.height
+            left = Math.min(left, sx); right = Math.max(right, sx)
+            top = Math.min(top, sy); bottom = Math.max(bottom, sy)
+          }
+        }
+      }
+      layout[action] = { left, top, right, bottom }
+    }
+    return layout
   }
 
   activateTableAction(action: TableAction): boolean {
@@ -6389,6 +6425,9 @@ export class SceneManager {
     if (template) {
       const clone = template.clone(true)
       clone.userData.isModelClone = true
+      clone.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) obj.userData.sharedGeometry = true
+      })
       this.normalizeItemModel(clone, upright)
       content.add(clone)
     } else {
@@ -7596,7 +7635,7 @@ export class SceneManager {
   private disposeObject(object: THREE.Object3D): void {
     object.traverse((child) => {
       if (child instanceof THREE.Mesh || child instanceof THREE.Points || child instanceof THREE.Sprite) {
-        child.geometry.dispose()
+        if (!child.userData.sharedGeometry) child.geometry.dispose()
         const material = child.material
         if (Array.isArray(material)) material.forEach((entry) => entry.dispose())
         else material.dispose()
@@ -7605,7 +7644,7 @@ export class SceneManager {
   }
 }
 
-function brassMaterial(registry: Set<THREE.Material>): THREE.MeshStandardMaterial {
+function brassMaterial(registry: WeakSet<THREE.Material>): THREE.MeshStandardMaterial {
   const material = makeStandardMaterial(0xb08a45, 0.9, 0.3)
   registry.add(material)
   return material

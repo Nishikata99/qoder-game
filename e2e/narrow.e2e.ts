@@ -137,50 +137,15 @@ for (const vp of VIEWPORTS) {
       )
 
       const keyRects = await page.evaluate(() => {
-        interface Vec {
-          clone(): Vec
-          set(x: number, y: number, z: number): Vec
-          applyMatrix4(matrix: unknown): Vec
-          project(camera: unknown): { x: number; y: number }
-        }
-        interface Root {
-          updateWorldMatrix(updateParents: boolean, updateChildren: boolean): void
-          position: Vec
-          matrixWorld: unknown
-        }
-        const scene = (
-          window as unknown as {
-            __scene: {
-              getCamera(): unknown
-              actionButtons: Map<string, { root: Root }>
-            }
-          }
-        ).__scene
-        const cam = scene.getCamera()
-        return [...scene.actionButtons].map(([action, button]) => {
-          const root = button.root
-          root.updateWorldMatrix(true, true)
-          let left = Infinity
-          let right = -Infinity
-          let top = Infinity
-          let bottom = -Infinity
-          for (const sx of [-0.32, 0.32]) {
-            for (const sy of [-0.045, 0.1025]) {
-              for (const sz of [-0.22, 0.22]) {
-                const v = root.position.clone().set(sx, sy, sz)
-                v.applyMatrix4(root.matrixWorld)
-                const p = v.project(cam)
-                const x = ((p.x + 1) * window.innerWidth) / 2
-                const y = ((1 - p.y) * window.innerHeight) / 2
-                left = Math.min(left, x)
-                right = Math.max(right, x)
-                top = Math.min(top, y)
-                bottom = Math.max(bottom, y)
-              }
-            }
-          }
-          return { action, left, right, top, bottom, cx: (left + right) / 2, cy: (top + bottom) / 2 }
-        })
+        const scene = (window as unknown as {
+          __scene: { getTableActionLayout(): Record<string, { left: number; right: number; top: number; bottom: number }> }
+        }).__scene
+        return Object.entries(scene.getTableActionLayout()).map(([action, rect]) => ({
+          action,
+          ...rect,
+          cx: (rect.left + rect.right) / 2,
+          cy: (rect.top + rect.bottom) / 2,
+        }))
       })
       expect(keyRects.map((key) => key.action).sort()).toEqual(['hit', 'stand'])
 

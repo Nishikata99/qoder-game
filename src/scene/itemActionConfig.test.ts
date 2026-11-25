@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { describe, expect, it } from 'vitest'
 import { ITEM_IDS } from '../game/GameEngine'
 import { ITEM_ACTION_SPECS, itemActionCamera } from './itemActionConfig'
-import { resolveActionAnchor } from './ItemActions'
+import { actionEase, gripEnvelope, resolveActionAnchor } from './ItemActions'
 
 describe('item action config', () => {
   it('为每件道具定义完整且有序的时间轴', () => {
@@ -14,6 +14,20 @@ describe('item action config', () => {
       expect(spec.timings.commit).toBeLessThan(spec.timings.release)
       expect(spec.timings.release).toBeLessThan(spec.timings.end)
     }
+  })
+
+  it('拾取与释放使用不同的速度曲线', () => {
+    expect(actionEase(0, 'pickup')).toBe(0)
+    expect(actionEase(1, 'pickup')).toBe(1)
+    expect(actionEase(0.5, 'pickup')).toBeGreaterThan(0.5)
+    expect(actionEase(0.5, 'release')).toBeLessThan(0.5)
+  })
+
+  it('手指在接近握点时收紧，在撤离前松开', () => {
+    expect(gripEnvelope(0, 0.8, 3.1, 3.6)).toBe(0)
+    expect(gripEnvelope(0.8, 0.8, 3.1, 3.6)).toBe(1)
+    expect(gripEnvelope(3.1, 0.8, 3.1, 3.6)).toBe(1)
+    expect(gripEnvelope(3.6, 0.8, 3.1, 3.6)).toBe(0)
   })
 
   it('沙漏的左手支撑点跟随道具翻转', () => {

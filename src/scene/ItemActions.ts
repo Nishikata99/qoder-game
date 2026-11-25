@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { ActorId, Card, GameEvent, GameSnapshot, ItemId } from '../game/GameEngine'
-import { ITEM_ACTION_SPECS } from './itemActionConfig'
+import { ITEM_ACTION_SPECS, type Vec3Tuple } from './itemActionConfig'
 
 export function isItemPresentationEvent(event: GameEvent): boolean {
   return ['itemUsed', 'chamberRevealed', 'magnetSwap', 'hourglass', 'daggerReshuffle', 'cardCuttered', 'iouSigned', 'cardSealed', 'deckPeeked'].includes(event.type)
@@ -30,6 +30,12 @@ const clamp = (n: number) => THREE.MathUtils.clamp(n, 0, 1)
 const smooth = (n: number) => { const t = clamp(n); return t * t * (3 - 2 * t) }
 const span = (t: number, a: number, b: number) => smooth((t - a) / (b - a))
 const v = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z)
+
+export function resolveActionAnchor(base: THREE.Vector3, offset: Vec3Tuple, local: boolean, orientation?: THREE.Quaternion): THREE.Vector3 {
+  const point = v(...offset)
+  if (local && orientation) point.applyQuaternion(orientation)
+  return base.clone().add(point)
+}
 
 function material(color: number, metalness = 0, roughness?: number): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({ color, roughness: roughness ?? (metalness ? 0.5 : 1), metalness })
@@ -159,10 +165,17 @@ class ActionHand {
 
 interface Remnant { root: THREE.Object3D; item: ItemId; actor: ActorId; round: number; level: number }
 interface MovingCard { obj: THREE.Mesh; from: THREE.Vector3; to: THREE.Vector3; original: THREE.Mesh }
+interface ChoiceMove {
+  readonly at: number
+  readonly duration: number
+  readonly fromPosition: THREE.Vector3
+  readonly fromRotation: THREE.Euler
+}
 interface ActiveAction {
   item: ItemId; actor: ActorId; snapshot: GameSnapshot; time: number; waiting: boolean; chosen: boolean; cancelled: boolean
   root: THREE.Group; prop: THREE.Group; left: ActionHand; right: ActionHand; target: THREE.Vector3; from: THREE.Vector3
   parts: Map<string, THREE.Object3D>; moving: MovingCard[]; contact: boolean; committed: boolean; resolve: () => void; ready: Promise<void>
+  choiceMove: ChoiceMove | null; leftAnchor: THREE.Vector3; rightAnchor: THREE.Vector3
 }
 
 export class ItemActions {
@@ -181,6 +194,16 @@ export class ItemActions {
   }
   get waiting(): boolean { return this.active?.waiting ?? false }
   get committed(): boolean { return this.active?.committed ?? false }
+  getGripProbe(): { leftError: number; rightError: number; leftAnchor: number[]; rightAnchor: number[] } | null {
+    const a = this.active
+    if (!a) return null
+    return {
+      leftError: +a.left.root.position.distanceTo(a.leftAnchor).toFixed(4),
+      rightError: +a.right.root.position.distanceTo(a.rightAnchor).toFixed(4),
+      leftAnchor: a.leftAnchor.toArray().map((n) => +n.toFixed(3)),
+      rightAnchor: a.rightAnchor.toArray().map((n) => +n.toFixed(3)),
+    }
+  }
   whenReady(): Promise<void> { return this.active?.ready ?? Promise.resolve() }
   getStatus(): ItemActionStatus | null {
     const a = this.active
@@ -232,6 +255,7 @@ export class ItemActions {
       actor, item, snapshot: before, root, prop, left, right, from: root.worldToLocal(from.clone()), target: v(...actionSpec.target),
       time: 0, waiting: actor === 'player' && (item === 'cutter' || item === 'seal'), chosen: false, cancelled: false,
       parts: new Map(), moving: [], contact: false, committed: false, resolve, ready,
+      choiceMove: null, leftAnchor: v(0, 0, 0), rightAnchor: v(0, 0, 0),
     }
     this.active = a
     this.setup(a)
@@ -509,6 +533,13 @@ export class ItemActions {
   choose(card: Card): void {
     const a = this.active
     if (!a || !a.waiting) return
+    const node = a.item === 'seal' ? a.parts.get('strip')! : a.parts.get('cutter')!
+    a.choiceMove = {
+      at: a.time,
+      duration: a.item === 'seal' ? 0.62 : 0.42,
+      fromPosition: node.position.clone(),
+      fromRotation: node.rotation.clone(),
+    }
     a.waiting = false; a.chosen = true
     const actor = a.item === 'seal' ? 'boss' : a.actor
     const copy = this.copyCard(a, actor, card)
@@ -570,6 +601,22 @@ export class ItemActions {
     this.deps.status(this.getStatus())
     if (a.time >= actionSpec.end) this.finish(a)
   }
+  private moveChosenProp(a: ActiveAction, node: THREE.Object3D, position: THREE.Vector3, rotation: THREE.Euler): void {
+    const move = a.choiceMove
+    if (!move) {
+      node.position.copy(position)
+      node.rotation.copy(rotation)
+      return
+    }
+    const blend = span(a.time, move.at, move.at + move.duration)
+    node.position.lerpVectors(move.fromPosition, position, blend)
+    node.rotation.set(
+      THREE.MathUtils.lerp(move.fromRotation.x, rotation.x, blend),
+      THREE.MathUtils.lerp(move.fromRotation.y, rotation.y, blend),
+      THREE.MathUtils.lerp(move.fromRotation.z, rotation.z, blend),
+    )
+  }
+
   private pose(a: ActiveAction): void {
     const { prop, left, right, item, time: t, target, parts } = a
     const actionSpec = ITEM_ACTION_SPECS[item]
@@ -703,8 +750,9 @@ export class ItemActions {
         blade.scale.z = 0.02
         support = restL.clone()
       } else {
-        tool.position.copy(target).add(v(-0.13 + span(t, 0.9, 1.8) * 0.26, 0.055, 0.04))
-        tool.rotation.set(0, Math.PI / 2, 0)
+        const position = target.clone().add(v(-0.13 + span(t, 0.9, 1.8) * 0.26, 0.055, 0.04))
+        const rotation = new THREE.Euler(0, Math.PI / 2, 0)
+        this.moveChosenProp(a, tool, position, rotation)
         blade.scale.z = Math.max(0.02, 1 - out)
         if (t >= 1.8 && a.moving[0]) {
           const c = a.moving[0]
@@ -726,42 +774,44 @@ export class ItemActions {
       }
     } else if (item === 'iou') {
       const paper = parts.get('paper')!
-      paper.position.copy(target).add(v(0, 0, -span(t, 2.1, 2.6) * 0.12))
+      const paperFrom = a.from.clone().add(v(0, 0.05, 0))
+      paper.position.lerpVectors(paperFrom, target, span(t, 0, actionSpec.timings.start))
+      paper.position.z -= span(t, 2.1, 2.6) * 0.12
       const pen = parts.get('pen')!
       const stampTool = parts.get('stampTool')!
       const signature = parts.get('signature')!
       const sign = span(t, 1.05, 1.55)
       const signed = span(t, 1.15, 1.7)
-      const lift = span(t, 1.8, 2.15)
-      const press = span(t, 1.9, 2.08) * (1 - span(t, 2.2, 2.45))
+      const putPen = span(t, 1.62, 1.82)
+      const stampTake = span(t, 1.78, 2)
+      const press = span(t, 1.98, 2.1) * (1 - span(t, 2.2, 2.45))
       signature.visible = signed > 0.01
       signature.scale.x = Math.max(0.01, signed)
-      if (t < 1.82) {
-        tool.position.copy(paper.position).add(v(-0.055 + sign * 0.12, 0.025 + (1 - sign) * 0.12 + lift * 0.14, 0.07))
-        pen.visible = out < 0.8
-        pen.position.copy(tool.position)
-        pen.rotation.set(0.35, 0, -0.5 + Math.sin(t * 18) * 0.06 * motion * sign * (1 - lift))
-        gripOffset.set(0, 0.07, 0).applyQuaternion(pen.quaternion)
-        stampTool.visible = false
-      } else {
-        pen.visible = false
-        stampTool.visible = out < 0.8
-        tool.position.copy(paper.position).add(v(0.04, 0.012 + (1 - press) * 0.15, 0.12))
-        stampTool.position.copy(tool.position)
-        stampTool.rotation.set(0, 0, Math.sin(t * 10) * 0.025 * motion * (1 - press))
-        gripOffset.set(0, 0.045, 0)
-      }
+      const penWrite = paper.position.clone().add(v(-0.055 + sign * 0.12, 0.025 + (1 - sign) * 0.12, 0.07))
+      const penRest = paper.position.clone().add(v(-0.22, 0.018, 0.14))
+      pen.position.lerpVectors(penWrite, penRest, putPen)
+      pen.rotation.set(0.35, 0, -0.5 + Math.sin(t * 18) * 0.06 * motion * sign * (1 - putPen))
+      const stampReady = paper.position.clone().add(v(0.24, 0.018, 0.14))
+      const stampPress = paper.position.clone().add(v(0.04, 0.012, 0.12))
+      const stampPosition = stampReady.lerp(stampPress.add(v(0, (1 - press) * 0.15, 0)), stampTake)
+      stampTool.visible = t >= 1.74 && out < 0.8
+      stampTool.position.copy(stampPosition)
+      stampTool.rotation.set(0, 0, Math.sin(t * 10) * 0.025 * motion * (1 - press))
+      tool.position.copy(pen.position).lerp(stampPosition, stampTake)
+      const penGrip = v(0, 0.07, 0).applyQuaternion(pen.quaternion)
+      gripOffset.copy(penGrip).lerp(v(0, 0.045, 0), stampTake)
       const stamp = parts.get('stamp')!
-      stamp.visible = t > 1.98; stamp.position.copy(paper.position).add(v(0.04, 0.004, 0.12))
-      const stampPop = span(t, 1.98, 2.12)
+      stamp.visible = t > 2.02; stamp.position.copy(paper.position).add(v(0.04, 0.004, 0.12))
+      const stampPop = span(t, 2.02, 2.14)
       stamp.scale.set(0.65 * Math.max(0.01, stampPop), 0.65 * Math.max(0.01, stampPop), 1)
     } else if (item === 'seal') {
       tool.visible = false
       const strip = parts.get('strip')!
       const place = span(t, 0.75, 1.2)
-      strip.position.copy(target).add(v(0, (1 - place) * 0.18, 0))
-      strip.rotation.z = 0.12 * (1 - place)
-      if (!a.chosen) strip.position.set(0, 0.22, -0.12)
+      const position = target.clone().add(v(0, (1 - place) * 0.18, 0))
+      const rotation = new THREE.Euler(0, 0, 0.12 * (1 - place))
+      if (!a.chosen) strip.position.set(0, 0.26, -0.42)
+      else this.moveChosenProp(a, strip, position, rotation)
       const press = span(t, 1.55, 1.78) * (1 - span(t, 2.0, 2.25))
       if (t < 1.55) {
         tool.position.copy(strip.position).add(v(0, 0.035, 0))
@@ -793,13 +843,15 @@ export class ItemActions {
     if (item === 'cutter' && (a.waiting || a.cancelled)) {
       support = restL.clone()
     } else {
-      const supportNode = actionSpec.support.from === 'tool' ? tool.position
-        : actionSpec.support.from === 'paper' ? parts.get('paper')!.position
-        : actionSpec.support.from === 'strip' ? parts.get('strip')!.position
-        : target
-      support = supportNode.clone().add(v(...actionSpec.support.offset))
+      const supportNode = actionSpec.support.from === 'tool' ? tool
+        : actionSpec.support.from === 'paper' ? parts.get('paper')!
+        : actionSpec.support.from === 'strip' ? parts.get('strip')!
+        : null
+      support = resolveActionAnchor(supportNode?.position ?? target, actionSpec.support.offset, actionSpec.support.local === true, supportNode?.quaternion)
     }
-    right.root.position.copy(tool.position).add(gripOffset)
+    a.rightAnchor.copy(tool.position).add(gripOffset)
+    a.leftAnchor.copy(support)
+    right.root.position.copy(a.rightAnchor)
     right.root.position.lerp(restR, out)
     if (t < actionSpec.timings.start && !['sedative', 'dagger'].includes(item)) right.root.position.lerpVectors(restR, tool.position.clone().add(gripOffset), Math.min(1, take * 2))
     left.root.position.lerpVectors(restL, support, take * (1 - out))

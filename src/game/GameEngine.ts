@@ -679,6 +679,7 @@ export class GameEngine {
   private itemPresentationGate: (() => Promise<void>) | null = null
   private itemPresentationPending = false
   private itemPresentationFinished = false
+  private itemPresentationSnapshot: GameSnapshot | null = null
   private itemEvents: GameEvent[] | null = null
   private deferredItemEvents: GameEvent[] = []
   private runRounds = 0
@@ -832,7 +833,10 @@ export class GameEngine {
       return this.reject('本回合的道具已经用尽。')
     }
     if (!this.applyItem(this.player, item)) return false
-    if (this.resolveDeaths()) return true
+    if (this.resolveDeaths()) {
+      this.itemPresentationSnapshot = null
+      return true
+    }
     if (this.itemPresentationGate) {
       this.clearInputDelay()
       this.itemPresentationPending = true
@@ -1160,7 +1164,10 @@ export class GameEngine {
       await this.wait(Math.max(180, think * 0.6))
       if (!this.alive(token) || this.phase !== 'bossTurn') return
       if (!this.applyItem(this.boss, item)) break
-      if (this.resolveDeaths()) return
+      if (this.resolveDeaths()) {
+        this.itemPresentationSnapshot = null
+        return
+      }
       if (this.itemPresentationGate) await this.itemPresentationGate()
       if (!this.alive(token) || this.phase !== 'bossTurn') return
       this.releaseDeferredItemEvents()
@@ -1269,6 +1276,9 @@ export class GameEngine {
     if (this.pendingShot !== 'player') {
       return this.reject('枪在它手里。')
     }
+    if (this.inputLocked || this.cardChoice || this.itemPresentationPending) {
+      return this.reject('道具动作或选牌还没结束。')
+    }
     void this.resolveShot(this.player, target === 'player' ? this.player : this.boss, this.generation)
     return true
   }
@@ -1281,6 +1291,18 @@ export class GameEngine {
   /** 动作收尾前不允许再次行动，也不允许把未完成的结果提前交给 UI */
   get hasPendingItemAction(): boolean {
     return this.itemPresentationPending
+  }
+
+  getItemPresentationSnapshot(): GameSnapshot {
+    const current = this.getSnapshot()
+    const before = this.itemPresentationSnapshot
+    if (!before) return current
+    return {
+      ...before,
+      inputLocked: true,
+      cardChoice: current.cardChoice,
+      paused: current.paused,
+    }
   }
 
   setItemPresentationGate(gate: (() => Promise<void>) | null): void {
@@ -1535,6 +1557,7 @@ export class GameEngine {
   }
 
   private applyItem(actor: ActorRuntime, item: ItemId): boolean {
+    const before = this.getSnapshot()
     this.itemEvents = []
     let success = false
     let events: GameEvent[] = []
@@ -1546,6 +1569,7 @@ export class GameEngine {
     }
     // 读数、换牌、重洗等结果要等动作演到接触点再发，否则会出现「手还没碰到枪，镜头已经特写」
     const used = events.find((event) => event.type === 'itemUsed')
+    if (success && this.itemPresentationGate) this.itemPresentationSnapshot = before
     if (used) this.dispatch(used)
     if (success) {
       this.deferredItemEvents.push(...events.filter((event) => event !== used))
@@ -1557,6 +1581,7 @@ export class GameEngine {
   }
 
   private releaseDeferredItemEvents(): void {
+    this.itemPresentationSnapshot = null
     if (this.deferredItemEvents.length === 0) return
     const events = this.deferredItemEvents
     this.deferredItemEvents = []
@@ -2153,6 +2178,7 @@ export class GameEngine {
     this.inputLocked = false
     this.itemPresentationPending = false
     this.itemPresentationFinished = false
+    this.itemPresentationSnapshot = null
     this.deferredItemEvents = []
     this.cardChoice = null
     this.cardChoiceResolver = null

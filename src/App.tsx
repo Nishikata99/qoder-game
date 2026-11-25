@@ -251,7 +251,8 @@ export default function App() {
   const [game] = useState(
     () => new GameEngine({ dealDelayMs: 340, thinkDelayMs: 800, rng: resolveRng() }),
   )
-  const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null)
+  const [snapshot, setSnapshot] = useState<GameSnapshot | null>(() => game.getItemPresentationSnapshot())
+  const [sceneSnapshot, setSceneSnapshot] = useState<GameSnapshot | null>(() => game.getSnapshot())
   const snapshotRef = useRef<GameSnapshot | null>(null)
   snapshotRef.current = snapshot
   const [hover, setHover] = useState<ItemHoverPayload | null>(null)
@@ -483,7 +484,7 @@ export default function App() {
         case 'itemUsed':
           break
         case 'magnetSwap':
-          showNotice(`磁铁换牌：你拿到 ${formatCardLabel(event.card)}`)
+          showNotice(`磁铁换牌：${event.actor === 'player' ? '你' : '它'}拿到 ${formatCardLabel(event.card)}`)
           break
         case 'hourglass':
           sound.playHourglass()
@@ -562,7 +563,8 @@ export default function App() {
 
   useEffect(() => {
     return game.subscribe((event, snap) => {
-      setSnapshot(snap)
+      setSnapshot(game.getItemPresentationSnapshot())
+      setSceneSnapshot(snap)
       if (event.type !== 'state') {
         soundHandlerRef.current(event)
         narrativeHandlerRef.current(event)
@@ -1043,7 +1045,7 @@ export default function App() {
         {corridorState === 'done' ? (
           <GameCanvas
             engine={game}
-            snapshot={snapshot}
+            snapshot={sceneSnapshot}
             tableActionsAllowed={canAct && !snapshot?.paused && !narrativeActive && modal === null}
             supplyRevealAllowed={!narrativeActive}
             onTableAction={(action) => {

@@ -1040,6 +1040,63 @@ describe('道具动作演出闸门', () => {
     expect(engine.getSnapshot().inputLocked).toBe(false)
   })
 
+  it('选枪阶段使用道具后，动作结束前不能开枪', async () => {
+    const { engine, probe } = newEngine()
+    const gate: { release: (() => void) | null } = { release: null }
+    engine.setItemPresentationGate(() => new Promise<void>((done) => { gate.release = done }))
+    await toPlayerTurn(engine)
+    setTargeting(probe, [10, 8], [10, 5], 'live')
+    probe.player.items = ['magnifier']
+    expect(engine.useItem('magnifier')).toBe(true)
+    expect(engine.chooseTarget('boss')).toBe(false)
+    expect(engine.getSnapshot().phase).toBe('targeting')
+    gate.release?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(engine.getSnapshot().inputLocked).toBe(false)
+    expect(engine.chooseTarget('boss')).toBe(true)
+  })
+
+  it('HUD 快照在道具演出期间保留接触前读数', async () => {
+    const { engine, probe } = newEngine()
+    const gate: { release: (() => void) | null } = { release: null }
+    engine.setItemPresentationGate(() => new Promise<void>((done) => { gate.release = done }))
+    await toPlayerTurn(engine)
+    probe.player.items = ['magnifier']
+    probe.cylinder.chambers = ['live', 'blank']
+    probe.cylinder.cursor = 0
+    const before = engine.getItemPresentationSnapshot()
+    expect(engine.useItem('magnifier')).toBe(true)
+    expect(engine.getSnapshot().cylinder.revealed).toBe('live')
+    const during = engine.getItemPresentationSnapshot()
+    expect(during.cylinder.revealed).toBe(before.cylinder.revealed)
+    expect(during.inputLocked).toBe(true)
+    expect(during.log).toEqual(before.log)
+    gate.release?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(engine.getItemPresentationSnapshot().cylinder.revealed).toBe('live')
+  })
+
+  it('选牌 UI 在延迟快照中保留，但结果手牌不提前显示', async () => {
+    const { engine, probe } = newEngine()
+    const gate: { release: (() => void) | null } = { release: null }
+    engine.setItemPresentationGate(() => new Promise<void>((done) => { gate.release = done }))
+    await toPlayerTurn(engine)
+    probe.player.items = ['cutter']
+    probe.player.hand = hand(10, 9)
+    expect(engine.useItem('cutter')).toBe(true)
+    const during = engine.getItemPresentationSnapshot()
+    expect(during.cardChoice?.kind).toBe('cutter')
+    expect(during.player.items).toContain('cutter')
+    expect(during.player.hand.total).toBe(19)
+    expect(engine.getSnapshot().player.items).not.toContain('cutter')
+    expect(engine.resolveCardChoice(0)).toBe(true)
+    expect(engine.getSnapshot().player.hand.total).toBe(9)
+    expect(engine.getItemPresentationSnapshot().player.hand.total).toBe(19)
+    gate.release?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(engine.getItemPresentationSnapshot().player.hand.total).toBe(9)
+  })
+
   it('动作未完成时读数与换牌事件不会提前广播', async () => {
     const { engine, probe } = newEngine()
     const gate: { release: (() => void) | null } = { release: null }

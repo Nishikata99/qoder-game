@@ -383,6 +383,7 @@ export const BOSS_ITEM_POOLS: Readonly<Record<BossPersonality, readonly ItemId[]
 export const MAX_ITEMS = 8
 /** 玩家每回合最多使用 3 件道具；Boss 仍受人格 itemBudget 限制 */
 export const PLAYER_ITEM_CAP = 3
+const TARGETING_ITEM_BLOCKLIST: ReadonlySet<ItemId> = new Set(['dagger', 'magnet', 'cutter', 'seal', 'hourglass'])
 const LOG_LIMIT = 80
 const SUPPLY_OPTION_COUNT = 3
 /** 清层横幅先播完，再摆出三选一 */
@@ -668,6 +669,7 @@ export class GameEngine {
   private carryOverBoss: ItemId[] = []
   private readonly listeners = new Set<GameEventListener>()
   private readonly delays = new Set<PausableDelay>()
+  private readonly resumeWaiters = new Set<() => void>()
   private readonly cylinder: Cylinder
 
   private generation = 0
@@ -776,6 +778,7 @@ export class GameEngine {
   }
 
   hit(): boolean {
+    if (this.paused) return this.reject('游戏已暂停。')
     if (this.cardChoice) return this.reject('先选好要裁/要封的牌。')
     if (this.phase !== 'playerTurn') {
       return this.reject('现在不是你的回合。')
@@ -804,6 +807,7 @@ export class GameEngine {
   }
 
   stand(): boolean {
+    if (this.paused) return this.reject('游戏已暂停。')
     if (this.cardChoice) return this.reject('先选好要裁/要封的牌。')
     if (this.phase !== 'playerTurn') {
       return this.reject('现在不是你的回合。')
@@ -820,9 +824,11 @@ export class GameEngine {
   }
 
   useItem(item: ItemId): boolean {
+    if (this.paused) return this.reject('游戏已暂停。')
     if (this.cardChoice) return this.reject('先选好要裁/要封的牌。')
     // 21 点这轮已经分出胜负、你持枪选枪口时，仍然来得及用道具
     const shotWindow = this.phase === 'targeting' && this.pendingShot === 'player'
+    if (shotWindow && TARGETING_ITEM_BLOCKLIST.has(item)) return this.reject('胜负已定，这件道具不能重掷牌局。')
     if (this.phase !== 'playerTurn' && !shotWindow) {
       return this.reject('现在不是使用道具的时机。')
     }
@@ -844,7 +850,9 @@ export class GameEngine {
       this.inputLocked = true
       const token = this.generation
       this.publish()
-      void this.itemPresentationGate().then(() => {
+      void this.itemPresentationGate().then(async () => {
+        if (!this.alive(token)) return
+        await this.waitUntilResumed()
         if (!this.alive(token)) return
         this.releaseDeferredItemEvents()
         this.itemPresentationFinished = true
@@ -876,6 +884,7 @@ export class GameEngine {
 
   /** 层间三选一：只能带走一件，选完才开门 */
   chooseSupply(item: ItemId): boolean {
+    if (this.paused) return this.reject('游戏已暂停。')
     if (this.phase !== 'supply') {
       return this.reject('现在没有可供挑选的补给。')
     }
@@ -890,6 +899,7 @@ export class GameEngine {
 
   /** 裁纸刀/封条的选牌结算：index 对应快照 cardChoice.cards */
   resolveCardChoice(index: number): boolean {
+    if (this.paused) return this.reject('游戏已暂停。')
     const choice = this.cardChoice
     if (!choice) return this.reject('现在没有等待选择的牌。')
     if (!Number.isInteger(index) || index < 0 || index >= choice.cards.length) {
@@ -921,6 +931,7 @@ export class GameEngine {
   }
 
   cancelCardChoice(): boolean {
+    if (this.paused) return this.reject('游戏已暂停。')
     const choice = this.cardChoice
     if (!choice) return false
     this.cardChoice = null
@@ -1169,6 +1180,7 @@ export class GameEngine {
         return
       }
       if (this.itemPresentationGate) await this.itemPresentationGate()
+      await this.waitUntilResumed()
       if (!this.alive(token) || this.phase !== 'bossTurn') return
       this.releaseDeferredItemEvents()
       await this.wait(Math.max(160, think * 0.4))
@@ -1270,6 +1282,7 @@ export class GameEngine {
 
   /** 处决阶段：持枪者选择枪口。只有玩家持枪时才能调用。 */
   chooseTarget(target: ActorId): boolean {
+    if (this.paused) return this.reject('游戏已暂停。')
     if (this.phase !== 'targeting') {
       return this.reject('现在不是决定枪口的时候。')
     }
@@ -1422,6 +1435,8 @@ export class GameEngine {
       await this.presentationGate()
       if (!this.alive(token)) return
     }
+    await this.waitUntilResumed()
+    if (!this.alive(token)) return
     void this.startRound(token)
   }
 
@@ -1823,7 +1838,7 @@ export class GameEngine {
     if (personality === 'gambler') {
       if (has('sedative') && me.hp < me.maxHp) return 'sedative'
       if (has('handcuffs') && !foe.skipTurn && !foe.hand.busted) return 'handcuffs'
-      if (has('magnet') && behind && foe.hand.total >= 8) return 'magnet'
+      if (has('magnet') && behind && !foe.hand.busted && foe.hand.total >= 8) return 'magnet'
       if (canSaw && has('saw') && me.hand.total >= 16 && liveRate >= 0.4) return 'saw'
       if (has('magnifier') && this.revealedBy.boss === null) return 'magnifier'
       return null
@@ -1835,15 +1850,15 @@ export class GameEngine {
       return 'dagger'
     }
     if (has('sedative') && me.hp < me.maxHp) return 'sedative'
-    if (has('aegis') && me.shield === 0 && this.cylinder.current === 'live' && loses) {
+    if (has('aegis') && me.shield === 0 && this.revealedBy.boss === 'live' && this.cylinder.current === 'live' && loses) {
       return 'aegis'
     }
     if (has('handcuffs') && !foe.skipTurn && !foe.hand.busted && foe.hand.total >= 16) {
       return 'handcuffs'
     }
-    if (has('magnet') && behind && foe.hand.total >= 9) return 'magnet'
+    if (has('magnet') && behind && !foe.hand.busted && foe.hand.total >= 9) return 'magnet'
     if (canSaw && has('saw') && me.hand.total >= 17 && !loses && liveRate > 0.5) return 'saw'
-    if (has('hammer') && this.cylinder.current === 'blank' && !loses) return 'hammer'
+    if (has('hammer') && this.revealedBy.boss === 'blank' && this.cylinder.current === 'blank' && !loses) return 'hammer'
     if (has('magnifier') && this.revealedBy.boss === null) return 'magnifier'
     return null
   }
@@ -2113,6 +2128,8 @@ export class GameEngine {
     this.paused = false
     this.finishItemPresentation()
     for (const delay of this.delays) delay.resume()
+    for (const resolve of this.resumeWaiters) resolve()
+    this.resumeWaiters.clear()
     this.publish()
   }
 
@@ -2132,6 +2149,11 @@ export class GameEngine {
   private track(delay: PausableDelay): PausableDelay {
     this.delays.add(delay)
     return delay
+  }
+
+  private waitUntilResumed(): Promise<void> {
+    if (!this.paused) return Promise.resolve()
+    return new Promise<void>((resolve) => this.resumeWaiters.add(resolve))
   }
 
   private wait(ms: number): Promise<void> {
@@ -2182,6 +2204,8 @@ export class GameEngine {
     this.deferredItemEvents = []
     this.cardChoice = null
     this.cardChoiceResolver = null
+    for (const resolve of this.resumeWaiters) resolve()
+    this.resumeWaiters.clear()
     // 取消 supply 等待时也要放行挂起的 offerSupply，否则 Promise 永久悬空
     const supplyFinish = this.supplyResolver
     this.supplyResolver = null

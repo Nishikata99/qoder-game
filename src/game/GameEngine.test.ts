@@ -1126,6 +1126,7 @@ describe('道具动作演出闸门', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(engine.getSnapshot().inputLocked).toBe(true)
     engine.resume()
+    await vi.advanceTimersByTimeAsync(0)
     expect(engine.getSnapshot().inputLocked).toBe(false)
   })
 
@@ -1233,9 +1234,9 @@ describe('Boss 合法道具池', () => {
     { item: 'saw', level: 0, prepare: (probe) => { probe.boss.hand = hand(10, 5); probe.player.hand = hand(10); probe.cylinder.chambers = ['live', 'live', 'live', 'live']; probe.cylinder.cursor = 0 } },
     { item: 'magnet', level: 1, prepare: (probe) => { probe.boss.hand = hand(10); probe.player.hand = hand(10, 8) } },
     { item: 'handcuffs', level: 1, prepare: (probe) => { probe.boss.hand = hand(10); probe.player.hand = hand(10, 8) } },
-    { item: 'aegis', level: 2, prepare: (probe) => { probe.boss.hand = hand(10); probe.player.hand = hand(10, 10); probe.cylinder.chambers = ['live']; probe.cylinder.cursor = 0 } },
+    { item: 'aegis', level: 2, prepare: (probe) => { probe.boss.hand = hand(10); probe.player.hand = hand(10, 10); probe.cylinder.chambers = ['live']; probe.cylinder.cursor = 0; probe.revealedBy.boss = 'live' } },
     { item: 'dagger', level: 2, prepare: (probe) => { probe.boss.hp = 5; probe.boss.hand = hand(10); probe.player.hand = hand(10, 10); probe.cylinder.chambers = ['live', 'live']; probe.cylinder.cursor = 0 } },
-    { item: 'hammer', level: 2, prepare: (probe) => { probe.boss.hand = hand(10, 10); probe.player.hand = hand(10); probe.cylinder.chambers = ['blank']; probe.cylinder.cursor = 0 } },
+    { item: 'hammer', level: 2, prepare: (probe) => { probe.boss.hand = hand(10, 10); probe.player.hand = hand(10); probe.cylinder.chambers = ['blank']; probe.cylinder.cursor = 0; probe.revealedBy.boss = 'blank' } },
   ]
 
   it.each(cases)('$item 在对应人格条件下会被选中', ({ item, level, prepare }) => {
@@ -1245,5 +1246,80 @@ describe('Boss 合法道具池', () => {
     probe.revealedBy = { player: null, boss: null }
     prepare(probe)
     expect(probe.chooseBossItem(new Set())).toBe(item)
+  })
+
+  it('未窥视当前弹膛时不会精准选择护心镜或重锤', () => {
+    const { probe } = newEngine()
+    probe.levelIndex = 2
+    probe.boss.hand = hand(10)
+    probe.player.hand = hand(10, 10)
+    probe.revealedBy = { player: null, boss: null }
+    probe.boss.items = ['aegis']
+    probe.cylinder.chambers = ['live']
+    probe.cylinder.cursor = 0
+    expect(probe.chooseBossItem(new Set())).not.toBe('aegis')
+    probe.boss.items = ['hammer']
+    probe.boss.hand = hand(10, 10)
+    probe.player.hand = hand(10)
+    probe.cylinder.chambers = ['blank']
+    expect(probe.chooseBossItem(new Set())).not.toBe('hammer')
+  })
+})
+
+describe('审计修复回归', () => {
+  it('玩家爆牌后 Boss 不会用磁铁反救', () => {
+    const { probe } = newEngine()
+    probe.levelIndex = 1
+    probe.boss.hand = hand(1, 10)
+    probe.player.hand = hand(10, 10, 5)
+    probe.boss.items = ['magnet']
+    expect(probe.chooseBossItem(new Set())).not.toBe('magnet')
+  })
+
+  it('targeting 禁止重掷牌局类道具', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    setTargeting(probe, [10, 8], [10, 5], 'live')
+    for (const item of ['dagger', 'magnet', 'cutter', 'seal', 'hourglass'] as const) {
+      probe.player.items = [item]
+      expect(engine.useItem(item), item).toBe(false)
+      expect(engine.getSnapshot().phase).toBe('targeting')
+      expect(engine.getSnapshot().player.items).toContain(item)
+    }
+  })
+
+  it('暂停时动作入口和枪口选择都不改变状态', async () => {
+    const { engine, probe } = newEngine({ itemLockMs: 0 })
+    await toPlayerTurn(engine)
+    probe.player.items = ['sedative']
+    probe.player.hp = 5
+    engine.pause()
+    expect(engine.hit()).toBe(false)
+    expect(engine.stand()).toBe(false)
+    expect(engine.useItem('sedative')).toBe(false)
+    expect(engine.getSnapshot().player.hp).toBe(5)
+    setTargeting(probe, [10, 8], [10, 5], 'live')
+    engine.pause()
+    expect(engine.chooseTarget('boss')).toBe(false)
+    expect(engine.getSnapshot().phase).toBe('targeting')
+  })
+
+  it('暂停中放行演出闸门不会偷进下一回合', async () => {
+    const { engine, probe } = newEngine()
+    const gate: { release: (() => void) | null } = { release: null }
+    engine.setPresentationGate(() => new Promise<void>((done) => { gate.release = done }))
+    await toPlayerTurn(engine)
+    setTargeting(probe, [10, 8], [10, 5], 'live')
+    engine.chooseTarget('boss')
+    await vi.advanceTimersByTimeAsync(5300)
+    expect(engine.getSnapshot().phase).toBe('roundEnd')
+    engine.pause()
+    gate.release?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(engine.getSnapshot().paused).toBe(true)
+    expect(engine.getSnapshot().phase).toBe('roundEnd')
+    engine.resume()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(engine.getSnapshot().phase).toBe('dealing')
   })
 })

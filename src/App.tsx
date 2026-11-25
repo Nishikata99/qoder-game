@@ -22,7 +22,9 @@ import type { ActorId, ActorView, Card, GameEvent, GameSnapshot, ItemId } from '
 import {
   GameEngine,
   ITEM_CATALOG,
+  ITEM_IDS,
   LEVELS,
+  MAX_ITEMS,
   PLAYER_ITEM_CAP,
   createSeededRandom,
   evaluateHand,
@@ -142,11 +144,11 @@ function readCheckpoint(): StoredCheckpoint | null {
     if (typeof parsed !== 'object' || parsed === null) return null
     const value = parsed as Record<string, unknown>
     const levelIndex = value.levelIndex
-    if (typeof levelIndex !== 'number' || !Number.isInteger(levelIndex) || levelIndex < 0) return null
+    if (value.v !== 1 || typeof levelIndex !== 'number' || !Number.isInteger(levelIndex) || levelIndex < 0 || levelIndex >= LEVELS.length) return null
     const carryOver = Array.isArray(value.carryOver)
-      ? (value.carryOver.filter((item): item is ItemId => typeof item === 'string'))
+      ? value.carryOver.filter((item): item is ItemId => typeof item === 'string' && ITEM_IDS.includes(item as ItemId)).slice(0, MAX_ITEMS)
       : []
-    const runRounds = typeof value.runRounds === 'number' ? value.runRounds : 0
+    const runRounds = typeof value.runRounds === 'number' && Number.isInteger(value.runRounds) && value.runRounds >= 0 ? value.runRounds : 0
     return { levelIndex, carryOver, runRounds }
   } catch {
     return null

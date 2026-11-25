@@ -61,6 +61,7 @@ export function CorridorIntro({
   const startedRef = useRef(false)
   const startWalkRef = useRef<() => void>(() => {})
   const [ready, setReady] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [started, setStarted] = useState(false)
   const [walking, setWalking] = useState(false)
   const [doorPhase, setDoorPhase] = useState(false)
@@ -82,6 +83,7 @@ export function CorridorIntro({
       sound,
       {
         onReady: () => setReady(true),
+        onLoadError: setLoadError,
         onDoorPhase: () => setDoorPhase(true),
         onWalkLine: setWalkLine,
         onComplete: () => {
@@ -135,6 +137,12 @@ export function CorridorIntro({
   return (
     <div className="absolute inset-0 z-40 bg-black" data-testid="corridor-intro">
       <canvas ref={canvasRef} className="h-full w-full" />
+      {loadError ? (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-black/85 px-6 text-center" role="alert">
+          <p className="font-display text-base tracking-[0.12em] text-bone-200">{loadError}</p>
+          <button type="button" className="metal-btn min-h-11 px-6" onClick={() => sceneRef.current?.retry()}>重试</button>
+        </div>
+      ) : null}
       {subtitle ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-[24vh] flex justify-center px-6">
           <p className="corridor-subtitle max-w-xl text-center font-display text-base tracking-[0.18em] text-bone-200/90">

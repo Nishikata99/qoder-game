@@ -254,6 +254,21 @@ export class SoundEngine {
     wet.gain.value = 0.24
     bodyGain.connect(delay).connect(damp).connect(feedback).connect(delay)
     damp.connect(wet).connect(this.inputNode)
+    const cleanupClock = ctx.createOscillator()
+    const cleanupGain = ctx.createGain()
+    cleanupGain.gain.value = 0
+    cleanupClock.connect(cleanupGain).connect(ctx.destination)
+    cleanupClock.start(t)
+    cleanupClock.stop(t + 1.85)
+    cleanupClock.onended = () => {
+      bodyGain.disconnect()
+      delay.disconnect()
+      damp.disconnect()
+      feedback.disconnect()
+      wet.disconnect()
+      cleanupClock.disconnect()
+      cleanupGain.disconnect()
+    }
 
     this.tone(t, 0.5, 92, 34, 1, 'sine')
 

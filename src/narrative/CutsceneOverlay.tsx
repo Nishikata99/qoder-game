@@ -3,10 +3,7 @@ import type { SoundEngine } from '../audio/SoundEngine'
 import { Cutscene2D, type Playable2D, type PlayableLine } from './Cutscene2D'
 import { EnemyDialogueBox } from './EnemyDialogueBox'
 import { PIXEL_HEIGHT, PIXEL_WIDTH } from './pixelDraw'
-
-const CHAR_MS = 65
-const PAUSE_MS = 260
-const PAUSE_CHARS = '，。、！？…—'
+import { TYPE_CHAR_MS, TYPE_PAUSE_CHARS, TYPE_PAUSE_MS } from './dialogue'
 
 /** 与 NarrativeOverlay 同一套打字节奏，但时钟取自 2D 导演层（暂停即冻结） */
 function TypedLine({
@@ -31,7 +28,7 @@ function TypedLine({
       for (const ch of line.text) {
         if (elapsed < acc) break
         count += 1
-        acc += CHAR_MS + (PAUSE_CHARS.includes(ch) ? PAUSE_MS : 0)
+        acc += TYPE_CHAR_MS + (TYPE_PAUSE_CHARS.includes(ch) ? TYPE_PAUSE_MS : 0)
       }
       el.textContent = elapsed > 0 ? line.text.slice(0, count) : ''
     }
@@ -161,6 +158,7 @@ export function CutsceneOverlay({
       className="absolute inset-0 z-30 flex items-center justify-center bg-black"
       data-testid="cutscene-overlay"
     >
+      <span className="sr-live" aria-live="polite">{line?.text}</span>
       <canvas
         ref={canvasRef}
         className="cutscene-canvas block"

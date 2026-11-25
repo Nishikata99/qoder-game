@@ -374,7 +374,7 @@ export const CUTSCENES: Readonly<Record<number, CutsceneSpec>> = {
     dialogueAnchor: { x: 238, y: 54 },
     lines: [
       { text: '烧剩的账页，一页页摊开。欠的血，都记在上面。', at: 1.9, end: 4.3, channel: 'enemy' },
-      { text: '我伸手按住那页——墨迹还在渗，像没干的血。', at: 5.5, end: 6.8, channel: 'player' },
+      { text: '我伸手按住那页，墨迹还没干。', at: 5.5, end: 6.8, channel: 'player' },
     ],
     cues: [
       { at: 0.05, sfx: 'doorCreak' },

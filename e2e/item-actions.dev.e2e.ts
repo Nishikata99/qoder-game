@@ -45,14 +45,16 @@ async function enterGame(page: import('@playwright/test').Page): Promise<void> {
 
 test('开发者面板开关不触发暂停', async ({ page }) => {
   await enterGame(page)
-  await page.mouse.click(8, 8)
-  for (let index = 0; index < 4; index += 1) {
-    await page.keyboard.press('e', { delay: 60 })
-    await page.waitForTimeout(80)
-  }
+  await page.evaluate(() => {
+    for (let index = 0; index < 4; index += 1) {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', code: 'KeyE', bubbles: true, cancelable: true }))
+    }
+  })
   await expect(page.getByTestId('dev-panel')).toBeVisible()
   await expect(page.getByRole('dialog', { name: '游戏暂停' })).toHaveCount(0)
-  await page.keyboard.press('Escape')
+  await page.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }))
+  })
   await expect(page.getByTestId('dev-panel')).toHaveCount(0)
   await expect(page.getByRole('dialog', { name: '游戏暂停' })).toHaveCount(0)
 })

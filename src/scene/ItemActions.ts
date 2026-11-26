@@ -498,7 +498,7 @@ export class ItemActions {
     }
     if (item === 'iou') {
       prop.visible = false
-      const paper = this.paper('借 据\n\n血债记于此局\n\n立据人：', 0.42, 0.55)
+      const paper = this.paper('借 据\n\n以血为抵\n\n立据人：', 0.42, 0.55)
       add('paper', paper)
       const stamp = mesh(new THREE.CircleGeometry(0.045, 20), material(0x771c18))
       stamp.scale.x = 0.65

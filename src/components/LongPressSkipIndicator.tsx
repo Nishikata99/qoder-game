@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { isDocumentBackgrounded } from '../browserVisibility'
 
 const RADIUS = 20
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS
@@ -70,7 +71,7 @@ export function LongPressSkipIndicator({
       event.preventDefault()
       release()
     }
-    const onVisibility = () => { if (document.hidden) release() }
+    const onVisibility = () => { if (isDocumentBackgrounded()) release() }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
     window.addEventListener('blur', release)

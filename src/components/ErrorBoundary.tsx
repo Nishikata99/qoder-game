@@ -16,7 +16,7 @@ export class ErrorBoundary extends Component<{ readonly children: ReactNode }, {
       return (
         <main className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-abyss-950 px-6 text-center text-bone-200">
           <h1 className="font-display text-2xl">牌桌暂时失去了响应</h1>
-          <p className="max-w-md text-sm text-bone-200/60">游戏遇到了界面错误。刷新页面后会从最近的检查点继续。</p>
+          <p className="max-w-md text-sm text-bone-200/60">刷新页面可重新加载游戏；若已有可用检查点，将从最近保存的层继续。</p>
           <button type="button" className="metal-btn min-h-11 px-6" onClick={() => window.location.reload()}>刷新游戏</button>
         </main>
       )

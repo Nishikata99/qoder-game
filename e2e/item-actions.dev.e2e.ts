@@ -30,21 +30,28 @@ declare global {
 async function enterGame(page: import('@playwright/test').Page): Promise<void> {
   await page.goto('./?seed=12345&skipcutscene=1')
   await page.evaluate(() => {
-    for (const key of ['blood-ante.checkpoint.v1', 'blood-ante.cutsceneSeen.v1', 'blood-ante.guideSeen', 'blood-ante.hint.firstTurn', 'blood-ante.hint.targetPick']) localStorage.removeItem(key)
+    for (const key of ['blood-ante.checkpoint.v1', 'blood-ante.cutsceneSeen.v1', 'blood-ante.hint.firstTurn', 'blood-ante.hint.targetPick']) localStorage.removeItem(key)
   })
   await page.reload()
-  const click = async (name: string) => {
-    const button = page.getByRole('button', { name }).first()
-    if (await button.count()) await button.evaluate((element) => (element as HTMLElement).click())
-  }
-  const guide = page.getByRole('button', { name: '知道了' })
-  if (await guide.count()) await guide.click({ timeout: 2_000 }).catch(() => {})
-  await click('走进走廊')
-  await page.getByRole('button', { name: '左门 · 血色底注' }).waitFor({ timeout: 60_000 })
-  await click('左门 · 血色底注')
+  const start = page.getByRole('button', { name: '走进走廊' })
+  await start.waitFor({ state: 'attached', timeout: 30_000 })
+  await start.evaluate((element) => (element as HTMLElement).click())
+  const leftDoor = page.getByRole('button', { name: '左门 · 开始新局（清除旧检查点）' })
+  await leftDoor.waitFor({ state: 'attached', timeout: 60_000 })
+  await leftDoor.evaluate((element) => (element as HTMLElement).click())
   await page.waitForFunction(() => window.__itemActionDebug?.phase() === 'playerTurn', undefined, { timeout: 180_000 })
   await page.waitForFunction(() => document.querySelector('main')?.getAttribute('data-input-locked') === 'false', undefined, { timeout: 30_000 })
 }
+
+test('开发者面板开关不触发暂停', async ({ page }) => {
+  await enterGame(page)
+  for (let index = 0; index < 4; index += 1) await page.keyboard.press('e')
+  await expect(page.getByTestId('dev-panel')).toBeVisible()
+  await expect(page.getByRole('dialog', { name: '游戏暂停' })).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('dev-panel')).toHaveCount(0)
+  await expect(page.getByRole('dialog', { name: '游戏暂停' })).toHaveCount(0)
+})
 
 test('玩家 13 件道具走真实引擎与演出闸门', async ({ page }) => {
   const errors: string[] = []

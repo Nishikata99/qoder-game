@@ -170,7 +170,7 @@ export function CorridorIntro({
       {doorPhase ? (
         <>
           <button type="button" className="sr-only" onClick={() => sceneRef.current?.chooseDoor('L')}>
-            左门 · 血色底注
+            左门 · 开始新局（清除旧检查点）
           </button>
           <button type="button" className="sr-only" onClick={() => sceneRef.current?.chooseDoor('R')}>
             {resumeLevel !== null ? `右门 · 继续第 ${resumeLevel} 层` : '右门 · 封死'}

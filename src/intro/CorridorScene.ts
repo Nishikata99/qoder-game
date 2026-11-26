@@ -7,6 +7,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import type { SoundEngine } from '../audio/SoundEngine'
 import { TextureFactory } from '../scene/TextureFactory'
+import { isDocumentBackgrounded } from '../browserVisibility'
 
 // 紧张探索步速：10.4m / 11s ≈ 0.95m/s，sine 缓动峰值 ≈1.5m/s
 const WALK_SECONDS = 11
@@ -535,7 +536,7 @@ export class CorridorScene {
   private readonly tick = (ts: number): void => {
     if (this.disposed) return
     this.rafId = requestAnimationFrame(this.tick)
-    if (document.hidden) {
+    if (isDocumentBackgrounded()) {
       this.lastTs = null
       return
     }

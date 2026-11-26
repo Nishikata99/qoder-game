@@ -68,7 +68,7 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
   magnifier: {
     id: 'magnifier',
     name: '放大镜',
-    summary: '窥视当前枪膛内下一发是实弹还是空弹。知道空膛时，开枪阶段可对自己开枪换取道具。',
+    summary: '窥视当前枪膛内下一发是实弹还是空膛。知道空膛时，开枪阶段可对自己开枪换取道具。',
     glyph: '◎',
   },
   sedative: {
@@ -86,7 +86,7 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
   magnet: {
     id: 'magnet',
     name: '磁铁',
-    summary: '强制将你最后一张明牌与对手的明牌互换。',
+    summary: '将你最后一张明牌与对手的明牌互换；互换后，对手底牌也会亮出。',
     glyph: '⊂',
   },
   handcuffs: {
@@ -104,13 +104,13 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
   hourglass: {
     id: 'hourglass',
     name: '逆转沙漏',
-    summary: '本局胜负反转：点数更小者获胜（爆牌依然直接判负）。仅玩家可用。',
+    summary: '本局点数更小者获胜；单方爆牌仍判负，同点或双方爆牌仍僵持。仅玩家可用。',
     glyph: '⧗',
   },
   dagger: {
     id: 'dagger',
     name: '献祭匕首',
-    summary: '自损 1 点生命，立刻清空手牌、重洗牌库并重新装填弹仓。',
+    summary: '自损 1 点生命；双方手牌作废并重新发牌，牌靴重洗，弹仓重新装填。',
     glyph: '†',
   },
   hammer: {
@@ -128,13 +128,13 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
   iou: {
     id: 'iou',
     name: '借据',
-    summary: '本局押上血债：你赢下的实弹伤害 +2，输掉时打向你的实弹 +1。每局只能签一张。',
+    summary: '本局你射向它的实弹 +2；它射来的实弹使你多受 1 点伤害。自射不触发。每局只能签一张。',
     glyph: '▤',
   },
   seal: {
     id: 'seal',
     name: '封条',
-    summary: '先亮出对手底牌，再自选其一张明牌贴住，本局该牌不计点数。每局限一次。',
+    summary: '先亮出对手底牌，再自选其一张明牌贴住，本回合该牌不计点数。每回合限一次。',
     glyph: '⊘',
   },
   monocle: {
@@ -735,7 +735,7 @@ export class GameEngine {
     this.bossSupplyOptions = []
     this.bossSupplyPick = null
     this.logLines = []
-    this.log('你从门缝里退回上一层，血袋重新注满。')
+    this.log(`检查点已载入：第 ${index + 1} 层重新开始，血袋与遗物已重置。`)
     void this.beginLevel(index, this.generation, skipPlayerSupply)
   }
 
@@ -886,10 +886,10 @@ export class GameEngine {
   chooseSupply(item: ItemId): boolean {
     if (this.paused) return this.reject('游戏已暂停。')
     if (this.phase !== 'supply') {
-      return this.reject('现在没有可供挑选的补给。')
+      return this.reject('现在没有可供挑选的遗物。')
     }
     if (!this.supplyOptions.includes(item)) {
-      return this.reject('这件补给不在桌上。')
+      return this.reject('这件遗物不在桌上。')
     }
     if (this.supplyResolver === null) return false
     this.supplyChoice = item
@@ -1031,7 +1031,7 @@ export class GameEngine {
         this.player.items.push(item)
       }
       this.log(
-        `门前的补给还在你身上：${carried.map((item) => `【${ITEM_CATALOG[item].name}】`).join('')}。`,
+        `门前的遗物还在你身上：${carried.map((item) => `【${ITEM_CATALOG[item].name}】`).join('')}。`,
       )
     }
     if (!skipPlayerSupply) this.giveSupply(this.player, level.supply)
@@ -1044,7 +1044,7 @@ export class GameEngine {
         this.boss.items.push(item)
       }
       this.log(
-        `它也把门前的补给带了进来：${carried.map((item) => `【${ITEM_CATALOG[item].name}】`).join('')}。`,
+        `它也把门前的遗物带了进来：${carried.map((item) => `【${ITEM_CATALOG[item].name}】`).join('')}。`,
       )
     }
     const chambers = this.cylinder.reload()
@@ -1456,7 +1456,7 @@ export class GameEngine {
         this.publish()
       } else {
         this.phase = 'levelClear'
-        this.log(`「${this.currentLevel().name}」倒下了。下一层的门正在开启……`)
+        this.log(`「${this.currentLevel().name}」倒下了。门前的遗物即将摆出。`)
         this.dispatch({ type: 'levelClear', level: this.levelIndex + 1 })
         const nextTier = LEVEL_UNLOCKS[this.levelIndex + 1]
         if (nextTier && nextTier.length > 0) {
@@ -1501,8 +1501,8 @@ export class GameEngine {
     this.phase = 'supply'
     this.log(
       options.length >= 3
-        ? '门前的桌上摆着三件补给，你只能带走一件。'
-        : `门前的桌上摆着 ${options.length} 件补给，你只能带走一件。`,
+        ? '门前摆着两件前人留下的遗物，你只能带走一件。'
+        : `门前摆着 ${options.length} 件前人留下的遗物，你只能带走一件。`,
     )
     this.dispatch({ type: 'supplyOffer', options: [...options] })
     this.publish()
@@ -1512,7 +1512,7 @@ export class GameEngine {
     this.supplyOptions = []
     if (picked) {
       this.carryOver.push(picked)
-      this.log(`你把【${ITEM_CATALOG[picked].name}】别在腰间，推开了下一道生锈的铁门。`)
+      this.log(`你收起【${ITEM_CATALOG[picked].name}】，推开了下一道铁门。`)
     }
     if (bossOptions.length > 0) {
       const bossPick = this.pickBossSupply(bossOptions)
@@ -1711,7 +1711,10 @@ export class GameEngine {
       case 'iou': {
         if (actor.iou > 0) return this.reject('借据已经签过了。')
         actor.iou = 1
-        detail = '借据落印：本局你赢下的实弹 +2，输掉时打向你的实弹 +1。'
+        detail =
+          actor.id === 'player'
+            ? '借据落印：本局你射向它的实弹 +2；它射来的实弹使你多受 1 点伤害。自射不触发。'
+            : '它签下借据：本局它射向你的实弹 +2；你射来的实弹使它多受 1 点伤害。自射不触发。'
         this.dispatch({ type: 'iouSigned', actor: actor.id })
         break
       }
@@ -2003,7 +2006,7 @@ export class GameEngine {
     }
     if (drawn.length > 0) {
       this.log(
-        `${actorLabel(actor.id)}获得补给：${drawn.map((item) => `【${ITEM_CATALOG[item].name}】`).join('')}。`,
+        `${actorLabel(actor.id)}获得遗物：${drawn.map((item) => `【${ITEM_CATALOG[item].name}】`).join('')}。`,
       )
     }
   }

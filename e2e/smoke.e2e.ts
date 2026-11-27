@@ -1,10 +1,14 @@
 import { expect, test } from '@playwright/test'
 import type { Locator } from '@playwright/test'
 
-test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => {
+test('首次进入 → 坐下 → 连续停牌 → 扣下扳机', async ({ page }) => {
   // 处决阶段只有约 2.9s，还会被平局重发牌推迟，轮询容易错过；
   // 用 MutationObserver 在页面里锁存，测试结束时再读标记
   await page.addInitScript(() => {
+    localStorage.setItem('blood-ante.narrativeSeen.intro', '1')
+    localStorage.setItem('blood-ante.narrativeSeen.restart', '1')
+    localStorage.setItem('blood-ante.guideSeen', '1')
+    localStorage.setItem('blood-ante.hint.firstTurn', '1')
     const probe = window as unknown as { __fired?: boolean }
     probe.__fired = false
     const check = () => {
@@ -22,7 +26,7 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
     else document.addEventListener('DOMContentLoaded', attach)
   })
 
-  await page.goto('./')
+  await page.goto('./?skipcutscene=1')
 
   // 首次进入的引导卡片可能先遮住开始按钮：出现就关掉，没出现直接开始
   const start = page.getByRole('button', { name: '走进走廊', exact: true })
@@ -56,7 +60,7 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
     page.evaluate(() => Boolean((window as unknown as { __fired?: boolean }).__fired))
 
   // CI 软件渲染比本地慢数倍，轮询预算要留到接近用例总超时
-  const deadline = Date.now() + 300_000
+  const deadline = Date.now() + 420_000
   while (Date.now() < deadline) {
     if (await fired()) break
     if (await fireAtBoss.isVisible().catch(() => false)) {
@@ -64,12 +68,8 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
       await page.waitForTimeout(600)
     } else if ((await stand.count()) > 0 && (await stand.isEnabled().catch(() => false))) {
       await domClick(stand)
-      // 等这一回合确实离开玩家回合，避免下一轮循环重复点击
-      await page
-        .waitForFunction(() => !document.body.textContent?.includes('· 你的行动'), undefined, {
-          timeout: 5_000,
-        })
-        .catch(() => {})
+      // 双轮停牌确认会在 Boss 行动后重新回到玩家回合，下一轮循环继续停牌
+      await page.waitForTimeout(300)
     } else {
       await page.waitForTimeout(300)
     }

@@ -12,17 +12,18 @@ import { VignetteShader } from 'three/addons/shaders/VignetteShader.js'
 import {
   ITEM_CATALOG,
   evaluateHand,
+  type ActionVisualId,
   type ActorId,
   type Card,
   type CardRank,
-  type CardSuit,
   type Chamber,
   type GameSnapshot,
   type ItemId,
+  type TrumpId,
 } from '../game/GameEngine'
 import { TextureFactory } from './TextureFactory'
 import { ItemActions, type ItemActionCue, type ItemActionStatus } from './ItemActions'
-import { itemActionCamera } from './itemActionConfig'
+import { itemActionCamera, BLOOD_ANTE_SLOT } from './itemActionConfig'
 import type { GameEvent } from '../game/GameEngine'
 import { BOSS_POSE_PROFILES, BossPoseController, shouldRespawnBossPose, type BossPoseState } from './BossPose'
 
@@ -35,6 +36,8 @@ export interface ItemHoverPayload {
   readonly y: number
   /** 左侧补给托盘里的候选道具：点击即带走，不属于任何一方的道具栏 */
   readonly supply?: boolean
+  /** 窃贼手套选目标中：点这件道具即偷走并立刻使用 */
+  readonly steal?: boolean
 }
 
 export interface GunHoverPayload {
@@ -63,13 +66,12 @@ export interface SceneCallbacks {
   readonly onTableAction?: (action: TableAction) => boolean
   readonly onItemHover?: (payload: ItemHoverPayload | null) => void
   readonly onItemClick?: (actor: ActorId, item: ItemId) => void
+  readonly onTrumpDeckClick?: () => void
   /** 选枪口阶段：点枪进入选择，再点双方血袋架决定枪口朝向 */
   readonly onTargetPick?: (target: ActorId) => void
   /** 选枪口前悬停枪身：浮窗跟随光标，点枪后才开始选目标 */
   readonly onGunHover?: (payload: GunHoverPayload | null) => void
-  /** 层间补给：点中托盘里的候选道具即选定 */
-  readonly onSupplyPick?: (item: ItemId) => void
-  readonly onItemActionCue?: (item: ItemId, cue: ItemActionCue) => void
+  readonly onItemActionCue?: (item: ActionVisualId, cue: ItemActionCue) => void
   readonly onItemActionStatus?: (status: ItemActionStatus | null) => void
   readonly onItemPresented?: (event: GameEvent) => void
   readonly onItemSnapshot?: (snapshot: GameSnapshot) => void
@@ -128,8 +130,6 @@ export interface ShotPayload {
   readonly damage: number
   readonly hpAfter: number
   readonly sawed: boolean
-  readonly blackjack: boolean
-  readonly blocked: 'shield' | null
 }
 
 interface Tween {
@@ -147,6 +147,14 @@ interface CardEntry {
   cardKey: string
   flip: number
   angle: number
+}
+
+interface TrumpEntry {
+  readonly mesh: THREE.Mesh<THREE.BoxGeometry, THREE.Material[]>
+  readonly actor: ActorId
+  readonly zone: 'hand' | 'table'
+  readonly index: number
+  trump: TrumpId
 }
 
 interface ItemEntry {
@@ -196,7 +204,17 @@ interface BulletTrayView {
   active: boolean
 }
 
-/** 手铐锁链：挂在该侧身上的金属环组，随 skipTurn 出现/消失 */
+/** 程序化弹壳：柱身 + 圆头 + 黄铜底圈，配色由子弹托盘材质决定 */
+interface RoundShellView {
+  readonly root: THREE.Group
+  readonly body: THREE.Mesh
+  readonly tip: THREE.Mesh
+  readonly base: THREE.Mesh
+}
+
+
+
+/** 手铐锁链：挂在该侧身上的金属环组，随 gunCuffed 出现/消失 */
 interface ChainEntry {
   readonly group: THREE.Group
   readonly materials: THREE.MeshStandardMaterial[]
@@ -336,6 +354,8 @@ const SCORE_PLATE_VIEW = new THREE.Vector3(0, 3.62, 4.92)
 
 /** 放大镜特写的保持时长：读数后镜头自动落回桌面机位 */
 const MAGNIFY_HOLD_SECONDS = 2.2
+/** 读数弹壳的展示比例：比托盘里的小弹头大一点，特写和桌面机位都看得清 */
+const REVEAL_SHELL_SCALE = 1.3
 
 /**
  * 血袋架布局：每格生命挂一只血袋（袋数 = maxHp）。
@@ -417,13 +437,12 @@ type ModelKey =
   | 'item_magnet'
   | 'item_handcuffs'
   | 'item_hourglass'
-  | 'item_dagger'
   | 'item_aegis'
   | 'item_hammer'
   | 'item_seal'
   | 'item_cutter'
   | 'item_iou'
-  | 'item_monocle'
+  | 'item_gloves'
   | 'table_gothic'
   | 'room_environment'
   | 'gothic_statue'
@@ -431,20 +450,19 @@ type ModelKey =
   | 'player_hand'
 
 /** 道具 id → 模型键（与 GameEngine 的 ITEM_IDS 一一对应）；暂无 GLB 的道具留空走程序化几何 */
-const ITEM_MODEL: Readonly<Partial<Record<ItemId, ModelKey>>> = {
+const ITEM_MODEL: Readonly<Record<ActionVisualId, ModelKey>> = {
   magnifier: 'item_magnifier',
   sedative: 'item_syringe',
   saw: 'item_saw',
   magnet: 'item_magnet',
   handcuffs: 'item_handcuffs',
   hourglass: 'item_hourglass',
-  dagger: 'item_dagger',
   aegis: 'item_aegis',
   hammer: 'item_hammer',
   seal: 'item_seal',
   cutter: 'item_cutter',
   iou: 'item_iou',
-  monocle: 'item_monocle',
+  gloves: 'item_gloves',
 }
 
 const ITEM_MODEL_SIZE = 0.5
@@ -519,7 +537,7 @@ const ITEM_TONE_STYLE: Record<
 }
 
 /** 每件道具有自己的主色和底环荧光色，避免整桌都是灰+橙+红 */
-const ITEM_PALETTE: Record<ItemId, { glow: number; tones: Partial<Record<ItemTone, number>> }> = {
+const ITEM_PALETTE: Record<ActionVisualId, { glow: number; tones: Partial<Record<ItemTone, number>> }> = {
   magnifier: { glow: 0xff5b66, tones: { brass: 0xc79a42, wood: 0x5f3e23, iron: 0x8f9caa, glass: 0xe84353 } },
   sedative: { glow: 0x45d6a2, tones: { iron: 0xb9c6cf, glass: 0x35c98f } },
   saw: { glow: 0xff7a2f, tones: { iron: 0x8f9aa4, wood: 0x5a3423, wax: 0x8e1d1d } },
@@ -527,12 +545,11 @@ const ITEM_PALETTE: Record<ItemId, { glow: number; tones: Partial<Record<ItemTon
   handcuffs: { glow: 0xdfe6ee, tones: { iron: 0xb9c1c9, brass: 0xe0b55a } },
   aegis: { glow: 0xffb020, tones: { brass: 0x9c6f2f, glass: 0xcc3434, iron: 0x6f5129, wax: 0x7f1a1a } },
   hourglass: { glow: 0x3fd9e8, tones: { brass: 0xcfa03f, glass: 0x57c8d8, wax: 0xd6403c } },
-  dagger: { glow: 0xe8443f, tones: { iron: 0xbcc6cf, wood: 0xcaa06a, wax: 0x8f1d1d } },
   hammer: { glow: 0xd8c07a, tones: { iron: 0x545c66, wood: 0x966438, paper: 0xd6cfc0, brass: 0xb98a45, wax: 0x71251e } },
   cutter: { glow: 0xbfe4ff, tones: { iron: 0xaeb9c1, wood: 0x2f2a28, paper: 0xb0a480 } },
   iou: { glow: 0xffc46b, tones: { paper: 0xa8986c, wax: 0xa3201a, wood: 0x6d5033 } },
+  gloves: { glow: 0x5fd18a, tones: {} },
   seal: { glow: 0xe0262f, tones: { wax: 0x941a16, paper: 0xd8c9a4, brass: 0xc19645, wood: 0x5f4229, iron: 0x8b9199 } },
-  monocle: { glow: 0x8be3ff, tones: { brass: 0xe3b552, glass: 0x7fd4e8 } },
 }
 
 const MODEL_BASE = './models'
@@ -590,8 +607,7 @@ const GUN_SHAKE = {
 const GUN_AIMED_EPSILON = 0.015
 /** 一次血雾爆发的粒子数 */
 const BLOOD_PARTICLE_COUNT = 80
-/** 护心镜 / 诱饵挡下实弹时的碎屑粒子数 */
-const SPARK_PARTICLE_COUNT = 70
+
 const BOSS_FLASH_COLOR = new THREE.Color(0xffffff)
 const BOSS_FLASH_LIFE = 0.16
 /**
@@ -698,6 +714,11 @@ export class SceneManager {
   private readonly dealingCards = new WeakSet<CardEntry>()
   private readonly items = new Map<string, ItemEntry>()
   private readonly actionButtons = new Map<TableAction, ActionButton>()
+  private readonly bossActionButtons = new Map<TableAction, ActionButton>()
+  private readonly playerButtonHands = new Map<TableAction, THREE.Group>()
+  private playerButtonPress: { action: TableAction; time: number } | null = null
+  private bossButtonPress: { action: TableAction; time: number; hand: boolean } | null = null
+  private bossButtonHand: THREE.Group | null = null
   private actionHovered: TableAction | null = null
   private actionPressed: TableAction | null = null
   private tableActionsAllowed = false
@@ -711,6 +732,8 @@ export class SceneManager {
   private supplyTrays: { player: SupplyTrayView; boss: SupplyTrayView } | null = null
   private supplyHovered: ItemEntry | null = null
   private bulletTray: BulletTrayView | null = null
+  /** 护心镜退弹弹出的那一发：红头实弹 / 蓝头空膛，落桌后自行收起 */
+  private ejectedRound: RoundShellView | null = null
   private readonly disposableGeometries = new Set<THREE.BufferGeometry>()
   private readonly disposableMaterials = new Set<THREE.Material>()
   private readonly raycaster = new THREE.Raycaster()
@@ -749,7 +772,7 @@ export class SceneManager {
   /** 半身像的头部骨骼（Head），「盯视」直接驱动骨骼；程序化 Boss 下为空 */
   private bossHeadBone: THREE.Bone | null = null
   /** 道具模型模板（按 item id），供 UI 图鉴与桌面摆件复用 */
-  private readonly itemModelTemplates = new Map<ItemId, THREE.Object3D>()
+  private readonly itemModelTemplates = new Map<ActionVisualId, THREE.Object3D>()
   private readonly scorePlates = new Map<ActorId, ScorePlate>()
   private readonly bloodRacks = new Map<ActorId, BloodRack>()
   private readonly chains = new Map<ActorId, ChainEntry>()
@@ -828,6 +851,10 @@ export class SceneManager {
   private bossForearmRLength = 0
   private readonly bossHandContactL = new THREE.Vector3(-1.16, TABLE_TOP + 0.025, -2.28)
   private readonly bossHandContactR = new THREE.Vector3(1.16, TABLE_TOP + 0.025, -2.28)
+  private readonly bossButtonTarget = new THREE.Vector3()
+  private readonly bossButtonStart = new THREE.Vector3()
+  private readonly playerButtonTarget = new THREE.Vector3()
+  private readonly playerButtonStart = new THREE.Vector3()
   private readonly bossIkShoulder = new THREE.Vector3()
   private readonly bossIkElbow = new THREE.Vector3()
   private readonly bossIkDirection = new THREE.Vector3()
@@ -880,6 +907,16 @@ export class SceneManager {
   private readonly gunShake = new THREE.Group()
   private readonly deckGroup = new THREE.Group()
   private readonly cardGroup = new THREE.Group()
+  private readonly trumpGroup = new THREE.Group()
+  private readonly trumpCards = new Map<string, TrumpEntry>()
+  private readonly dealingTrumps = new WeakSet<TrumpEntry>()
+  private readonly trumpDeckGroup = new THREE.Group()
+  private readonly bossTrumpDeckGroup = new THREE.Group()
+  private trumpDeckTop: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture } | null = null
+  private bossTrumpDeckTop: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture } | null = null
+  private trumpDeckCount = -1
+  private bossTrumpDeckCount = -1
+  private trumpDeckHovered = false
   private readonly itemRoot = new THREE.Group()
   private readonly itemGrid = new THREE.Group()
   private readonly lampRig = new THREE.Group()
@@ -918,13 +955,13 @@ export class SceneManager {
   /** 玩家中弹后的「桌沿低位→坐起→血袋特写」整段：期间保持特写闸门关闭 */
   private playerRecoveryActive = false
   private pendingResolutionShot: { shot: 'death' | 'victory'; duration: number } | null = null
-  private revealGlow: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial> | null = null
+  private revealShell: RoundShellView | null = null
   private revealLight: THREE.PointLight | null = null
   /** 中弹低位镜头专用补光：只在这 1 秒多里亮，照亮桌沿/桌底 */
   private recoveryLight: THREE.PointLight | null = null
   private impactLight: THREE.PointLight | null = null
   private impactGeneration = 0
-  private revealGlowLife = 0
+  private revealLife = 0
   private aimTarget: ActorId = 'boss'
   /** 处决推近进度 0..1；作为视线方向上的偏移叠在相机基座上 */
   private executionPush = 0
@@ -950,9 +987,6 @@ export class SceneManager {
   private readonly bloodBurst: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial>
   private readonly bloodVelocity = new Float32Array(BLOOD_PARTICLE_COUNT * 3)
   private bloodLife = 0
-  private readonly sparkBurst: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial>
-  private readonly sparkVelocity = new Float32Array(SPARK_PARTICLE_COUNT * 3)
-  private sparkLife = 0
   /** 受击闪白：记录 Boss 各材质原始自发光，衰减后原样还原 */
   private bossFlashLife = 0
   private boss2HeadTwitchLife = 0
@@ -976,6 +1010,8 @@ export class SceneManager {
   private lastSnapshot: GameSnapshot | null = null
   /** 玩家持枪选目标时，桌面拾取改为「先点枪，再点双方血袋架」 */
   private targetPickActive = false
+  /** 窃贼手套选目标中：只允许悬停/点击对手道具，点回自己的手套取消 */
+  private stealTargeting = false
   /** 点过枪之后血袋架才可点；进入时架子闪一次并留一层微光 */
   private targetArmed = false
   private targetArmedAt = 0
@@ -1054,7 +1090,7 @@ export class SceneManager {
     // OutputPass owns tone mapping + sRGB conversion when rendering through the composer.
     this.composer.addPass(new OutputPass())
 
-    this.scene.add(this.roomGroup, this.tableGroup, this.bossGroup, this.gunGroup, this.deckGroup, this.cardGroup, this.itemRoot, this.lampRig, this.propsGroup, this.narrativeGroup)
+    this.scene.add(this.roomGroup, this.tableGroup, this.bossGroup, this.gunGroup, this.deckGroup, this.cardGroup, this.trumpGroup, this.trumpDeckGroup, this.bossTrumpDeckGroup, this.itemRoot, this.lampRig, this.propsGroup, this.narrativeGroup)
     // 恢复补光在场景初始化时就建好：枪响那一刻才加灯会让全场景材质重编译，
     // 首帧卡顿会把 0.1s 的枪口火光和 +0.1s 的黑屏一起吞掉
     this.recoveryLight = new THREE.PointLight(0xffa860, 0, 3.2, 2)
@@ -1082,7 +1118,6 @@ export class SceneManager {
     this.muzzleLight = gun.muzzleLight
     this.flash = gun.flash
     this.bloodBurst = this.buildBloodBurst()
-    this.sparkBurst = this.buildSparkBurst()
     this.buildSuspensionRig()
 
     const lighting = this.buildLighting()
@@ -1093,9 +1128,17 @@ export class SceneManager {
     this.dust = this.buildDust()
     this.deckGroup.position.copy(DECK_POS)
     this.buildDeckPile()
+    this.buildTrumpDeck()
     this.buildItemGrid()
     this.buildSupplyTray()
     this.buildBulletTray()
+    // 读数弹壳和它的点光开场就建好：第一次放大镜/重锤时不再新增灯和材质，
+    // 否则那一刻全场景重编译，正好吞掉弹壳升起的第一帧
+    this.ensureRevealShell()
+    this.revealLight = new THREE.PointLight(0xff2a18, 0, 1.6, 2)
+    // 灯挂在世界坐标、随弹壳移动：贴着弹壳会把它整颗烤白，近景里反而看不出是颗子弹
+    this.revealLight.position.set(0, TABLE_TOP + 0.6, 0)
+    this.scene.add(this.revealLight)
     this.buildScorePlates()
     this.buildActionButtons()
     this.buildNarrativeProps()
@@ -1271,6 +1314,7 @@ export class SceneManager {
     }
     this.applyLevel(snapshot.levelIndex)
     this.syncCards(snapshot)
+    this.syncTrumps(snapshot)
     this.syncItems(snapshot)
     this.syncSupply(snapshot)
     this.syncScores(snapshot)
@@ -1285,7 +1329,7 @@ export class SceneManager {
         this.disposeObject(mark)
       }
     }
-    this.hourglassTarget = snapshot.hourglassActive ? 1 : 0
+    this.hourglassTarget = this.itemActions.activeName.includes('hourglass') ? 1 : 0
   }
 
   /** Blends the camera to a named shot; `hold` keeps it there until another shot is set. */
@@ -1317,68 +1361,56 @@ export class SceneManager {
       this.executionPushGeneration += 1
       if (this.executionPush > 0) this.pushExecutionCamera(0, duration)
     }
-    if (shot === 'magnify') this.revealGlowLife = MAGNIFY_HOLD_SECONDS
+    if (shot === 'magnify') this.revealLife = MAGNIFY_HOLD_SECONDS
     else this.clearReveal()
   }
 
-  /** Semi-transparent chamber hint only the player sees: red = live, blue = blank. */
+  /** 玩家自己的膛内读数：弹壳从转轮弹出、落在桌面（红实/蓝空），只有自己看得到 */
   revealChamber(chamber: Chamber): void {
     if (this.disposed) return
     const live = chamber === 'live'
-    if (!this.revealGlow) {
-      const material = new THREE.MeshBasicMaterial({
-        color: 0xff2a18,
-        transparent: true,
-        opacity: 0,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        depthTest: false,
-        toneMapped: false,
-        side: THREE.DoubleSide,
-      })
-      this.disposableMaterials.add(material)
-      const geometry = new THREE.SphereGeometry(0.075, 18, 14)
-      this.disposableGeometries.add(geometry)
-      const halo = new THREE.Mesh(geometry, material)
-      halo.renderOrder = 20
-      halo.visible = false
-      this.gunShake.add(halo)
-      this.revealGlow = halo
+    const shell = this.ensureRevealShell()
+    const material = live ? this.bulletTray?.liveMaterial : this.bulletTray?.blankMaterial
+    if (material) {
+      shell.body.material = material
+      shell.tip.material = material
     }
-    const glow = this.revealGlow
-    // 位置使用枪身抖动层的局部坐标：转轮中心正上方
-    const cylinderY = 0.075
-    glow.visible = true
-    glow.position.set(0, cylinderY, -0.09)
-    glow.material.color.setHex(live ? 0xff2a18 : 0x2f8cff)
-    glow.material.opacity = 0
-    glow.scale.setScalar(0.2)
-    if (!this.revealLight) {
-      const light = new THREE.PointLight(0xff2a18, 0, 1.6, 2)
-      light.position.set(0, cylinderY + 0.06, -0.09)
-      this.gunShake.add(light)
-      this.revealLight = light
-    }
-    const light = this.revealLight
-    light.color.setHex(live ? 0xff2a18 : 0x2f8cff)
-    light.intensity = 0
+    this.revealLife = MAGNIFY_HOLD_SECONDS
+    if (this.revealLight) this.revealLight.color.setHex(live ? 0xff2a18 : 0x2f8cff)
+    // 重锤翻色：弹壳已经躺在桌上，就地换色，不再重弹一次
+    if (shell.root.visible) return
+    this.gunAim.updateWorldMatrix(true, true)
+    const start = this.gunAim.localToWorld(new THREE.Vector3(0, 0.035, -0.09))
+    start.y += 0.06
+    const rest = new THREE.Vector3(start.x + 0.2, TABLE_TOP + 0.062, start.z + 0.3)
+    shell.root.visible = true
+    shell.root.scale.setScalar(REVEAL_SHELL_SCALE)
+    shell.root.position.copy(start)
+    shell.root.rotation.set(0.25, 0, 0.4)
     this.tween({
-      duration: 0.34,
+      duration: this.reducedMotion ? 0.24 : 0.62,
       onUpdate: (t) => {
-        glow.material.opacity = 0.55 * (1 - t) + 0.42 * t
-        glow.scale.setScalar(1 + t * 0.4)
-        light.intensity = 3.2 * (0.5 + t * 0.5)
+        const k = Math.min(1, t / 0.72)
+        const arc = Math.sin(k * Math.PI) * 0.15
+        const bounce = t > 0.72 ? Math.abs(Math.sin(((t - 0.72) / 0.28) * Math.PI)) * 0.034 : 0
+        shell.root.position.set(
+          start.x + (rest.x - start.x) * k,
+          rest.y + arc + bounce,
+          start.z + (rest.z - start.z) * k,
+        )
+        shell.root.rotation.x = 0.25 + (1 - k) * 1.9
+        shell.root.rotation.z = 0.4 * (1 - k)
+      },
+      onComplete: () => {
+        shell.root.position.copy(rest)
+        shell.root.rotation.set(Math.PI / 2, 0, 0)
       },
     })
-    this.revealGlowLife = MAGNIFY_HOLD_SECONDS
   }
 
   clearReveal(): void {
-    this.revealGlowLife = 0
-    if (this.revealGlow) {
-      this.revealGlow.material.opacity = 0
-      this.revealGlow.visible = false
-    }
+    this.revealLife = 0
+    if (this.revealShell) this.revealShell.root.visible = false
     if (this.revealLight) this.revealLight.intensity = 0
   }
 
@@ -1737,7 +1769,7 @@ export class SceneManager {
       case 'introTowel':
         return {
           position: new THREE.Vector3(-0.1, 1.44, 2.18),
-          lookAt: new THREE.Vector3(-0.72, 1.1, 1.42),
+          lookAt: new THREE.Vector3(-1.28, 1.1, 1.3),
           fov: 40,
         }
       case 'introTable':
@@ -2038,21 +2070,16 @@ export class SceneManager {
 
     if (live && payload.target === 'boss') {
       const origin = this.bossHitPoint(this.scratchHitPoint)
-      if (payload.blocked) {
-        // 被挡下：Boss 不受伤，也不闪白、不后仰，只给一次材质化的碎屑反馈
-        this.spawnSparks(origin)
-      } else {
-        this.flashBoss()
-        this.spawnBlood(origin)
-        this.bossPose.triggerHit({
-          damage: payload.damage,
-          hpAfter: payload.hpAfter,
-          maxHp: this.lastSnapshot?.boss.maxHp ?? Math.max(1, payload.hpAfter),
-          level: BOSS_VISUAL_LEVEL,
-          controlled: this.currentLevelIndex === 1 && payload.hpAfter > 0,
-          suspended: this.currentLevelIndex === 2 && payload.hpAfter > 0,
-        })
-      }
+      this.flashBoss()
+      this.spawnBlood(origin)
+      this.bossPose.triggerHit({
+        damage: payload.damage,
+        hpAfter: payload.hpAfter,
+        maxHp: this.lastSnapshot?.boss.maxHp ?? Math.max(1, payload.hpAfter),
+        level: BOSS_VISUAL_LEVEL,
+        controlled: this.currentLevelIndex === 1 && payload.hpAfter > 0,
+        suspended: this.currentLevelIndex === 2 && payload.hpAfter > 0,
+      })
     }
 
     const recoil = live ? 0.19 : 0.05
@@ -2115,6 +2142,96 @@ export class SceneManager {
     const cylinder = this.pendingVisualSnapshot?.cylinder ?? this.lastSnapshot?.cylinder
     this.animateReloadGun()
     this.revealBulletTray(live ?? cylinder?.live ?? 0, blank ?? cylinder?.blank ?? 0)
+  }
+
+  /** 护心镜公开退弹：弹壳从转轮抛到桌面，颜色沿用子弹托盘（红实 / 蓝空） */
+  playChamberEject(actor: ActorId, chamber: Chamber): void {
+    if (this.disposed) return
+    const round = this.ensureEjectedRound()
+    const material = chamber === 'live' ? this.bulletTray?.liveMaterial : this.bulletTray?.blankMaterial
+    if (material) {
+      round.body.material = material
+      round.tip.material = material
+    }
+    this.gunAim.updateWorldMatrix(true, true)
+    const start = this.gunAim.localToWorld(new THREE.Vector3(0, 0.035, -0.09))
+    start.y += 0.06
+    const side = actor === 'player' ? 1 : -1
+    const rest = new THREE.Vector3(start.x + 0.2 * side, TABLE_TOP + 0.062, start.z + 0.3 * side)
+    const flight = this.reducedMotion ? 0.24 : 0.62
+    round.root.visible = true
+    round.root.scale.setScalar(1.5)
+    round.root.position.copy(start)
+    round.root.rotation.set(0.25, 0, 0.4)
+    this.pulseImpactLight(chamber === 'live' ? 0xff6a3a : 0x7fb4e0, 3, 1.8, start, 0.08, 0.32)
+    this.tween({
+      duration: flight,
+      onUpdate: (t) => {
+        const k = Math.min(1, t / 0.72)
+        const arc = Math.sin(k * Math.PI) * 0.15
+        const bounce = t > 0.72 ? Math.abs(Math.sin(((t - 0.72) / 0.28) * Math.PI)) * 0.034 : 0
+        round.root.position.set(
+          start.x + (rest.x - start.x) * k,
+          rest.y + arc + bounce,
+          start.z + (rest.z - start.z) * k,
+        )
+        round.root.rotation.x = 0.25 + (1 - k) * 1.9
+        round.root.rotation.z = 0.4 * (1 - k)
+      },
+      onComplete: () => {
+        round.root.position.copy(rest)
+        round.root.rotation.set(Math.PI / 2, 0, 0)
+        // 退弹结果在桌上停一会儿再收起，免得和下一件道具的动作抢画面
+        this.tween({
+          duration: 0.35,
+          delay: 3.2,
+          onUpdate: (t) => {
+            round.root.scale.setScalar(Math.max(0.001, 1.5 * (1 - easeInOutCubic(t))))
+          },
+          onComplete: () => {
+            round.root.visible = false
+            round.root.scale.setScalar(1.5)
+          },
+        })
+      },
+    })
+  }
+
+  /** 子弹托盘同款弹壳：柱身 + 圆头 + 黄铜底圈；柱身与弹头材质由调用方换色 */
+  private buildRoundShell(name: string): RoundShellView {
+    const root = new THREE.Group()
+    root.name = name
+    root.visible = false
+    const bodyGeo = new THREE.CylinderGeometry(0.036, 0.04, 0.12, 10)
+    const tipGeo = new THREE.SphereGeometry(0.038, 10, 6)
+    const baseGeo = new THREE.CylinderGeometry(0.042, 0.042, 0.016, 10)
+    const brass = new THREE.MeshStandardMaterial({ color: 0x8c652f, metalness: 0.78, roughness: 0.4 })
+    for (const geo of [bodyGeo, tipGeo, baseGeo]) this.disposableGeometries.add(geo)
+    this.disposableMaterials.add(brass)
+    const body = new THREE.Mesh(bodyGeo, brass)
+    body.castShadow = true
+    const tip = new THREE.Mesh(tipGeo, brass)
+    tip.scale.y = 0.65
+    tip.position.y = 0.072
+    tip.castShadow = true
+    const base = new THREE.Mesh(baseGeo, brass)
+    base.position.y = -0.062
+    root.add(body, tip, base)
+    return { root, body, tip, base }
+  }
+
+  private ensureEjectedRound(): RoundShellView {
+    if (this.ejectedRound) return this.ejectedRound
+    this.ejectedRound = this.buildRoundShell('EjectedRound')
+    this.scene.add(this.ejectedRound.root)
+    return this.ejectedRound
+  }
+
+  private ensureRevealShell(): RoundShellView {
+    if (this.revealShell) return this.revealShell
+    this.revealShell = this.buildRoundShell('RevealRound')
+    this.scene.add(this.revealShell.root)
+    return this.revealShell
   }
 
   private animateReloadGun(): void {
@@ -2237,7 +2354,7 @@ export class SceneManager {
   }
 
   /** 道具演出：从槽位拾起原作道具，交给双手完成起手／接触／收尾 */
-  playItemUse(actor: ActorId, item: ItemId): void {
+  playItemUse(actor: ActorId, item: ActionVisualId): void {
     if (this.disposed) return
     const found = [...this.items.values()].find(
       (entry) => entry.actor === actor && entry.item === item && entry.group.visible,
@@ -2270,7 +2387,7 @@ export class SceneManager {
   }
 
   /** 玩家侧道具特写；Boss 保持桌面机位，避免双方演出抢镜。 */
-  private focusItemAction(point: THREE.Vector3, actor: ActorId, item: ItemId): void {
+  private focusItemAction(point: THREE.Vector3, actor: ActorId, item: ActionVisualId): void {
     if (this.disposed || actor !== 'player') return
     const framing = itemActionCamera(item)
     const direction = new THREE.Vector3(0.06, 0.5, 0.86)
@@ -2348,7 +2465,7 @@ export class SceneManager {
   }
 
   /** 仅供开发期逐帧验收：不经过引擎，直接用当前快照播一件道具动作 */
-  previewItemAction(item: ItemId, actor: ActorId = 'player'): boolean {
+  previewItemAction(item: ActionVisualId, actor: ActorId = 'player'): boolean {
     if (this.disposed || !this.lastSnapshot) return false
     const from = new THREE.Vector3(0, TABLE_TOP, actor === 'player' ? 1.2 : -1.2)
     this.itemActions.start(actor, item, this.lastSnapshot, from)
@@ -2438,10 +2555,6 @@ export class SceneManager {
     return this.itemActions.skip()
   }
 
-  breakItemShield(actor: ActorId): void {
-    this.itemActions.breakShield(actor)
-  }
-
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
@@ -2480,6 +2593,7 @@ export class SceneManager {
     this.textures.dispose()
     for (const plate of this.scorePlates.values()) plate.texture.dispose()
     for (const button of this.actionButtons.values()) button.texture.dispose()
+    for (const button of this.bossActionButtons.values()) button.texture.dispose()
     this.envTexture?.dispose()
     this.models.clear()
     this.itemModelTemplates.clear()
@@ -2532,13 +2646,12 @@ export class SceneManager {
       'item_magnet',
       'item_handcuffs',
       'item_hourglass',
-      'item_dagger',
       'item_aegis',
       'item_hammer',
       'item_seal',
       'item_cutter',
       'item_iou',
-      'item_monocle',
+      'item_gloves',
     ]
     // 大件场景模型不必和道具一样压那么暗，否则整个桌面沉进黑里
     const dimFor = (key: ModelKey): number => {
@@ -2724,7 +2837,7 @@ export class SceneManager {
     }
 
     // 道具模型：登记模板，并把桌上已存在的同类道具换成模型
-    const itemId = (Object.keys(ITEM_MODEL) as ItemId[]).find((id) => ITEM_MODEL[id] === key)
+    const itemId = (Object.keys(ITEM_MODEL) as ActionVisualId[]).find((id) => ITEM_MODEL[id] === key)
     if (itemId) {
       this.itemModelTemplates.set(itemId, root)
       for (const entry of this.items.values()) {
@@ -3046,7 +3159,8 @@ export class SceneManager {
     })
     this.disposableMaterials.add(towelMat)
     const towel = new THREE.Mesh(towelGeo, towelMat)
-    towel.position.set(-0.72, 1.12, 1.42)
+    // 立在血架左侧：血架右侧留给血注驻场牌与沙漏，避免叠在牌面上
+    towel.position.set(-1.28, 1.12, 1.3)
     towel.rotation.y = -0.35
     towel.rotation.x = 0.06
     this.narrativeGroup.add(towel)
@@ -3123,7 +3237,6 @@ export class SceneManager {
     this.updateBoss(dt)
     this.updateDust(dt)
     this.updateBlood(dt)
-    this.updateSparks(dt)
     this.updateHourglass(dt)
     this.updateNarrativeGrade(dt)
     this.updateChains(dt)
@@ -3136,6 +3249,8 @@ export class SceneManager {
     this.itemActions.update(dt)
     this.updateCamera(dt)
     this.updateActionButtons(dt)
+    this.updateTrumpDeck(dt)
+    this.updatePlayerButtonPress(dt)
     this.composer.render(dt)
     this.sampleStats(dt)
     if (devStatsEnabled) this.renderer.info.reset()
@@ -3426,17 +3541,30 @@ export class SceneManager {
       // 归位动画自己会转回待机朝向，动画期间不再叠加一次转动
       if (!this.gunMotionActive) this.turnGun(this.gunRestYaw, 0, dt)
     }
-    if (this.revealGlowLife > 0) {
-      this.revealGlowLife = Math.max(0, this.revealGlowLife - dt)
-      if (this.revealGlow) {
-        const pulse = 0.78 + Math.sin(this.elapsed * 6.5) * 0.22
-        const fade = Math.min(1, this.revealGlowLife)
-        this.revealGlow.material.opacity = 0.46 * pulse * fade
-        this.revealGlow.scale.setScalar(1.24 * (0.94 + pulse * 0.08))
-        if (this.revealLight) this.revealLight.intensity = 2.2 * pulse * fade
+    if (this.revealLife > 0) {
+      this.revealLife = Math.max(0, this.revealLife - dt)
+      const shell = this.revealShell
+      if (shell && shell.root.visible) {
+        // 弹壳落桌后一直平躺；最后 0.4 秒缩掉，别在镜头拉开那一帧硬切
+        const tail = 0.4
+        const shrink = this.revealLife < tail ? Math.max(0.001, this.revealLife / tail) : 1
+        shell.root.scale.setScalar(REVEAL_SHELL_SCALE * shrink)
+        if (this.revealLight) {
+          // 离弹壳留出一段距离：贴太近反平方衰减会把弹头烤成一团白
+          this.revealLight.position.set(shell.root.position.x + 0.14, shell.root.position.y + 0.24, shell.root.position.z + 0.1)
+          const pulse = 0.86 + Math.sin(this.elapsed * 6.5) * 0.14
+          this.revealLight.intensity = 0.55 * pulse * Math.min(1, this.revealLife / 0.3)
+        }
       }
-      // 特写只是一次性演出：读数结束把镜头交还桌面，否则整回合都锁在拉近视野里
-      if (this.revealGlowLife === 0 && this.shot === 'magnify') this.resetShot(0.9)
+      if (this.revealLife === 0) {
+        if (shell) {
+          shell.root.visible = false
+          shell.root.scale.setScalar(REVEAL_SHELL_SCALE)
+        }
+        if (this.revealLight) this.revealLight.intensity = 0
+        // 特写只是一次性演出：读数结束把镜头交还桌面，否则整回合都锁在拉近视野里
+        if (this.shot === 'magnify') this.resetShot(0.9)
+      }
     } else if (this.revealLight) {
       this.revealLight.intensity = 0
     }
@@ -3538,6 +3666,13 @@ export class SceneManager {
     this.emitBossPoseCue()
     const pose = this.bossPose.sample()
     const poseState = this.bossPose.state()
+    if (this.bossButtonPress) {
+      this.bossButtonPress.time += dt
+      if (this.bossButtonPress.time > 0.46 || poseState !== 'idle' || this.shot !== 'table' || this.isBloodCloseupActive() || this.itemActions.busy) {
+        this.bossButtonPress = null
+        if (this.bossButtonHand) this.bossButtonHand.visible = false
+      }
+    }
     const profile = BOSS_POSE_PROFILES[BOSS_VISUAL_LEVEL] ?? BOSS_POSE_PROFILES[0]
     const stageThreeHanging = this.currentLevelIndex === 2 &&
       ((this.lastSnapshot?.boss.hp ?? 0) > 0 || this.lastSnapshot?.phase === 'reloading')
@@ -3751,9 +3886,50 @@ export class SceneManager {
         )
       }
     }
+    this.updateBossButtonPress()
     this.bossGroup.updateMatrixWorld(true)
     this.updateSuspensionRig()
     this.updateBossLimbs()
+  }
+
+  private updateBossButtonPress(): void {
+    const press = this.bossButtonPress
+    if (!press) return
+    const button = this.bossActionButtons.get(press.action)
+    if (!button) return
+    const useLeftArm = press.action === 'stand'
+    const realArm = press.hand && this.currentLevelIndex === 0
+    this.bossButtonTarget.set(useLeftArm ? 0.22 : -0.22, realArm ? 0 : 0.06, realArm ? 0.18 : -0.18)
+    button.cap.localToWorld(this.bossButtonTarget)
+    const p = clamp01(press.time / 0.44)
+    const weight = p < 0.3
+      ? easeOutCubic(p / 0.3)
+      : p < 0.52
+        ? 1
+        : 1 - easeInOutCubic((p - 0.52) / 0.48)
+
+    if (press.hand && this.currentLevelIndex === 0 && this.bossArmLBone && this.bossArmRBone && this.bossForearmLBone && this.bossForearmRBone) {
+      this.solveBossArmContact(
+        useLeftArm ? this.bossArmLBone : this.bossArmRBone,
+        useLeftArm ? this.bossForearmLBone : this.bossForearmRBone,
+        useLeftArm ? this.bossArmLRest : this.bossArmRRest,
+        useLeftArm ? this.bossForearmLRest : this.bossForearmRRest,
+        useLeftArm ? this.bossArmLDirection : this.bossArmRDirection,
+        useLeftArm ? this.bossHandLOffset : this.bossHandROffset,
+        useLeftArm ? this.bossForearmLLength : this.bossForearmRLength,
+        this.bossButtonTarget,
+        weight,
+        useLeftArm ? -1 : 1,
+      )
+      return
+    }
+
+    if (!press.hand || !this.bossButtonHand) return
+    this.bossButtonHand.visible = true
+    this.bossButtonStart.set(this.bossButtonTarget.x, TABLE_TOP + 0.42, -2.78)
+    this.bossButtonHand.position.lerpVectors(this.bossButtonStart, this.bossButtonTarget, weight)
+    this.bossButtonHand.position.y += Math.sin(weight * Math.PI) * 0.07
+    this.bossButtonHand.rotation.set(0, 0, 0)
   }
 
   private solveBossArmContact(
@@ -3846,12 +4022,12 @@ export class SceneManager {
     this.hourglassTarget = 1
   }
 
-  /** 手铐锁链：按 skipTurn 挂上或拆下，拆下时播放碎裂下落 */
+  /** 手铐锁链：按 gunCuffed 挂上或拆下，拆下时播放碎裂下落 */
   private syncChains(snapshot: GameSnapshot): void {
     for (const actor of ['player', 'boss'] as const) {
       const view = actor === 'player' ? snapshot.player : snapshot.boss
       const existing = this.chains.get(actor)
-      if (!view.skipTurn) {
+      if (!view.gunCuffed) {
         if (existing) {
           this.chains.delete(actor)
           this.dropChain(existing)
@@ -3989,12 +4165,15 @@ export class SceneManager {
     entry.group.scale.setScalar(ITEM_SCALE * entry.hoverScale * entry.spawnScale)
     const hoverLift = entry.hovered ? 0.04 : 0
     entry.group.position.y = entry.baseY + hoverLift
+    // 手套选目标时，对手可偷的道具脉冲发红光（自己的手套只作为取消入口）
+    const stealHint = this.stealTargeting && entry.actor === 'boss' && entry.item !== 'gloves' && entry.key.startsWith('boss-')
+    const hintGlow = stealHint ? 0.16 + Math.sin(this.elapsed * 5) * 0.06 : 0
     for (const material of entry.materials) {
       const base = Number(material.userData.baseColor ?? 0xffffff)
       const baseGlow = Number(material.userData.baseGlow ?? 0)
       material.color.setHex(base)
-      material.emissive.setHex(base)
-      material.emissiveIntensity = baseGlow
+      material.emissive.setHex(stealHint ? 0x6f2010 : base)
+      material.emissiveIntensity = baseGlow + hintGlow
     }
   }
 
@@ -4277,11 +4456,12 @@ export class SceneManager {
     }
     // 对沿镜像一组：只作桌面对称陈列，按道具惯例转 180° 朝 Boss，不参与拾取/悬停
     for (const [index, action] of (['hit', 'stand'] as const).entries()) {
-      const button = this.makeActionButton(action, index === 0 ? -0.35 : 0.35, -2.05, Math.PI)
+      const button = this.makeActionButton(action, index === 0 ? 0.35 : -0.35, -2.22, Math.PI)
       button.root.name = `TableActionBoss-${action}`
       button.face.emissiveIntensity = 0.06
       button.indicator.emissiveIntensity = 0.02
       this.scene.add(button.root)
+      this.bossActionButtons.set(action, button)
     }
   }
 
@@ -4365,6 +4545,16 @@ export class SceneManager {
     this.tableActionsAllowed = allowed
   }
 
+  /** 窃贼手套选目标：对手道具脉冲发亮，可点即偷；点回自己的手套取消 */
+  setStealTargeting(on: boolean): void {
+    if (this.stealTargeting === on) return
+    this.stealTargeting = on
+    this.setHovered(null)
+    this.setSupplyHovered(null)
+    this.trumpDeckHovered = false
+    this.canvas.style.cursor = ''
+  }
+
   /** 叙事/过场层让出画面后才升起补给托盘 */
   setSupplyRevealAllowed(allowed: boolean): void {
     if (this.supplyRevealAllowed === allowed) return
@@ -4395,30 +4585,184 @@ export class SceneManager {
     const snapshot = this.lastSnapshot
     return this.tableActionsAllowed && this.shot === 'table' && this.cameraBlend >= 1 &&
       !this.isBloodCloseupActive() && snapshot?.phase === 'playerTurn' &&
-      !snapshot.paused && !snapshot.inputLocked && !snapshot.player.skipTurn && !snapshot.cardChoice
+      !snapshot.paused && !snapshot.inputLocked
+  }
+
+  private canUseTrumpDeck(): boolean {
+    const snapshot = this.lastSnapshot
+    return this.tableActionsAllowed && this.shot === 'table' && this.cameraBlend >= 1 &&
+      !this.isBloodCloseupActive() && snapshot?.phase === 'playerTurn' &&
+      !snapshot.paused && !snapshot.inputLocked &&
+      snapshot.player.trumps.length > 0
   }
 
   activateTableAction(action: TableAction): boolean {
+    if (action === 'hit' && this.lastSnapshot?.player.hand.busted) return false
     if (!this.canUseTableActions() || !this.callbacks.onTableAction?.(action)) return false
     const button = this.actionButtons.get(action)!
     button.pressedUntil = this.elapsed + 0.16
     return true
   }
 
+  playPlayerTableAction(action: TableAction): void {
+    if (this.disposed || this.shot !== 'table' || this.isBloodCloseupActive() || this.itemActions.busy) return
+    const button = this.actionButtons.get(action)
+    if (!button) return
+    button.pressedUntil = this.elapsed + 0.28
+    this.playerButtonPress = { action, time: 0 }
+    this.ensurePlayerButtonHand(action)
+    for (const [otherAction, hand] of this.playerButtonHands) {
+      if (otherAction !== action) hand.visible = false
+    }
+  }
+
+  private ensurePlayerButtonHand(action: TableAction): void {
+    if (this.playerButtonHands.has(action)) return
+    const group = new THREE.Group()
+    const source = this.models.get('player_hand')
+    if (source) {
+      const hand = source.clone(true)
+      hand.updateMatrixWorld(true)
+      hand.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return
+        child.geometry = child.geometry.clone()
+        child.geometry.applyMatrix4(child.matrixWorld)
+        child.position.set(0, 0, 0)
+        child.rotation.set(0, 0, 0)
+        child.scale.setScalar(1)
+        child.castShadow = true
+        child.receiveShadow = true
+      })
+      hand.updateMatrixWorld(true)
+      const longest = Math.max(...new THREE.Box3().setFromObject(hand).getSize(new THREE.Vector3()).toArray())
+      const fit = longest > 1e-6 ? 0.22 / longest : 1
+      hand.scale.set(fit * (action === 'hit' ? -1 : 1), fit, fit)
+      group.add(hand)
+    } else {
+      const skin = makeStandardMaterial(0x80604f, 0, 0.88)
+      const palm = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), skin)
+      palm.scale.set(0.068, 0.03, 0.095)
+      group.add(palm)
+      for (let i = 0; i < 4; i += 1) {
+        const finger = new THREE.Mesh(new THREE.CapsuleGeometry(0.012, 0.075, 4, 8), skin)
+        finger.rotation.x = Math.PI / 2
+        finger.position.set((i - 1.5) * 0.029, 0, 0.09)
+        group.add(finger)
+      }
+    }
+    group.scale.setScalar(1.15)
+    group.visible = false
+    this.scene.add(group)
+    this.playerButtonHands.set(action, group)
+  }
+
+  private updatePlayerButtonPress(dt: number): void {
+    const press = this.playerButtonPress
+    if (!press) return
+    press.time += dt
+    if (press.time > 0.46 || this.shot !== 'table' || this.isBloodCloseupActive() || this.itemActions.busy) {
+      this.playerButtonPress = null
+      for (const hand of this.playerButtonHands.values()) hand.visible = false
+      return
+    }
+    const button = this.actionButtons.get(press.action)
+    const hand = this.playerButtonHands.get(press.action)
+    if (!button || !hand) return
+    this.playerButtonTarget.set(0, 0.06, 0.18)
+    button.cap.localToWorld(this.playerButtonTarget)
+    const p = clamp01(press.time / 0.44)
+    const weight = p < 0.3
+      ? easeOutCubic(p / 0.3)
+      : p < 0.52
+        ? 1
+        : 1 - easeInOutCubic((p - 0.52) / 0.48)
+    this.playerButtonStart.set(
+      this.playerButtonTarget.x + (press.action === 'hit' ? -0.14 : 0.14),
+      TABLE_TOP + 0.38,
+      2.85,
+    )
+    hand.visible = true
+    hand.position.lerpVectors(this.playerButtonStart, this.playerButtonTarget, weight)
+    hand.position.y += Math.sin(weight * Math.PI) * 0.08
+    hand.rotation.set(0, press.action === 'hit' ? -0.08 : 0.08, 0)
+  }
+
+  playBossTableAction(action: TableAction, withHand = true): void {
+    if (this.disposed || this.shot !== 'table' || this.isBloodCloseupActive() || this.itemActions.busy) return
+    const button = this.bossActionButtons.get(action)
+    if (!button) return
+    button.pressedUntil = this.elapsed + 0.28
+    this.bossButtonPress = { action, time: 0, hand: withHand }
+    if (withHand && this.currentLevelIndex !== 0) this.ensureBossButtonHand()
+    if (this.bossButtonHand && (this.currentLevelIndex === 0 || !withHand)) this.bossButtonHand.visible = false
+  }
+
+  private ensureBossButtonHand(): void {
+    if (this.bossButtonHand) return
+    const group = new THREE.Group()
+    const skin = makeStandardMaterial(0x604438, 0, 0.86)
+    const nail = makeStandardMaterial(0x171311, 0, 0.9)
+    const palm = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), skin)
+    palm.scale.set(0.068, 0.03, 0.095)
+    palm.castShadow = true
+    group.add(palm)
+    for (let i = 0; i < 4; i += 1) {
+      const finger = new THREE.Mesh(new THREE.CapsuleGeometry(0.012, 0.07 + (i === 1 || i === 2 ? 0.015 : 0), 4, 8), skin)
+      finger.rotation.x = Math.PI / 2
+      finger.position.set((i - 1.5) * 0.029, 0.002, 0.09)
+      finger.castShadow = true
+      group.add(finger)
+      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.009, 8, 6), nail)
+      tip.scale.set(1, 0.45, 1.2)
+      tip.position.set((i - 1.5) * 0.029, 0.014, 0.135)
+      group.add(tip)
+    }
+    const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.014, 0.06, 4, 8), skin)
+    thumb.rotation.set(Math.PI / 2, 0, -0.65)
+    thumb.position.set(-0.078, 0, 0.045)
+    thumb.castShadow = true
+    group.add(thumb)
+    const sleeve = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.055, 0.075, 0.22, 12),
+      makeStandardMaterial(0x211b18, 0, 0.92),
+    )
+    sleeve.rotation.x = Math.PI / 2
+    sleeve.position.set(0, 0.018, -0.15)
+    sleeve.castShadow = true
+    group.add(sleeve)
+    group.scale.setScalar(1.25)
+    group.visible = false
+    this.scene.add(group)
+    this.bossButtonHand = group
+  }
+
   private updateActionButtons(dt: number): void {
     const enabled = this.canUseTableActions()
+    // 爆牌后要牌键熄灭，停牌仍可用，只能改打王牌
+    const busted = this.lastSnapshot?.player.hand.busted === true
+    const enabledFor = (action: TableAction): boolean => enabled && !(action === 'hit' && busted)
     if (!enabled) this.actionPressed = null
     // 选枪口阶段由目标拾取接管指针样式，这里不能每帧覆盖
     if (!this.targetPickActive) {
-      this.canvas.style.cursor = this.actionHovered && enabled ? 'pointer' : ''
+      this.canvas.style.cursor = this.actionHovered && enabledFor(this.actionHovered) ? 'pointer' : ''
     }
     for (const [action, button] of this.actionButtons) {
-      const pressed = this.elapsed < button.pressedUntil || this.actionPressed === action
-      const hovered = enabled && this.actionHovered === action
+      const actionEnabled = enabledFor(action)
+      const active = this.playerButtonPress?.action === action && this.playerButtonPress.time < 0.3
+      const pressed = active || this.elapsed < button.pressedUntil || this.actionPressed === action
+      const hovered = actionEnabled && this.actionHovered === action
       const target = pressed ? 0.05 : hovered ? 0.098 : 0.075
-      button.cap.position.y += (target - button.cap.position.y) * Math.min(1, dt * 24)
-      button.face.emissiveIntensity = enabled ? (hovered ? 0.42 : 0.24) : 0.06
-      button.indicator.emissiveIntensity = enabled ? (hovered ? 2.6 : 1.4) : 0.02
+      button.cap.position.y += (target - button.cap.position.y) * Math.min(1, dt * 28)
+      button.face.emissiveIntensity = active ? 0.5 : actionEnabled ? (hovered ? 0.42 : 0.24) : 0.06
+      button.indicator.emissiveIntensity = active ? 3.2 : actionEnabled ? (hovered ? 2.6 : 1.4) : 0.02
+    }
+    for (const [action, button] of this.bossActionButtons) {
+      const active = this.bossButtonPress?.action === action && this.bossButtonPress.time < 0.3
+      const pressed = active || this.elapsed < button.pressedUntil
+      const target = pressed ? 0.05 : 0.075
+      button.cap.position.y += (target - button.cap.position.y) * Math.min(1, dt * 28)
+      button.face.emissiveIntensity = active ? 0.5 : 0.06
+      button.indicator.emissiveIntensity = active ? 3.2 : 0.02
     }
   }
 
@@ -4936,77 +5280,6 @@ export class SceneManager {
     }
   }
 
-  private buildSparkBurst(): THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial> {
-    const positions = new Float32Array(SPARK_PARTICLE_COUNT * 3)
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-    this.disposableGeometries.add(geometry)
-    const material = new THREE.PointsMaterial({
-      map: this.textures.get('dust'),
-      color: 0xffe6b0,
-      size: 0.18,
-      transparent: true,
-      opacity: 0,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      sizeAttenuation: true,
-      toneMapped: false,
-    })
-    this.disposableMaterials.add(material)
-    const points = new THREE.Points(geometry, material)
-    points.visible = false
-    this.scene.add(points)
-    return points
-  }
-
-  /** 格挡碎屑：护心镜碎裂的金色金属火花（会发光、带一盏短命点光） */
-  private spawnSparks(origin: THREE.Vector3): void {
-    this.sparkLife = 0.5
-    const attribute = this.sparkBurst.geometry.getAttribute('position')
-    if (!(attribute instanceof THREE.BufferAttribute)) return
-    const material = this.sparkBurst.material
-    material.color.setHex(0xffe6b0)
-    material.size = 0.18
-    material.blending = THREE.AdditiveBlending
-    material.needsUpdate = true
-
-    const array = attribute.array as Float32Array
-    for (let i = 0; i < SPARK_PARTICLE_COUNT; i += 1) {
-      const base = i * 3
-      array[base] = origin.x
-      array[base + 1] = origin.y
-      array[base + 2] = origin.z
-      this.sparkVelocity[base] = (Math.random() - 0.5) * 2.6
-      this.sparkVelocity[base + 1] = Math.random() * 1.6 - 0.2
-      this.sparkVelocity[base + 2] = 1.2 + Math.random() * 2.4
-    }
-    attribute.needsUpdate = true
-    this.sparkBurst.visible = true
-    material.opacity = 1
-
-    // 火花是瞬时强光：复用命中补光，否则在暗场里只剩几个像素点
-    this.pulseImpactLight(0xffc070, 4, 2, origin, 0.2, 0.32)
-  }
-
-  private updateSparks(dt: number): void {
-    if (this.sparkLife <= 0) return
-    this.sparkLife = Math.max(0, this.sparkLife - dt)
-    const attribute = this.sparkBurst.geometry.getAttribute('position')
-    if (attribute instanceof THREE.BufferAttribute) {
-      const array = attribute.array as Float32Array
-      for (let i = 0; i < SPARK_PARTICLE_COUNT; i += 1) {
-        const base = i * 3
-        this.sparkVelocity[base + 1] -= 7.5 * dt
-        array[base] += this.sparkVelocity[base] * dt
-        array[base + 1] += this.sparkVelocity[base + 1] * dt
-        array[base + 2] += this.sparkVelocity[base + 2] * dt
-      }
-      attribute.needsUpdate = true
-    }
-    this.sparkBurst.material.opacity = (this.sparkLife / 0.5) ** 0.6 * (this.sparkBurst.material.blending === THREE.AdditiveBlending ? 1 : 0.85)
-    if (this.sparkLife === 0) this.sparkBurst.visible = false
-  }
-
   private buildDeckPile(): void {
     const back = this.textures.get(this.textures.cardBackKey)
     for (let i = 0; i < 12; i += 1) {
@@ -5027,6 +5300,116 @@ export class SceneManager {
       mesh.receiveShadow = true
       this.deckGroup.add(mesh)
     }
+  }
+
+  private buildTrumpDeck(): void {
+    this.trumpDeckTop = this.buildTrumpDeckStack(this.trumpDeckGroup, true, -0.12)
+    this.bossTrumpDeckTop = this.buildTrumpDeckStack(this.bossTrumpDeckGroup, false, Math.PI + 0.12)
+    this.layoutTrumpDeck()
+    this.paintTrumpDeck(this.trumpDeckTop, 0)
+    this.paintTrumpDeck(this.bossTrumpDeckTop, 0)
+  }
+
+  /** 物理王牌牌堆：玩家一只，Boss 一只镜像到正对面；Boss 牌堆只做陈列，不参与拾取 */
+  private buildTrumpDeckStack(
+    root: THREE.Group,
+    interactive: boolean,
+    yaw: number,
+  ): { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture } {
+    root.name = interactive ? 'TrumpDeck' : 'BossTrumpDeck'
+    if (interactive) root.userData.trumpDeck = true
+    root.userData.baseY = TABLE_TOP + 0.02
+    root.position.y = root.userData.baseY
+    root.rotation.y = yaw
+    root.scale.setScalar(0.82)
+
+    const canvas = document.createElement('canvas')
+    canvas.width = 256
+    canvas.height = 358
+    const ctx = canvas.getContext('2d')!
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.colorSpace = THREE.SRGBColorSpace
+    texture.anisotropy = 4
+
+    const back = this.textures.get(this.textures.cardBackKey)
+    for (let i = 0; i < 8; i += 1) {
+      const geo = new THREE.BoxGeometry(CARD_W, CARD_T, CARD_H)
+      const side = new THREE.MeshStandardMaterial({ color: 0x231b16, roughness: 0.88 })
+      const face = new THREE.MeshStandardMaterial({
+        map: i === 7 ? texture : back,
+        roughness: 0.74,
+        metalness: 0.06,
+      })
+      const mesh = new THREE.Mesh(geo, [side, side, face, side, side, side])
+      mesh.position.y = i * (CARD_T + 0.0015)
+      mesh.rotation.y = (i - 3.5) * 0.006
+      mesh.castShadow = true
+      mesh.receiveShadow = true
+      root.add(mesh)
+    }
+    return { ctx, texture }
+  }
+
+  private syncTrumpDeck(count: number): void {
+    this.trumpDeckGroup.visible = count > 0
+    if (count === this.trumpDeckCount) return
+    this.trumpDeckCount = count
+    this.paintTrumpDeck(this.trumpDeckTop, count)
+  }
+
+  private syncBossTrumpDeck(count: number): void {
+    this.bossTrumpDeckGroup.visible = count > 0
+    if (count === this.bossTrumpDeckCount) return
+    this.bossTrumpDeckCount = count
+    this.paintTrumpDeck(this.bossTrumpDeckTop, count)
+  }
+
+  private paintTrumpDeck(
+    top: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture } | null,
+    count: number,
+  ): void {
+    if (!top) return
+    const { ctx, texture } = top
+    const source = this.textures.get(this.textures.cardBackKey).image
+    ctx.clearRect(0, 0, 256, 358)
+    if (source instanceof HTMLCanvasElement) ctx.drawImage(source, 0, 0)
+    else {
+      ctx.fillStyle = '#2a1210'
+      ctx.fillRect(0, 0, 256, 358)
+    }
+    ctx.fillStyle = 'rgba(8,5,4,0.76)'
+    ctx.fillRect(28, 116, 200, 126)
+    ctx.strokeStyle = 'rgba(211,170,92,0.9)'
+    ctx.lineWidth = 3
+    ctx.strokeRect(28, 116, 200, 126)
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = '#e2c27d'
+    ctx.font = '700 44px "Microsoft YaHei", sans-serif'
+    ctx.fillText('王牌', 128, 153)
+    ctx.font = '700 52px Georgia, serif'
+    ctx.fillText(String(count), 128, 207)
+    texture.needsUpdate = true
+  }
+
+  private layoutTrumpDeck(): void {
+    const narrow = this.camera.aspect < 1.2
+    this.trumpDeckGroup.position.x = narrow ? -0.55 : -1.28
+    this.trumpDeckGroup.position.z = narrow ? 1.48 : 1.82
+    this.bossTrumpDeckGroup.position.x = narrow ? -0.55 : -1.28
+    this.bossTrumpDeckGroup.position.z = narrow ? -1.48 : -1.82
+  }
+
+  private updateTrumpDeck(dt: number): void {
+    const root = this.trumpDeckGroup
+    if (!root.visible) return
+    this.trumpDeckHovered = this.trumpDeckHovered && this.canUseTrumpDeck()
+    const baseY = root.userData.baseY as number
+    const targetY = baseY + (this.trumpDeckHovered ? 0.035 : 0)
+    root.position.y += (targetY - root.position.y) * Math.min(1, dt * 14)
+    const targetScale = this.trumpDeckHovered ? 0.86 : 0.82
+    const scale = root.scale.x + (targetScale - root.scale.x) * Math.min(1, dt * 14)
+    root.scale.setScalar(scale)
   }
 
   private applyLevel(levelIndex: number): void {
@@ -5325,6 +5708,148 @@ export class SceneManager {
     }
   }
 
+  private syncTrumps(snapshot: GameSnapshot): void {
+    const wanted = new Set<string>()
+    this.syncTrumpDeck(snapshot.player.trumps.length)
+    this.syncBossTrumpDeck(snapshot.boss.trumps.length)
+    for (const actor of ['player', 'boss'] as const) {
+      const table = snapshot.tableTrumps[actor]
+      for (let index = 0; index < table.length; index += 1) {
+        const trump = table[index]
+        if (!trump) continue
+        const key = `trump-${actor}-table-${index}`
+        wanted.add(key)
+        let entry = this.trumpCards.get(key)
+        if (!entry) {
+          entry = this.spawnTrumpCard(actor, 'table', index, trump, table.length, key)
+          this.trumpCards.set(key, entry)
+        } else if (entry.trump !== trump) {
+          entry.trump = trump
+          this.applyTrumpTexture(entry)
+        }
+        this.layoutTrump(entry, table.length)
+      }
+    }
+    for (const [key, entry] of this.trumpCards) {
+      if (wanted.has(key)) continue
+      this.trumpCards.delete(key)
+      this.trumpGroup.remove(entry.mesh)
+      entry.mesh.geometry.dispose()
+      for (const material of entry.mesh.material) material.dispose()
+    }
+  }
+
+  private spawnTrumpCard(
+    actor: ActorId,
+    zone: 'hand' | 'table',
+    index: number,
+    trump: TrumpId,
+    count: number,
+    key: string,
+  ): TrumpEntry {
+    const geo = new THREE.BoxGeometry(CARD_W, CARD_T, CARD_H)
+    const side = new THREE.MeshStandardMaterial({ color: 0x231b16, roughness: 0.88 })
+    const face = new THREE.MeshStandardMaterial({ roughness: 0.66, metalness: 0.04, color: 0xa79d8e })
+    const back = new THREE.MeshStandardMaterial({
+      map: this.textures.get(this.textures.cardBackKey),
+      roughness: 0.76,
+      metalness: 0.05,
+    })
+    const mesh = new THREE.Mesh(geo, [side, side, face, back, side, side])
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    mesh.userData.trumpKey = key
+    mesh.position.copy(DECK_POS)
+    mesh.rotation.order = 'YXZ'
+    this.trumpGroup.add(mesh)
+    const entry: TrumpEntry = { mesh, actor, zone, index, trump }
+    this.dealingTrumps.add(entry)
+    this.applyTrumpTexture(entry)
+    const target = this.trumpSlot(entry, count)
+    const from = mesh.position.clone()
+    const narrow = this.camera.aspect < 1.2
+    const targetScale = zone === 'table' ? 1.05 : narrow ? 0.78 : actor === 'player' ? 0.9 : 0.85
+    mesh.scale.setScalar(0.65)
+    this.tween({
+      duration: 0.34,
+      delay: index * 0.035,
+      onUpdate: (t) => {
+        const eased = easeOutCubic(t)
+        mesh.position.lerpVectors(from, target.position, eased)
+        mesh.position.y += Math.sin(eased * Math.PI) * 0.22
+        mesh.rotation.y = target.angle
+        mesh.rotation.x = zone === 'hand' && actor === 'boss' ? Math.PI : 0
+        mesh.scale.setScalar(0.65 + (targetScale - 0.65) * eased)
+      },
+      onComplete: () => {
+        this.dealingTrumps.delete(entry)
+        mesh.position.copy(target.position)
+        mesh.rotation.y = target.angle
+        mesh.rotation.x = zone === 'hand' && actor === 'boss' ? Math.PI : 0
+        mesh.scale.setScalar(targetScale)
+      },
+    })
+    return entry
+  }
+
+  private applyTrumpTexture(entry: TrumpEntry): void {
+    const face = entry.mesh.material[cardFaceTopIndex()]
+    if (!(face instanceof THREE.MeshStandardMaterial)) return
+    const hidden = entry.zone === 'hand' && entry.actor === 'boss'
+    const texture = hidden
+      ? this.textures.get(this.textures.cardBackKey)
+      : this.textures.get(this.textures.trumpKey(entry.trump))
+    const back = entry.mesh.material[3]
+    if (back instanceof THREE.MeshStandardMaterial) {
+      back.map = this.textures.get(this.textures.cardBackKey)
+      back.needsUpdate = true
+    }
+    face.map = texture
+    face.needsUpdate = true
+  }
+
+  private trumpSlot(entry: TrumpEntry, count: number): { position: THREE.Vector3; angle: number } {
+    const center = (count - 1) / 2
+    if (entry.zone === 'table') {
+      const boss = entry.actor !== 'player'
+      return {
+        position: new THREE.Vector3(BLOOD_ANTE_SLOT.x, TABLE_TOP + CARD_T / 2 + 0.02, boss ? -BLOOD_ANTE_SLOT.z : BLOOD_ANTE_SLOT.z),
+        angle: boss ? Math.PI - BLOOD_ANTE_SLOT.angle : BLOOD_ANTE_SLOT.angle,
+      }
+    }
+    const narrow = this.camera.aspect < 1.2
+    const spacing = narrow ? 0.28 : 0.34
+    const offset = (entry.index - center) * spacing
+    const x = narrow
+      ? entry.actor === 'player' ? -0.55 + offset : 0.55 - offset
+      : entry.actor === 'player' ? -1.35 + offset : 1.35 - offset
+    const z = narrow
+      ? entry.actor === 'player' ? 1.35 : -1.35
+      : entry.actor === 'player' ? 1.22 : -1.22
+    const angle = (entry.index - center) * (entry.actor === 'player' ? -0.08 : 0.08)
+    return { position: new THREE.Vector3(x, TABLE_TOP + CARD_T / 2 + 0.014, z), angle }
+  }
+
+  private layoutTrump(entry: TrumpEntry, count: number): void {
+    if (this.dealingTrumps.has(entry)) return
+    const target = this.trumpSlot(entry, count)
+    if (entry.mesh.position.distanceToSquared(target.position) < 0.0001 && Math.abs(entry.mesh.rotation.y - target.angle) < 0.01) return
+    const from = entry.mesh.position.clone()
+    const fromAngle = entry.mesh.rotation.y
+    this.tween({
+      duration: 0.28,
+      onUpdate: (t) => {
+        const eased = easeOutCubic(t)
+        entry.mesh.position.lerpVectors(from, target.position, eased)
+        entry.mesh.rotation.y = fromAngle + (target.angle - fromAngle) * eased
+      },
+      onComplete: () => {
+        entry.mesh.position.copy(target.position)
+        entry.mesh.rotation.y = target.angle
+      },
+    })
+  }
+
   private syncCards(snapshot: GameSnapshot): void {
     this.setMaskTexture(snapshot.levelIndex)
     for (const actor of ['player', 'boss'] as const) {
@@ -5347,9 +5872,10 @@ export class SceneManager {
           }
           this.setCardFaceUp(entry, true)
         } else {
-          // 暗牌：先占位显示牌背，亮牌时再翻面
+          // 自己的暗牌在牌背刻上真实点数；对手暗牌不暴露任何数值
+          const value = actor === 'player' ? hand.cards[i]?.rank ?? null : null
           if (!entry) {
-            entry = this.spawnHoleCard(actor, i, visible.length)
+            entry = this.spawnHoleCard(actor, i, visible.length, value)
             this.cards.set(key, entry)
           }
           this.setCardFaceUp(entry, false)
@@ -5379,27 +5905,30 @@ export class SceneManager {
     })
   }
 
-  /** 对手的底牌占位：仅渲染牌背 */
-  private spawnHoleCard(actor: ActorId, index: number, count: number): CardEntry {
+  /** 双方共用圆圈牌背；只有自己的暗牌额外刻上真实点数 */
+  private spawnHoleCard(actor: ActorId, index: number, count: number, value: CardRank | null): CardEntry {
     const geo = new THREE.BoxGeometry(CARD_W, CARD_T, CARD_H)
     this.disposableGeometries.add(geo)
     const side = new THREE.MeshStandardMaterial({ color: 0x231b16, roughness: 0.88 })
     this.disposableMaterials.add(side)
+    const backKey = actor === 'player' && value !== null
+      ? this.textures.playerHoleBackKey(value)
+      : this.textures.cardBackKey
     const back = new THREE.MeshStandardMaterial({
-      map: this.textures.get(this.textures.cardBackKey),
+      map: this.textures.get(backKey),
       roughness: 0.76,
       metalness: 0.05,
     })
     this.disposableMaterials.add(back)
-    // 与 spawnCard 保持同一朝向：+y 为「朝上」面，翻面时整个牌绕 X 轴翻转
     const materials: THREE.Material[] = [side, side, back, back, side, side]
     const mesh = new THREE.Mesh(geo, materials)
+    const angle = (index - (count - 1) / 2) * -0.047
     mesh.castShadow = true
     mesh.receiveShadow = true
     mesh.position.copy(DECK_POS)
     mesh.position.y += 0.12 + index * 0.004
     mesh.rotation.order = 'YXZ'
-    mesh.rotation.set(Math.PI, Math.PI, 0)
+    mesh.rotation.set(Math.PI, angle, 0)
     mesh.scale.setScalar(0.65)
     this.cardGroup.add(mesh)
 
@@ -5409,7 +5938,7 @@ export class SceneManager {
       index,
       cardKey: 'hole',
       flip: Math.PI,
-      angle: Math.PI,
+      angle,
     }
     this.animateDeal(entry, index, count)
     return entry
@@ -5423,7 +5952,7 @@ export class SceneManager {
     const face = new THREE.MeshStandardMaterial({
       roughness: 0.66,
       metalness: 0.04,
-      color: 0xd8cfc2,
+      color: 0xa79d8e,
     })
     this.disposableMaterials.add(face)
     const back = new THREE.MeshStandardMaterial({
@@ -5434,12 +5963,13 @@ export class SceneManager {
     this.disposableMaterials.add(back)
     const materials: THREE.Material[] = [side, side, face, back, side, side]
     const mesh = new THREE.Mesh(geo, materials)
+    const angle = (index - (count - 1) / 2) * -0.047
     mesh.castShadow = true
     mesh.receiveShadow = true
     mesh.position.copy(DECK_POS)
     mesh.position.y += 0.12 + index * 0.004
     mesh.rotation.order = 'YXZ'
-    mesh.rotation.set(Math.PI, actor === 'player' ? 0 : Math.PI, 0)
+    mesh.rotation.set(Math.PI, angle, 0)
     mesh.scale.setScalar(0.65)
     mesh.userData.targetScale = 1
     this.cardGroup.add(mesh)
@@ -5450,7 +5980,7 @@ export class SceneManager {
       index,
       cardKey: '',
       flip: Math.PI,
-      angle: actor === 'player' ? 0 : Math.PI,
+      angle,
     }
     this.applyCardTexture(entry, card)
     this.animateDeal(entry, index, count)
@@ -5487,6 +6017,8 @@ export class SceneManager {
         this.dealingCards.delete(entry)
         const slot = this.cardSlot(entry.actor, index, count)
         entry.mesh.position.copy(slot.position)
+        entry.angle = slot.angle
+        entry.mesh.rotation.y = slot.angle
         if (faceDown) return
         const from = entry.flip
         this.tween({
@@ -5511,7 +6043,8 @@ export class SceneManager {
     const handShift = Math.max(0, fanHalfWidth - 0.45)
     const z = actor === 'player' ? 0.9 : -0.98
     const y = TABLE_TOP + CARD_T / 2 + 0.006
-    const angle = actor === 'player' ? offset * -0.14 : Math.PI + offset * 0.14
+    // Boss 的牌面数字随座位转 180° 朝它自己，玩家视角看是倒的
+    const angle = offset * -0.14 + (actor === 'boss' ? Math.PI : 0)
     return { position: new THREE.Vector3(offset - handShift, y, z), angle }
   }
 
@@ -5579,7 +6112,7 @@ export class SceneManager {
     }
   }
 
-  private normalizeItemModel(object: THREE.Object3D, upright = false): void {
+  private normalizeItemModel(object: THREE.Object3D, upright = false, targetSize = ITEM_MODEL_SIZE): void {
     let box = new THREE.Box3().setFromObject(object)
     let size = box.getSize(new THREE.Vector3())
     if (upright) {
@@ -5596,14 +6129,14 @@ export class SceneManager {
     size = box.getSize(new THREE.Vector3())
     const longest = Math.max(size.x, size.y, size.z)
     if (longest <= 1e-6) return
-    object.scale.setScalar(ITEM_MODEL_SIZE / longest)
+    object.scale.setScalar(targetSize / longest)
     const scaled = new THREE.Box3().setFromObject(object)
     const center = scaled.getCenter(new THREE.Vector3())
     object.position.set(-center.x, -scaled.min.y, -center.z)
   }
 
   private itemMaterialKind(
-    item: ItemId,
+    item: ActionVisualId,
     objectName: string,
     source: THREE.MeshStandardMaterial,
   ): ItemTone {
@@ -5615,7 +6148,6 @@ export class SceneManager {
       if (object.includes('brassgrip')) return 'wood'
       return 'iron'
     }
-    if (item === 'monocle') return source.name.toLowerCase().includes('glass') ? 'glass' : 'brass'
     if (item === 'aegis') {
       return object.includes('redmirror') || source.name.toLowerCase().includes('glass') ? 'glass' : 'brass'
     }
@@ -5631,12 +6163,6 @@ export class SceneManager {
       return 'iron'
     }
     if (item === 'hourglass') return source.transparent ? 'glass' : 'brass'
-    if (item === 'dagger') {
-      if (object.includes('scabbard')) return 'wood'
-      if (color === 0x5e1410) return 'wax'
-      if (color === 0x7a4a22) return 'brass'
-      return 'iron'
-    }
     if (item === 'cutter') {
       if (object.includes('scabbard')) return 'wood'
       if (color === 0xb8a888) return 'paper'
@@ -5657,7 +6183,7 @@ export class SceneManager {
     return 'iron'
   }
 
-  private applyItemStyle(object: THREE.Object3D, item: ItemId): THREE.MeshStandardMaterial[] {
+  private applyItemStyle(object: THREE.Object3D, item: ActionVisualId): THREE.MeshStandardMaterial[] {
     const palette = ITEM_PALETTE[item]
     const cache = new Map<ItemTone, THREE.MeshStandardMaterial>()
     const make = (tone: ItemTone): THREE.MeshStandardMaterial => {
@@ -5680,6 +6206,32 @@ export class SceneManager {
       this.disposableMaterials.add(material)
       cache.set(tone, material)
       return material
+    }
+    if (item === 'gloves') {
+      const materials: THREE.MeshStandardMaterial[] = []
+      object.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return
+        child.castShadow = true
+        child.receiveShadow = true
+        child.frustumCulled = false
+        const originals = Array.isArray(child.material) ? child.material : [child.material]
+        const mapped = originals.map((source) => {
+          if (!(source instanceof THREE.MeshStandardMaterial)) return source
+          const clone = source.clone()
+          clone.color.setHex(0xffffff)
+          clone.emissive.setHex(0x000000)
+          clone.emissiveIntensity = 0
+          clone.roughness = Math.max(clone.roughness, 0.55)
+          clone.userData.baseColor = 0xffffff
+          clone.userData.baseGlow = 0
+          clone.userData.glowColor = palette.glow
+          this.disposableMaterials.add(clone)
+          materials.push(clone)
+          return clone
+        })
+        child.material = mapped.length === 1 ? mapped[0] : mapped
+      })
+      return materials
     }
     object.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return
@@ -6086,7 +6638,7 @@ export class SceneManager {
     }
   }
 
-  /** 由快照驱动：玩家托盘跟 supply，Boss 托盘跟 supply / bossSupply */
+  /** 由快照驱动：两边托盘同节奏——候选升起、随机留下的那件随托盘升回 */
   private syncSupply(snapshot: GameSnapshot): void {
     const trays = this.supplyTrays
     if (!trays) return
@@ -6095,7 +6647,11 @@ export class SceneManager {
       snapshot.phase === 'supply' || snapshot.phase === 'bossSupply'
         ? snapshot.bossSupplyOptions
         : []
-    this.syncSupplyTray(trays.player, playerOptions, null)
+    this.syncSupplyTray(
+      trays.player,
+      playerOptions,
+      snapshot.phase === 'supply' ? snapshot.supplyPick : null,
+    )
     this.syncSupplyTray(
       trays.boss,
       bossOptions,
@@ -6119,11 +6675,11 @@ export class SceneManager {
     if (pick) {
       if (tray.picked === pick && (tray.state === 'picking' || tray.state === 'picked')) return
       if (tray.state === 'opening') {
-        // 玩家可能秒选：等这盘升完，再走 Boss 的挑选动画
+        // 候选还在升起时就被系统选中：等这盘升完再走沉盘挑选
         tray.pendingPick = pick
         return
       }
-      this.startBossPick(tray, pick)
+      this.startSupplyPick(tray, pick)
       return
     }
     if (tray.state === 'open') {
@@ -6162,7 +6718,7 @@ export class SceneManager {
         // 道具在桌面以下放好；升起来时才真正进入视野，不再原地缩放出现
         options.forEach((item, index) => this.spawnSupplyItem(tray, item, index, options.length))
         if (tray.pendingPick) {
-          this.startBossPick(tray, tray.pendingPick)
+          this.startSupplyPick(tray, tray.pendingPick)
           return
         }
         this.tween({
@@ -6192,8 +6748,8 @@ export class SceneManager {
     })
   }
 
-  /** Boss 选定：整盘载着候选沉下去，只带着它挑的一件升回来 */
-  private startBossPick(tray: SupplyTrayView, pick: ItemId): void {
+  /** 选定：整盘载着候选沉下去，只带着随机留下的那一件升回来；玩家与 Boss 共用 */
+  private startSupplyPick(tray: SupplyTrayView, pick: ItemId): void {
     tray.generation += 1
     const generation = tray.generation
     tray.state = 'picking'
@@ -6377,20 +6933,21 @@ export class SceneManager {
 
   /** 道具内容与摆放姿态分离：归一化只作用在 content 上，外层 group 只负责槽位与朝向 */
   private buildItemContent(
-    item: ItemId,
+    item: ActionVisualId,
     source?: THREE.Object3D,
   ): { content: THREE.Group; materials: THREE.MeshStandardMaterial[] } {
     const upright = item === 'aegis'
     const content = new THREE.Group()
+    const targetSize = item === 'gloves' ? 0.48 : ITEM_MODEL_SIZE
     const template = source ?? this.itemModelTemplates.get(item)
     if (template) {
       const clone = template.clone(true)
       clone.userData.isModelClone = true
-      this.normalizeItemModel(clone, upright)
+      this.normalizeItemModel(clone, upright, targetSize)
       content.add(clone)
     } else {
       this.buildItemMesh(item, content, [])
-      this.normalizeItemModel(content, upright)
+      this.normalizeItemModel(content, upright, targetSize)
     }
     const materials = this.applyItemStyle(content, item)
     return { content, materials }
@@ -6480,7 +7037,7 @@ export class SceneManager {
     group.add(proxy)
   }
 
-  private buildItemMesh(item: ItemId, group: THREE.Group, materials: THREE.MeshStandardMaterial[]): void {
+  private buildItemMesh(item: ActionVisualId, group: THREE.Group, materials: THREE.MeshStandardMaterial[]): void {
     const add = <G extends THREE.BufferGeometry>(
       geometry: G,
       material: THREE.MeshStandardMaterial,
@@ -6650,30 +7207,6 @@ export class SceneManager {
         }
         break
       }
-      case 'dagger': {
-        const bladeMat = makeStandardMaterial(0xb8c2c6, 0.98, 0.22)
-        const guardMat = makeStandardMaterial(0x7a4a22, 0.9, 0.35)
-        const bloodMat = makeStandardMaterial(0x5e1410, 0.35, 0.55)
-        add(new THREE.ConeGeometry(0.04, 0.3, 4), bladeMat, (mesh) => {
-          mesh.position.set(0, 0.2, 0)
-          mesh.rotation.y = Math.PI / 4
-          mesh.scale.z = 0.4
-        })
-        add(new THREE.BoxGeometry(0.19, 0.024, 0.045), guardMat, (mesh) => {
-          mesh.position.y = 0.06
-        })
-        add(new THREE.CylinderGeometry(0.021, 0.024, 0.11, 10), guardMat, (mesh) => {
-          mesh.position.y = 0.005
-        })
-        add(new THREE.SphereGeometry(0.03, 10, 8), guardMat, (mesh) => {
-          mesh.position.y = -0.05
-        })
-        add(new THREE.BoxGeometry(0.012, 0.06, 0.012), bloodMat, (mesh) => {
-          mesh.position.set(0.02, 0.16, 0.01)
-          mesh.rotation.z = 0.2
-        })
-        break
-      }
       case 'aegis': {
         // 护心镜：倾斜立起的铜镜，边缘一圈刻纹
         const bronzeMat = makeStandardMaterial(0x8a6a3a, 0.9, 0.32)
@@ -6757,31 +7290,6 @@ export class SceneManager {
         })
         break
       }
-      case 'monocle': {
-        // 单片眼镜：黄铜镜圈 + 镜腿链，斜靠在桌面上
-        const rimMat = makeStandardMaterial(0x8a6a3a, 0.92, 0.3)
-        const glassMat = new THREE.MeshStandardMaterial({
-          color: 0xcfd8d4,
-          metalness: 0.1,
-          roughness: 0.08,
-          transparent: true,
-          opacity: 0.45,
-        })
-        this.disposableMaterials.add(glassMat)
-        add(new THREE.TorusGeometry(0.085, 0.01, 8, 24), rimMat, (mesh) => {
-          mesh.position.y = 0.095
-          mesh.rotation.x = -0.5
-        })
-        add(new THREE.CircleGeometry(0.078, 24), glassMat, (mesh) => {
-          mesh.position.y = 0.096
-          mesh.rotation.x = -0.5
-        })
-        add(new THREE.CylinderGeometry(0.005, 0.005, 0.14, 6), rimMat, (mesh) => {
-          mesh.position.set(0.11, 0.03, 0.06)
-          mesh.rotation.set(0.4, 0, -0.9)
-        })
-        break
-      }
       case 'hammer': {
         // 重锤：短柄方头锤，锤头缠着脏布条
         const headMat = makeStandardMaterial(0x5a5f63, 0.95, 0.34)
@@ -6802,6 +7310,26 @@ export class SceneManager {
         add(new THREE.TorusGeometry(0.026, 0.007, 6, 12), haftMat, (mesh) => {
           mesh.position.set(0, -0.06, 0)
           mesh.rotation.x = Math.PI / 2
+        })
+        break
+      }
+      case 'gloves': {
+        const knitMat = makeStandardMaterial(0x2f6b52, 0.05, 0.92)
+        const rubberMat = makeStandardMaterial(0x1b1d1c, 0.05, 0.8)
+        add(new THREE.BoxGeometry(0.2, 0.045, 0.22), knitMat, (mesh) => {
+          mesh.position.y = 0.03
+        })
+        for (const x of [-0.072, -0.024, 0.024, 0.072]) {
+          add(new THREE.BoxGeometry(0.038, 0.035, 0.16), knitMat, (mesh) => {
+            mesh.position.set(x, 0.035, -0.17)
+          })
+        }
+        add(new THREE.BoxGeometry(0.055, 0.035, 0.12), knitMat, (mesh) => {
+          mesh.position.set(-0.13, 0.035, -0.04)
+          mesh.rotation.y = -0.55
+        })
+        add(new THREE.BoxGeometry(0.17, 0.012, 0.18), rubberMat, (mesh) => {
+          mesh.position.y = 0.058
         })
         break
       }
@@ -6971,7 +7499,7 @@ export class SceneManager {
         this.canvas.style.cursor = hit ? 'pointer' : ''
         return
       }
-      if (this.isPointerOnGun(event)) {
+      if (this.isPointerOnGun(event) && !this.stealTargeting) {
         const rect = this.canvas.getBoundingClientRect()
         this.actionHovered = null
         this.setHovered(null)
@@ -6991,8 +7519,10 @@ export class SceneManager {
     this.raycaster.setFromCamera(this.pointer, this.camera)
     const groups: THREE.Object3D[] = []
     this.actionHovered = null
+    this.trumpDeckHovered = false
     for (const button of this.actionButtons.values()) groups.push(button.root)
     for (const entry of this.items.values()) groups.push(entry.group)
+    groups.push(this.trumpDeckGroup)
     // 只有升起完成后才允许悬停/点击；沉在桌面以下的候选不参与拾取
     if (this.supplyTrays?.player.state === 'open') {
       for (const entry of this.supplyItems.values()) groups.push(entry.group)
@@ -7005,11 +7535,19 @@ export class SceneManager {
       return
     }
     let node: THREE.Object3D | null = first.object
-    while (node && node.userData.item === undefined && node.userData.tableAction === undefined) {
+    while (node && node.userData.item === undefined && node.userData.tableAction === undefined && !node.userData.trumpDeck) {
       node = node.parent
     }
+    if (node?.userData.trumpDeck) {
+      this.trumpDeckHovered = this.canUseTrumpDeck() && !this.stealTargeting
+      this.setHovered(null)
+      this.setSupplyHovered(null)
+      this.canvas.style.cursor = this.trumpDeckHovered ? 'pointer' : ''
+      return
+    }
     if (node?.userData.tableAction) {
-      this.actionHovered = node.userData.tableAction as TableAction
+      const action = node.userData.tableAction as TableAction
+      this.actionHovered = action === 'hit' && this.lastSnapshot?.player.hand.busted ? null : action
       this.setHovered(null)
       this.setSupplyHovered(null)
       return
@@ -7028,6 +7566,17 @@ export class SceneManager {
     }
     this.setSupplyHovered(null)
     const entry = key ? this.items.get(key) ?? null : null
+    if (this.stealTargeting) {
+      const eligible = !!entry && (entry.actor === 'boss' ? entry.item !== 'gloves' : entry.item === 'gloves')
+      if (!eligible) {
+        this.setHovered(null)
+        this.canvas.style.cursor = ''
+        return
+      }
+      this.setHovered(entry, event.clientX - rect.left, event.clientY - rect.top)
+      this.canvas.style.cursor = 'pointer'
+      return
+    }
     this.setHovered(entry, event.clientX - rect.left, event.clientY - rect.top)
   }
 
@@ -7046,7 +7595,7 @@ export class SceneManager {
         if (target) this.callbacks.onTargetPick?.(target)
         return
       }
-      if (this.isPointerOnGun(event)) {
+      if (this.isPointerOnGun(event) && !this.stealTargeting) {
         this.armTargetPick()
         return
       }
@@ -7058,10 +7607,12 @@ export class SceneManager {
       return
     }
     if (pressed) return
+    if (this.trumpDeckHovered) {
+      this.callbacks.onTrumpDeckClick?.()
+      return
+    }
     if (this.supplyHovered) {
-      const item = this.supplyHovered.item
       this.setSupplyHovered(null)
-      this.callbacks.onSupplyPick?.(item)
       return
     }
     const entry = this.hovered
@@ -7070,6 +7621,7 @@ export class SceneManager {
   }
 
   private setHovered(entry: ItemEntry | null, x = 0, y = 0): void {
+    const steal = !!entry && this.stealTargeting && entry.actor === 'boss'
     if (this.hovered === entry) {
       if (entry) {
         const catalog = ITEM_CATALOG[entry.item]
@@ -7080,6 +7632,7 @@ export class SceneManager {
           summary: catalog.summary,
           x,
           y,
+          steal,
         })
       }
       return
@@ -7099,6 +7652,7 @@ export class SceneManager {
       summary: catalog.summary,
       x,
       y,
+      steal,
     })
   }
 
@@ -7177,21 +7731,24 @@ export class SceneManager {
       const plate = this.scorePlates.get(actor)
       if (!plate) continue
       const view = actor === 'player' ? snapshot.player : snapshot.boss
-      const shown = evaluateHand(view.visibleHand.visible.filter((card): card is Card => card !== null))
-      const hidden = view.visibleHand.visible.some((card) => card === null)
+      // 玩家暗牌点数已刻在牌背，直接显示真实总分；Boss 仍只计可见牌
+      const shown = actor === 'player'
+        ? view.visibleHand
+        : evaluateHand(view.visibleHand.visible.filter((card): card is Card => card !== null), snapshot.roundTarget)
+      const hidden = actor === 'boss' && view.visibleHand.visible.some((card) => card === null)
       const dealt = shown.cards.length > 0
       const key = dealt
-        ? `${shown.total}|${shown.soft}|${shown.blackjack}|${shown.busted}|${view.standing}|${hidden}`
+        ? `${shown.total}|${shown.busted}|${view.stayed}|${hidden}|${snapshot.roundTarget}|${snapshot.lastPerfectWin}`
         : 'empty'
       if (key === plate.key) continue
       plate.key = key
       this.paintScore(actor, plate, {
         total: shown.total,
-        soft: shown.soft,
-        blackjack: shown.blackjack,
         busted: shown.busted,
         hidden,
-        standing: view.standing,
+        stayed: view.stayed,
+        target: snapshot.roundTarget,
+        perfect: actor === 'player' && snapshot.lastPerfectWin,
         dealt,
       })
       if (!dealt) continue
@@ -7210,11 +7767,11 @@ export class SceneManager {
     plate: ScorePlate,
     info: {
       total: number
-      soft: boolean
-      blackjack: boolean
       busted: boolean
       hidden: boolean
-      standing: boolean
+      stayed: boolean
+      target: number
+      perfect: boolean
       dealt: boolean
     },
   ): void {
@@ -7227,8 +7784,14 @@ export class SceneManager {
       return
     }
     const isPlayer = actor === 'player'
-    const ink = info.busted ? (isPlayer ? '#9a8767' : '#ab4a33') : isPlayer ? '#f4e6c0' : '#ff8a5a'
-    const dim = isPlayer ? 'rgba(244,230,192,0.68)' : 'rgba(255,150,100,0.85)'
+    const ink = info.busted
+      ? (isPlayer ? '#9a8767' : '#ab4a33')
+      : info.perfect
+        ? '#e8c774'
+        : isPlayer
+          ? '#d8c7a4'
+          : '#ff8a5a'
+    const dim = isPlayer ? 'rgba(216,199,164,0.68)' : 'rgba(255,150,100,0.85)'
     const spaced = ctx as CanvasRenderingContext2D & { letterSpacing: string }
 
     ctx.save()
@@ -7255,21 +7818,24 @@ export class SceneManager {
     ctx.lineWidth = 7
     ctx.stroke()
 
-    // 主数字 + 暗牌「+ ?」；字要大，远角透视下小字会被压缩得读不出来
+    // 主数字 + Boss 暗牌「+ ?」+ 动态目标后缀
     const numText = String(info.total)
-    const numFont = '700 152px Impact, "Arial Black", "Microsoft YaHei", sans-serif'
-    const qFont = '600 64px "Microsoft YaHei", sans-serif'
+    const suffixText = `/${info.target}`
+    const numFont = '700 132px Impact, "Arial Black", "Microsoft YaHei", sans-serif'
+    const smallFont = '600 62px "Microsoft YaHei", sans-serif'
     spaced.letterSpacing = '0px'
     ctx.font = numFont
     const numW = ctx.measureText(numText).width
-    let qW = 0
-    if (info.hidden) {
-      ctx.font = qFont
-      qW = ctx.measureText('+ ?').width
-    }
-    const gap = info.hidden ? 24 : 0
-    const left = (w - (numW + gap + qW)) / 2
+    ctx.font = smallFont
+    const qW = info.hidden ? ctx.measureText('+ ?').width : 0
+    const suffixW = ctx.measureText(suffixText).width
+    const gap = info.hidden ? 18 : 0
+    const suffixGap = 10
+    const contentW = numW + gap + qW + suffixGap + suffixW
+    const left = (w - contentW) / 2
     const numX = left + numW / 2
+    const qX = left + numW + gap + qW / 2
+    const suffixX = left + numW + gap + qW + suffixGap + suffixW / 2
 
     ctx.font = numFont
     ctx.lineJoin = 'round'
@@ -7281,14 +7847,17 @@ export class SceneManager {
     ctx.shadowOffsetY = 6
     ctx.fillStyle = ink
     ctx.fillText(numText, numX, 100)
+    ctx.font = smallFont
+    ctx.strokeStyle = 'rgba(6,10,7,0.45)'
+    ctx.lineWidth = 6
     if (info.hidden) {
-      ctx.font = qFont
-      ctx.strokeStyle = 'rgba(6,10,7,0.45)'
-      ctx.lineWidth = 7
-      ctx.strokeText('+ ?', left + numW + gap + qW / 2, 110)
+      ctx.strokeText('+ ?', qX, 110)
       ctx.fillStyle = dim
-      ctx.fillText('+ ?', left + numW + gap + qW / 2, 110)
+      ctx.fillText('+ ?', qX, 110)
     }
+    ctx.strokeText(suffixText, suffixX, 110)
+    ctx.fillStyle = dim
+    ctx.fillText(suffixText, suffixX, 110)
     ctx.shadowColor = 'transparent'
     ctx.shadowBlur = 0
     ctx.shadowOffsetY = 0
@@ -7299,29 +7868,25 @@ export class SceneManager {
       ctx.lineWidth = 8
       ctx.beginPath()
       ctx.moveTo(left - 16, 138)
-      ctx.lineTo(left + numW + 16, 62)
+      ctx.lineTo(left + contentW + 16, 62)
       ctx.stroke()
     }
 
     const status = info.busted
       ? '爆 牌'
-      : info.blackjack
-        ? 'BLACKJACK'
-        : info.standing
+      : info.perfect
+        ? '满 点'
+        : info.stayed
           ? '停 牌'
-          : info.soft
-            ? '软 牌'
-            : ''
+          : ''
     if (status) {
-      ctx.font = info.blackjack
-        ? '700 32px "Arial Black", "Segoe UI", sans-serif'
-        : '600 32px "Microsoft YaHei", "Segoe UI", sans-serif'
-      spaced.letterSpacing = info.blackjack ? '5px' : '9px'
+      ctx.font = '600 32px "Microsoft YaHei", "Segoe UI", sans-serif'
+      spaced.letterSpacing = '9px'
       ctx.fillStyle = info.busted
         ? isPlayer
           ? 'rgba(244,230,192,0.6)'
           : 'rgba(255,96,64,0.9)'
-        : info.blackjack
+        : info.perfect
           ? '#e8c774'
           : dim
       ctx.strokeStyle = 'rgba(6,10,7,0.45)'
@@ -7562,10 +8127,7 @@ export class SceneManager {
       return
     }
     if (key.startsWith('card-')) {
-      const match = /^card-(spade|heart|diamond|club)-(10|[1-9])$/.exec(key)
-      if (!match) return
-      const suit = match[1] as CardSuit
-      const rank = Number(match[2]) as CardRank
+      if (!/^card-(spade|heart|diamond|club)-(11|10|[1-9])$/.test(key)) return
       for (const entry of this.cards.values()) {
         if (entry.cardKey !== key) continue
         const material = entry.mesh.material[cardFaceTopIndex()]
@@ -7573,8 +8135,6 @@ export class SceneManager {
           material.map = texture
           material.needsUpdate = true
         }
-        void suit
-        void rank
       }
     }
   }
@@ -7588,6 +8148,7 @@ export class SceneManager {
     this.camera.aspect = width / height
     this.camera.fov = width / height < 1.2 ? 58 : 48
     this.camera.updateProjectionMatrix()
+    this.layoutTrumpDeck()
   }
 
   private disposeObject(object: THREE.Object3D): void {

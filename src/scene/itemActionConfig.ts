@@ -1,15 +1,15 @@
-import type { ItemId } from '../game/GameEngine'
+import type { ActionVisualId } from '../game/GameEngine'
 
 export type ItemActionTiming = { start: number; contact: number; commit: number; end: number; release: number }
 export type Vec3Tuple = readonly [number, number, number]
-export type RemnantPolicy = 'round' | 'shield' | 'cuffs' | 'hourglass'
+export type RemnantPolicy = 'round' | 'cuffs' | 'hourglass'
 export type ItemActionSound = 'metal' | 'paper' | 'glass' | 'soft'
 
 export interface ItemActionSpec {
   readonly timings: ItemActionTiming
   readonly propScale: number
   readonly target: Vec3Tuple
-  readonly hero?: 'cutter' | 'monocle' | 'saw' | 'paper' | 'strip'
+  readonly hero?: 'cutter' | 'saw' | 'paper' | 'strip'
   readonly focusOffset: Vec3Tuple
   readonly grip: { readonly offset: Vec3Tuple; readonly local?: boolean }
   readonly support: { readonly offset: Vec3Tuple; readonly from: 'target' | 'tool' | 'paper' | 'strip' }
@@ -38,7 +38,7 @@ const DEFAULT_SPEC = {
 
 const spec = (timings: ItemActionTiming, overrides: Partial<ItemActionSpec> = {}): ItemActionSpec => ({ ...DEFAULT_SPEC, timings, ...overrides })
 
-export const ITEM_ACTION_SPECS: Readonly<Record<ItemId, ItemActionSpec>> = {
+export const ITEM_ACTION_SPECS: Readonly<Record<ActionVisualId, ItemActionSpec>> = {
   sedative: spec(
     { start: 0.8, contact: 1.2, commit: 2.8, end: 3.6, release: 3.1 },
     {
@@ -50,14 +50,6 @@ export const ITEM_ACTION_SPECS: Readonly<Record<ItemId, ItemActionSpec>> = {
       sound: 'soft',
     },
   ),
-  dagger: spec(
-    { start: 0.8, contact: 1.25, commit: 2.7, end: 3.8, release: 3.3 },
-    {
-      grip: { offset: [0, 0, 0.115], local: true },
-      support: { offset: [-0.37, -0.09, -0.07], from: 'target' },
-      leftRotation: [0.1, -0.6, Math.PI * 0.55],
-    },
-  ),
   magnifier: spec(
     { start: 0.6, contact: 0.9, commit: 1, end: 3.2, release: 2.8 },
     {
@@ -66,18 +58,6 @@ export const ITEM_ACTION_SPECS: Readonly<Record<ItemId, ItemActionSpec>> = {
       support: { offset: [-0.11, -0.06, 0.02], from: 'tool' },
       leftRotation: [0.15, -0.5, Math.PI * 0.42],
       leftGrip: 0.62,
-      sound: 'glass',
-    },
-  ),
-  monocle: spec(
-    { start: 0.6, contact: 0.9, commit: 1, end: 3.4, release: 3 },
-    {
-      hero: 'monocle',
-      grip: { offset: [0.1, 0, 0] },
-      support: { offset: [-0.1, 0.025, 0.015], from: 'tool' },
-      leftRotation: [0.1, -0.35, -Math.PI * 0.35],
-      rightRotation: [0, -0.15, -0.18],
-      leftGrip: 0.58,
       sound: 'glass',
     },
   ),
@@ -123,7 +103,6 @@ export const ITEM_ACTION_SPECS: Readonly<Record<ItemId, ItemActionSpec>> = {
       support: { offset: [-0.13, 0.035, 0.06], from: 'tool' },
       leftRotation: [0.1, -0.45, -Math.PI * 0.28],
       leftGrip: 0.62,
-      remnant: 'shield',
       sound: 'glass',
       camera: { distance: 1.8, fov: 37 },
     },
@@ -172,6 +151,19 @@ export const ITEM_ACTION_SPECS: Readonly<Record<ItemId, ItemActionSpec>> = {
       camera: { distance: 1.5, fov: 35 },
     },
   ),
+  gloves: spec(
+    { start: 0.6, contact: 1.1, commit: 1.6, end: 2.8, release: 2.4 },
+    {
+      propScale: 0.5,
+      target: [0.78, 1.12, -0.92],
+      grip: { offset: [0.04, 0.02, 0.08] },
+      support: { offset: [-0.18, -0.08, 0.04], from: 'tool' },
+      leftRotation: [0.1, -0.35, -Math.PI * 0.3],
+      leftGrip: 0.55,
+      sound: 'soft',
+      camera: { distance: 1.7, fov: 38 },
+    },
+  ),
   hourglass: spec(
     { start: 0.7, contact: 1.5, commit: 2, end: 3, release: 2.6 },
     {
@@ -188,6 +180,11 @@ export const ITEM_ACTION_SPECS: Readonly<Record<ItemId, ItemActionSpec>> = {
   ),
 }
 
-export function itemActionCamera(item: ItemId): { distance: number; fov: number } {
+export function itemActionCamera(item: ActionVisualId): { distance: number; fov: number } {
   return ITEM_ACTION_SPECS[item].camera ?? { distance: 1.62, fov: 36 }
 }
+
+/** 血注驻场区：牌落在血架右侧的空桌（压不到计分数字）；Boss 侧 x 不变、z 取反并转身朝 Boss。
+ * 沙漏立在驻场牌后侧的空位，避开手牌、牌面、按键与计分数字，保证互不穿模。 */
+export const BLOOD_ANTE_SLOT = { x: -0.565, z: 1.34, angle: -0.14 } as const
+export const BLOOD_ANTE_HOURGLASS = { x: -0.6, z: 0.96 } as const

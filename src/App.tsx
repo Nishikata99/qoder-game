@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { SoundEngine } from './audio/SoundEngine'
 import { GameCanvas, GunTooltip, ItemTooltip } from './components/GameCanvas'
 import { RulesModal, type ModalTab } from './components/RulesModal'
+import { TrumpHandOverlay } from './components/TrumpHandOverlay'
 import { NarrativeDirector, type NarrativeMode, type NarrativeVisual } from './narrative/NarrativeDirector'
 import { DevBridge } from './game/DevBridge'
 import { DevPanel } from './components/DevPanel'
@@ -18,15 +19,14 @@ import type { QualityPreset, SceneManager } from './scene/SceneManager'
 import type { BossPoseCue } from './scene/SceneManager'
 import type { ItemActionCue } from './scene/ItemActions'
 import { ITEM_ACTION_SPECS } from './scene/itemActionConfig'
-import type { ActorId, ActorView, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
+import type { ActionVisualId, ActorId, ActorView, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
 import {
   GameEngine,
+  DECK_SIZE,
   ITEM_CATALOG,
   LEVELS,
-  PLAYER_ITEM_CAP,
   createSeededRandom,
   evaluateHand,
-  formatCard as formatCardLabel,
 } from './game/GameEngine'
 import { bossName, levelTitle, narrativeLog } from './narrative/copy'
 import { useDialogFocus } from './components/useDialogFocus'
@@ -46,9 +46,9 @@ interface ClueLine {
 const GUIDE_KEY = 'blood-ante.guideSeen'
 
 const GUIDE_LINES = [
-  '比 21 点：要牌或停牌；赢下这轮，枪就归你。牌库只有 A–10，没有 J/Q/K。',
-  '枪口由你定：射它，或射自己。对自己开未知空膛，桌下可能回一件遗物。',
-  '三层赎契：每层血袋重置；清层只能带走一件补给。',
+  '比 21 点：要牌或停牌；赢下这轮，枪就归你。牌库只有 1–11 共 11 张，没有 J/Q/K。',
+  '枪口由你定：射它，或射自己。对自己开空膛不拿道具，直接结束这次开枪。',
+  '三层赎契：每层血袋重置；清层后从门前补给里随机收下一件，自动进门。',
 ] as const
 
 const NARRATIVE_SEEN: Readonly<Record<NarrativeMode, string>> = {
@@ -273,6 +273,10 @@ export default function App() {
   const [wakeBlur, setWakeBlur] = useState(0)
   const [narrative, setNarrative] = useState<NarrativeVisual | null>(null)
   const [clueLine, setClueLine] = useState<ClueLine | null>(null)
+  const [bossBark, setBossBark] = useState<ClueLine | null>(null)
+  const [trumpHandOpen, setTrumpHandOpen] = useState(false)
+  /** 窃贼手套选目标：点对手道具即偷；点回手套或 Esc 取消 */
+  const [glovePicking, setGlovePicking] = useState(false)
   const [devOpen, setDevOpen] = useState(false)
   const [corridorState, setCorridorState] = useState<'idle' | 'playing' | 'done'>('idle')
   const [skipAvailable, setSkipAvailable] = useState(false)
@@ -288,6 +292,17 @@ export default function App() {
   const [loadFailed, setLoadFailed] = useState(false)
   const [logOpen, setLogOpen] = useState(false)
   const [spokenLine, setSpokenLine] = useState('')
+
+  useEffect(() => {
+    if (trumpHandOpen && snapshot?.phase !== 'playerTurn') setTrumpHandOpen(false)
+  }, [trumpHandOpen, snapshot?.phase])
+
+  useEffect(() => {
+    if (!glovePicking) return
+    const ready = snapshot?.phase === 'targeting' && snapshot.pendingShot === 'player' && !snapshot.inputLocked
+    if (!ready) setGlovePicking(false)
+  }, [glovePicking, snapshot?.phase, snapshot?.pendingShot, snapshot?.inputLocked])
+
   const guideRef = useRef<HTMLDivElement | null>(null)
   const logRef = useRef<HTMLDivElement | null>(null)
   const pendingIntroRef = useRef(false)
@@ -313,6 +328,8 @@ export default function App() {
   const cutsceneNextRef = useRef<(() => void) | null>(null)
   const cutsceneKindRef = useRef<'transition' | 'ending'>('transition')
   const cutsceneSkippableRef = useRef(true)
+  /** 章节过渡叙事挂起的是否是本组件发起的 pause，结束时只恢复自己挂起的 */
+  const narrativePauseRef = useRef(false)
 
   /**
    * 关卡间 2D 过场只叠在 beginLevel 的 reloading 黑场上，播完自动卸载，不改引擎时序。
@@ -424,7 +441,7 @@ export default function App() {
     noticeTimer.current = window.setTimeout(() => setNotice(null), 2400)
   }, [])
 
-  const handleItemCue = useCallback((item: ItemId, cue: ItemActionCue) => {
+  const handleItemCue = useCallback((item: ActionVisualId, cue: ItemActionCue) => {
     if (cue === 'pickup') sound.playItemUse()
     else if (cue === 'contact') sound.playItemContact(ITEM_ACTION_SPECS[item].sound)
     else if (ITEM_ACTION_SPECS[item].sound === 'paper') sound.playPaperRustle()
@@ -445,11 +462,6 @@ export default function App() {
               setMuzzleFlash((n) => n + 1)
               if (muzzleTimer.current !== null) window.clearTimeout(muzzleTimer.current)
               muzzleTimer.current = window.setTimeout(() => setMuzzleFlash(0), 160)
-            }
-            if (event.blocked !== null) {
-              showNotice('护心镜碎裂：伤害被完全挡下')
-              setSpokenLine('实弹被护心镜完全挡下。')
-              break
             }
             setSpokenLine(
               event.target === 'player'
@@ -482,45 +494,27 @@ export default function App() {
           break
         case 'itemUsed':
           break
-        case 'magnetSwap':
-          showNotice(`磁铁换牌：你拿到 ${formatCardLabel(event.card)}`)
+        case 'trumpPlayed':
+          if (event.actor === 'player') showNotice(`${event.detail}`)
           break
-        case 'hourglass':
-          sound.playHourglass()
-          showNotice('沙漏逆转：本局点数更小者获胜')
+        case 'perfectWin':
+          showNotice(
+            event.actor === 'player'
+              ? event.item
+                ? `满点补给：获得【${ITEM_CATALOG[event.item].name}】`
+                : '满点收局，背包已满'
+              : '对手满点收局，它摸走了一件补给',
+          )
           break
         case 'chamberRevealed':
           if (event.actor === 'player') {
             showNotice(event.chamber === 'live' ? '放大镜：膛内是实弹' : '放大镜：膛内是空膛')
           }
           break
-        case 'chamberRecovered':
-          if (event.actor === 'player') {
-            showNotice(`空膛回收：获得【${ITEM_CATALOG[event.item].name}】`)
-          }
-          break
-        case 'daggerReshuffle':
-          sound.playReload()
-          break
-        case 'cardCuttered':
-          if (event.actor === 'player') {
-            showNotice(`裁纸刀：裁掉了 ${formatCardLabel(event.old)}`)
-          }
-          break
-        case 'iouSigned':
-          if (event.actor === 'player') {
-            showNotice('借据落印：本局赢下的实弹 +2，输掉时挨的实弹 +1')
-          }
-          break
-        case 'cardSealed':
-          if (event.actor === 'player') {
-            showNotice(`封条贴住 ${formatCardLabel(event.card)}，本局不计点`)
-          }
-          break
-        case 'deckPeeked':
-          if (event.actor === 'player') {
-            showNotice(`单片眼镜：牌靴顶部 ${event.cards.map((card) => formatCardLabel(card)).join('、')}`)
-          }
+        case 'chamberDiscarded':
+          // 退弹是公开动作：谁用的、退出什么都摆在桌面上给双方看
+          showNotice(event.chamber === 'live' ? '退弹：实弹' : '退弹：空膛')
+          sound.playItemContact('metal')
           break
         case 'notice':
           showNotice(event.message)
@@ -616,8 +610,13 @@ export default function App() {
         }
         return
       }
-      // Esc：暂停/继续；弹窗或叙事期间交给它们自己处理
+      // Esc：手套选目标时先取消拾取；否则暂停/继续；弹窗或叙事期间交给它们自己处理
       if (event.key === 'Escape') {
+        if (glovePicking) {
+          event.preventDefault()
+          setGlovePicking(false)
+          return
+        }
         if (modal !== null || narrativeRef.current !== null) return
         if (!startedRef.current || finishedRef.current) return
         event.preventDefault()
@@ -656,15 +655,6 @@ export default function App() {
         }
         return
       }
-      if (snap.phase === 'supply') {
-        const index = Number(event.key)
-        if (Number.isInteger(index) && index >= 1 && index <= snap.supplyOptions.length) {
-          event.preventDefault()
-          const item = snap.supplyOptions[index - 1]
-          if (item) game.chooseSupply(item)
-        }
-        return
-      }
       if (snap.phase !== 'playerTurn') return
       const key = event.key.toLowerCase()
       if (key === 'h') {
@@ -677,7 +667,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [game, togglePause, paused, modal, skipCutscene])
+  }, [game, togglePause, paused, modal, skipCutscene, glovePicking])
 
   const hpRatio =
     snapshot && snapshot.player.maxHp > 0 ? snapshot.player.hp / snapshot.player.maxHp : 1
@@ -746,7 +736,8 @@ export default function App() {
     host.__itemActionDebug = {
       grant: (item: ItemId) => devBridge.grantItem(item),
       hp: (value: number) => devBridge.setPlayerHp(value),
-      use: (item: ItemId) => game.useItem(item),
+      use: (item: ItemId, target?: ItemId) => game.useItem(item, target),
+      steal: (on: boolean) => setGlovePicking(on),
       status: () => sceneRef.current?.itemActionStatus() ?? null,
       skip: () => sceneRef.current?.skipItemAction() ?? false,
       cancel: () => sceneRef.current?.cancelItemAction(),
@@ -759,7 +750,6 @@ export default function App() {
       memory: () => sceneRef.current?.previewRenderMemory() ?? null,
       phase: () => game.getSnapshot().phase,
       items: () => [...game.getSnapshot().player.items],
-      choose: (index: number) => game.resolveCardChoice(index),
     }
     return () => { delete host.__itemActionDebug }
   }, [game, devBridge])
@@ -815,7 +805,7 @@ export default function App() {
     if (!sound.isAmbientPlaying) sound.startAmbient()
     void sound.startRoomTone(`${import.meta.env.BASE_URL}audio/room-tone.ogg`)
     setCorridorState('done')
-    game.startAtLevel(checkpoint.levelIndex, checkpoint.carryOver, true)
+    game.startAtLevel(checkpoint.levelIndex, checkpoint.carryOver)
   }
 
   /** 左门新开一局：旧存档立即作废，避免重载后还能从右门续旧进度 */
@@ -827,6 +817,7 @@ export default function App() {
   const pendingClueRef = useRef<readonly ClueLine[] | null>(null)
   const clueTimer = useRef<number | null>(null)
   const clueTimersRef = useRef<number[]>([])
+  const bossBarkTimer = useRef<number | null>(null)
 
   function clearClueTimers() {
     if (clueTimer.current !== null) window.clearTimeout(clueTimer.current)
@@ -841,6 +832,13 @@ export default function App() {
     clueTimer.current = window.setTimeout(() => setClueLine(null), durationMs)
   }
 
+  function showBossBark(action: 'hit' | 'stand') {
+    const durationMs = action === 'hit' ? 1100 : 1400
+    setBossBark({ text: action === 'hit' ? '再来一张' : '我不要了', durationMs, channel: 'enemy' })
+    if (bossBarkTimer.current !== null) window.clearTimeout(bossBarkTimer.current)
+    bossBarkTimer.current = window.setTimeout(() => setBossBark(null), durationMs)
+  }
+
   function showDialogueSequence(lines: readonly ClueLine[]) {
     clearClueTimers()
     let delay = 0
@@ -851,14 +849,17 @@ export default function App() {
     }
   }
 
-  useEffect(() => () => clearClueTimers(), [])
+  useEffect(() => () => {
+    clearClueTimers()
+    if (bossBarkTimer.current !== null) window.clearTimeout(bossBarkTimer.current)
+  }, [])
 
   function handleEventNarrative(event: GameEvent) {
     // 只在结果节点播报，不做每回合点数播报
     if (event.type === 'bust') {
       setSpokenLine(event.actor === 'player' ? '你爆牌了。' : '对手爆牌了。')
     } else if (event.type === 'tie') {
-      setSpokenLine('双方同点，本轮不开枪，走火遗恨加一。')
+      setSpokenLine('双方同点，本轮不开枪，各摸一件道具，进入下一回合。')
     }
     if (event.type === 'checkpoint') {
       const next: StoredCheckpoint = {
@@ -885,6 +886,10 @@ export default function App() {
     // directorRef 在 beginNarrative 里同步赋值；narrativeRef 要等一次渲染才同步。
     // 同一帧内「开叙事 + 来事件」时只看 narrativeRef 会误判成空闲
     const narrativeBusy = narrativeRef.current !== null || directorRef.current !== null
+    if (event.type === 'bossBark' && !narrativeBusy) {
+      showBossBark(event.action)
+      return
+    }
     // 胜利：3D endingB（缝线透光→伸手→黑屏）在前，播完接 2D「赎契」续篇；两段都不可跳过
     if (event.type === 'gameOver' && event.winner === 'player' && !narrativeBusy) {
       endingThenCutsceneRef.current = () => beginEnding('win')
@@ -934,6 +939,16 @@ export default function App() {
     const scene = sceneRef.current
     if (!scene) return
     directorRef.current?.stop()
+    if (narrativePauseRef.current) {
+      narrativePauseRef.current = false
+      game.resume()
+    }
+    // 章节过渡叙事骑在清层窗口上：先挂起引擎，播完再放行自动补给，
+    // 否则整套托盘演出会在覆盖层背后播完，玩家一件也看不到
+    if (mode === 't2' || mode === 't3') {
+      game.pause()
+      narrativePauseRef.current = true
+    }
     narrativeModeRef.current = mode
     // 已看过的段落给跳过入口；首见仍完整播放
     setSkipAvailable(hasSeenNarrative(mode))
@@ -957,6 +972,10 @@ export default function App() {
         setNarrative(null)
         directorRef.current = null
         narrativeModeRef.current = null
+        if (narrativePauseRef.current) {
+          narrativePauseRef.current = false
+          game.resume()
+        }
         // 胜利结局：3D 段播完，接 2D 续篇（若本次是胜利分支）
         const cont = endingThenCutsceneRef.current
         endingThenCutsceneRef.current = null
@@ -1002,14 +1021,40 @@ export default function App() {
     }
   }
 
+  function handleTrumpDeckClick() {
+    const current = game.getSnapshot()
+    if (current.phase !== 'playerTurn' || current.inputLocked ||
+      current.paused || narrativeRef.current || directorRef.current || modal !== null ||
+      current.player.trumps.length === 0) return
+    setGlovePicking(false)
+    setTrumpHandOpen(true)
+  }
+
   function handleItemUse(actor: ActorId, item: ItemId) {
+    if (trumpHandOpen) return
+    if (!snapshot) return
+    if (glovePicking) {
+      // 拾取中：点对手道具确认目标；点回自己的手套（或任何己方道具）取消
+      if (actor === 'player' && item === 'gloves') {
+        setGlovePicking(false)
+        return
+      }
+      if (actor === 'boss') {
+        if (game.useItem('gloves', item)) setGlovePicking(false)
+        return
+      }
+      showNotice('点它台面上的一件道具。')
+      return
+    }
     if (actor !== 'player') {
       showNotice('那是它的东西。')
       return
     }
-    if (!snapshot) return
-    const shotWindow = snapshot.phase === 'targeting' && snapshot.pendingShot === 'player'
-    if (snapshot.phase !== 'playerTurn' && !shotWindow) {
+    if (snapshot.phase !== 'targeting') {
+      showNotice(snapshot.phase === 'execution' ? '正在开枪，不能使用道具。' : '21 点阶段只能使用王牌。')
+      return
+    }
+    if (snapshot.pendingShot !== 'player') {
       showNotice('现在不是使用道具的时机。')
       return
     }
@@ -1021,8 +1066,13 @@ export default function App() {
       showNotice(`【${ITEM_CATALOG[item].name}】尚未解锁。`)
       return
     }
-    if (snapshot.player.itemsUsedThisTurn >= PLAYER_ITEM_CAP) {
-      showNotice('本回合的道具已经用尽。')
+    if (item === 'gloves') {
+      if (!snapshot.boss.items.some((id) => id !== 'gloves')) {
+        showNotice('它身上没有可以偷取的道具。')
+        return
+      }
+      setGlovePicking(true)
+      showNotice('窃贼手套：点击它台面上的一件道具，立即偷走并使用。')
       return
     }
     game.useItem(item)
@@ -1031,11 +1081,11 @@ export default function App() {
   const phase = snapshot?.phase ?? 'idle'
   const started = snapshot?.started ?? false
   const playerTurn = phase === 'playerTurn'
-  const locked = snapshot?.player.skipTurn ?? false
   const inputLocked = snapshot?.inputLocked ?? false
-  const canAct = playerTurn && !locked && !inputLocked && !snapshot?.cardChoice
+  const canAct = playerTurn && !inputLocked && !trumpHandOpen
   const finished = phase === 'gameOver' || phase === 'victory'
   const level = snapshot?.level ?? (LEVELS[0] as (typeof LEVELS)[number])
+  const activeClueLine = bossBark ?? clueLine
 
   return (
     <main className="relative h-full w-full overflow-hidden bg-abyss-950">
@@ -1046,17 +1096,17 @@ export default function App() {
             snapshot={snapshot}
             tableActionsAllowed={canAct && !snapshot?.paused && !narrativeActive && modal === null}
             supplyRevealAllowed={!narrativeActive}
+            stealTargeting={glovePicking}
             onTableAction={(action) => {
               const current = game.getSnapshot()
               if (current.phase !== 'playerTurn' || current.paused || current.inputLocked ||
-                current.player.skipTurn || current.cardChoice || narrativeRef.current ||
-                directorRef.current || modal !== null) return false
+                narrativeRef.current || directorRef.current || modal !== null || trumpHandOpen) return false
               finishFirstTurnHint()
               return action === 'hit' ? game.hit() : game.stand()
             }}
             onItemUse={handleItemUse}
+            onTrumpDeckClick={handleTrumpDeckClick}
             onItemCue={handleItemCue}
-            onSupplyPick={(item) => game.chooseSupply(item)}
             onTargetPick={(target) => game.chooseTarget(target)}
             onHoverChange={setHover}
             onGunHoverChange={setGunHover}
@@ -1141,9 +1191,11 @@ export default function App() {
           </p>
         </div>
         {snapshot && started ? (
-          <p className="text-[11px] tracking-[0.28em] text-bone-200/45 uppercase">
-            回合 {snapshot.round || 1} · {phaseLabel(phase)}
-            {snapshot.deckRemaining !== null ? ` · 牌靴 ${snapshot.deckRemaining}` : ''}
+          <p
+            className="text-[11px] tracking-[0.28em] text-bone-200/45 uppercase"
+            title={`牌堆 1–${DECK_SIZE}，共 ${DECK_SIZE} 张，无重复，双方共用；每回合重新洗牌`}
+          >
+            回合 {snapshot.round || 1} · {phaseLabel(phase)} · 牌堆 1–{DECK_SIZE}
           </p>
         ) : null}
       </div>
@@ -1153,8 +1205,8 @@ export default function App() {
         <div
           className={`transition-opacity duration-1000 ${narrativeActive ? 'opacity-0' : 'opacity-100'}`}
         >
-          <ActorPanel className="top-14 left-4" label="你" actor={snapshot.player} accent />
-          <ActorPanel className="top-14 right-4" label="它" actor={snapshot.boss} />
+          <ActorPanel className="top-14 left-4" label="你" actor={snapshot.player} target={snapshot.roundTarget} accent />
+          <ActorPanel className="top-14 right-4" label="它" actor={snapshot.boss} target={snapshot.roundTarget} />
           <LogPanel snapshot={snapshot} />
           <CylinderPanel snapshot={snapshot} />
         </div>
@@ -1186,9 +1238,7 @@ export default function App() {
               ? snapshot?.pendingShot === 'player'
                 ? targetHint(snapshot)
                 : ' ' 
-              : locked && playerTurn
-                ? '本回合被封锁'
-                : ' '}
+              : ' '}
           </span>
         </div>
       </div>
@@ -1267,7 +1317,7 @@ export default function App() {
         </div>
       ) : null}
 
-      {/* Supply pick: 候选道具摆在桌面左侧托盘里，点桌面上的道具即可带走。 */}
+      {/* Supply beat: 候选升上桌后随机留下一件，不再需要玩家点击。 */}
       {phase === 'supply' && snapshot ? (
         <div className="pointer-events-none absolute inset-x-0 top-[8%] z-30 flex justify-center px-4">
           <div className="flex flex-col items-center gap-1.5 border border-rust-500/30 bg-abyss-900/80 px-8 py-3 text-center shadow-lg shadow-black/60 backdrop-blur-sm">
@@ -1275,19 +1325,25 @@ export default function App() {
               <span className="text-[9px] tracking-[0.45em] text-rust-400/75 uppercase">before the next door</span>
               <span className="font-display text-lg text-bone-200">门前的补给</span>
               <span className="text-[11px] tracking-[0.1em] text-rust-300/75">
-                {snapshot.paused ? '已暂停' : '挑好再开门'}
+                {snapshot.paused ? '已暂停' : snapshot.supplyPick ? '已替你留下一件' : '随机留下一件'}
               </span>
             </div>
-            <div className="flex items-center gap-4 text-[11px] text-bone-200/70">
-              {snapshot.supplyOptions.map((item, index) => (
-                <span key={item} className="flex items-center gap-1">
-                  <span className="text-[9px] tracking-[0.2em] text-rust-400/60">{index + 1}</span>
-                  <span className="font-display text-bone-200">{ITEM_CATALOG[item].name}</span>
+            <div className="flex items-center gap-4 text-[11px]">
+              {snapshot.supplyOptions.map((item) => (
+                <span
+                  key={item}
+                  className={
+                    item === snapshot.supplyPick
+                      ? 'font-display text-bone-100'
+                      : 'font-display text-bone-200/35'
+                  }
+                >
+                  {ITEM_CATALOG[item].name}
                 </span>
               ))}
             </div>
             <p className="text-[9px] tracking-[0.22em] text-bone-200/30 uppercase">
-              点击桌上托盘里的道具 · 或按 1 / 2 / 3
+              {snapshot.supplyPick ? '补给随身 · 下一道门即将开启' : '看完自动开门 · 无需操作'}
             </p>
           </div>
         </div>
@@ -1511,7 +1567,7 @@ export default function App() {
           <p className="rounded-sm border border-rust-500/35 bg-black/90 px-3 py-1.5 text-center text-[10px] leading-relaxed tracking-[0.08em] text-bone-200/80 shadow-lg shadow-black/60">
             你 {snapshot.player.visibleHand.total} 点 · 明牌{' '}
             {snapshot.boss.visibleHand.visible.filter((card): card is Card => card !== null).reduce(
-              (sum, card) => sum + (card.rank === 1 ? 11 : card.rank),
+              (sum, card) => sum + card.rank,
               0,
             )}{' '}
             点 · 点桌沿键或按 H / S
@@ -1588,51 +1644,27 @@ export default function App() {
 
       {modal ? <RulesModal initialTab={modal} onClose={() => setModal(null)} /> : null}
 
-      {snapshot?.cardChoice && !narrativeActive ? (
-        <div className="absolute inset-x-0 bottom-28 z-30 flex justify-center px-4">
-          <div className="max-w-lg rounded-sm border border-rust-500/40 bg-abyss-900/95 p-3 shadow-2xl shadow-black/70">
-            <p className="text-center text-[11px] tracking-[0.15em] text-rust-300/75">
-              {snapshot.cardChoice.kind === 'cutter' ? '选择要裁掉的一张牌' : '选择要封住的明牌'}
-            </p>
-            <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
-              {snapshot.cardChoice.cards.map((card, index) => (
-                <button
-                  key={`${card.id}-${index}`}
-                  type="button"
-                  onClick={() => {
-                    sceneRef.current?.chooseItemCard(card)
-                    game.resolveCardChoice(index)
-                  }}
-                  className="min-w-12 border border-white/12 bg-black/40 px-2 py-1.5 font-display text-sm text-bone-200/85 transition-colors hover:border-rust-500/60 hover:bg-rust-500/15"
-                >
-                  {formatCardLabel(card)}
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={() => {
-                  sceneRef.current?.cancelItemChoice()
-                  game.cancelCardChoice()
-                }}
-                className="px-2 py-1.5 text-[10px] tracking-[0.2em] text-bone-200/35 uppercase hover:text-bone-200/70"
-              >
-                放弃
-              </button>
-            </div>
-          </div>
-        </div>
+      {trumpHandOpen && snapshot ? (
+        <TrumpHandOverlay
+          cards={snapshot.player.trumps}
+          onClose={() => setTrumpHandOpen(false)}
+          onUse={(index) => {
+            setTrumpHandOpen(false)
+            game.useTrump(index)
+          }}
+        />
       ) : null}
 
-      {clueLine && !narrativeActive ? (
-        clueLine.channel === 'enemy' ? (
+      {activeClueLine && !narrativeActive ? (
+        activeClueLine.channel === 'enemy' ? (
           <EnemyDialogueBox
             getAnchor={() => sceneRef.current?.getBossDialogueAnchor() ?? { x: 0.5, y: 0.35, visible: false }}
           >
             <p
               className="clue-line narrative-subtitle font-display text-sm leading-relaxed tracking-[0.12em] text-red-50/90"
-              style={{ animationDuration: `${clueLine.durationMs}ms` }}
+              style={{ animationDuration: `${activeClueLine.durationMs}ms` }}
             >
-              {clueLine.text}
+              {activeClueLine.text}
             </p>
           </EnemyDialogueBox>
         ) : (
@@ -1643,11 +1675,11 @@ export default function App() {
           >
             <p
               className={`clue-line narrative-subtitle max-w-xl text-center font-display text-base tracking-[0.18em] ${
-                clueLine.channel === 'sister' ? 'sister-dialogue text-amber-100/95' : 'text-bone-200/85'
+                activeClueLine.channel === 'sister' ? 'sister-dialogue text-amber-100/95' : 'text-bone-200/85'
               }`}
-              style={{ animationDuration: `${clueLine.durationMs}ms` }}
+              style={{ animationDuration: `${activeClueLine.durationMs}ms` }}
             >
-              {clueLine.text}
+              {activeClueLine.text}
             </p>
           </div>
         )
@@ -1698,15 +1730,17 @@ function ActorPanel({
   className,
   label,
   actor,
+  target,
   accent = false,
 }: {
   className: string
   label: string
   actor: ActorView
+  target: number
   accent?: boolean
 }) {
   const visibleCards = actor.visibleHand.visible.filter((card): card is Card => card !== null)
-  const shown = evaluateHand(visibleCards)
+  const shown = evaluateHand(visibleCards, target)
   return (
     <div
       className={`pointer-events-none absolute w-36 border bg-black/50 px-3 py-2 backdrop-blur-sm max-[420px]:w-32 ${
@@ -1718,12 +1752,9 @@ function ActorPanel({
       </div>
       <p className="mt-1 flex items-center gap-2 text-[11px] tracking-[0.12em] text-bone-200/50">
         <span>
-          {shown.busted ? '爆牌' : actor.standing ? '已停牌' : '在局中'} · 道具 {actor.items.length}
-          {actor.id === 'player' ? ` · 用 ${actor.itemsUsedThisTurn}/${PLAYER_ITEM_CAP}` : ''}
+          {shown.busted ? '爆牌' : actor.stayed ? '已停牌' : '在局中'} · 道具 {actor.items.length} · 王牌 {actor.trumps.length}
         </span>
         {actor.sawBoost > 0 ? <span className="text-amber-300/80">锯</span> : null}
-        {actor.shield > 0 ? <span className="text-sky-300/80">盾</span> : null}
-        {actor.iou > 0 ? <span className="text-rose-300/80">债</span> : null}
       </p>
     </div>
   )
@@ -1749,7 +1780,7 @@ function LogPanel({ snapshot }: { snapshot: GameSnapshot }) {
 }
 
 function CylinderPanel({ snapshot }: { snapshot: GameSnapshot }) {
-  const { cylinder, damageBonus, hourglassActive } = snapshot
+  const { cylinder, roundTarget } = snapshot
   // 窄屏把弹仓挪到左上角：留在下方会盖住牌桌上的手牌点数
   return (
     <div className="pointer-events-none absolute bottom-24 left-4 w-40 border border-white/8 bg-black/50 px-3 py-2 backdrop-blur-sm max-[420px]:top-32 max-[420px]:bottom-auto max-[420px]:w-32">
@@ -1772,21 +1803,14 @@ function CylinderPanel({ snapshot }: { snapshot: GameSnapshot }) {
           膛内 · {cylinder.revealed === 'live' ? '实弹' : '空膛'}
         </p>
       ) : null}
-      {damageBonus > 0 ? (
-        <p className="mt-1 text-[10px] tracking-[0.12em] text-amber-300/90">
-          走火遗恨 +{damageBonus}
-        </p>
-      ) : null}
-      {hourglassActive ? (
-        <p className="mt-1 text-[10px] tracking-[0.12em] text-fuchsia-300/80">沙漏逆转 · 低者胜</p>
-      ) : null}
+      <p className="mt-1 text-[10px] tracking-[0.12em] text-bone-200/55">目标 · {roundTarget}</p>
     </div>
   )
 }
 
 function targetHint(snapshot: GameSnapshot): string {
   const revealed = snapshot.cylinder.revealed
-  if (revealed === 'blank') return '膛内是空膛：对自己开枪可以摸一件道具'
+  if (revealed === 'blank') return '膛内是空膛：对敌开会转移枪权，自射不拿道具但结束开枪'
   if (revealed === 'live') return '膛内是实弹：对自己开枪会受伤'
   return '膛内未知：对自己开枪是赌博'
 }
@@ -1812,9 +1836,9 @@ function phaseLabel(phase: string): string {
     case 'levelClear':
       return '层已净空'
     case 'supply':
-      return '挑选补给'
+      return '门前补给'
     case 'bossSupply':
-      return '它挑补给'
+      return '它在收补给'
     case 'gameOver':
       return '血契已收'
     case 'victory':

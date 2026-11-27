@@ -2,7 +2,6 @@ import {
   evaluateHand,
   type Card,
   type CardRank,
-  type CardSuit,
   type Chamber,
   type GameEngine,
   type HandState,
@@ -34,10 +33,13 @@ const ITEM_CAP = 8
 
 function cardsForTotal(total: number): Card[] {
   const t = Math.max(2, Math.min(21, Math.round(total)))
-  const ranks: CardRank[] =
-    t === 21 ? [1, 10] : t <= 3 ? [t as CardRank] : t <= 12 ? [2, (t - 2) as CardRank] : [(t - 10) as CardRank, 10]
-  const suits: CardSuit[] = ['spade', 'heart']
-  return ranks.map((rank, index) => ({ id: `dev-${rank}-${index}`, rank, suit: suits[index]! }))
+  if (t <= 3) return [{ id: `dev-${t}-0`, rank: t as CardRank, suit: 'spade' }]
+  const first = Math.max(1, t - 11)
+  const second = t - first
+  return [
+    { id: `dev-${first}-0`, rank: first as CardRank, suit: 'spade' },
+    { id: `dev-${second}-1`, rank: second as CardRank, suit: 'heart' },
+  ]
 }
 
 /**

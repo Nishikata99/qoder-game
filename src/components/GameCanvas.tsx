@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ActorId, GameEvent, GameSnapshot, ItemId } from '../game/GameEngine'
-import type { GameEngine } from '../game/GameEngine'
+import type { ActionVisualId, ActorId, GameEvent, GameSnapshot, ItemId } from '../game/GameEngine'
+import { trumpAnimationItem, type GameEngine } from '../game/GameEngine'
 import { SceneManager } from '../scene/SceneManager'
 import type { GunHoverPayload, ItemHoverPayload, TableAction } from '../scene/SceneManager'
 import type { BossPoseCue, SceneLoadProgress } from '../scene/SceneManager'
@@ -12,9 +12,10 @@ export interface GameCanvasProps {
   readonly snapshot: GameSnapshot | null
   readonly tableActionsAllowed: boolean
   readonly supplyRevealAllowed: boolean
+  readonly stealTargeting?: boolean
   readonly onTableAction: (action: TableAction) => boolean
   readonly onItemUse?: (actor: ActorId, item: ItemId) => void
-  readonly onSupplyPick?: (item: ItemId) => void
+  readonly onTrumpDeckClick?: () => void
   readonly onTargetPick?: (target: ActorId) => void
   readonly onHoverChange?: (payload: ItemHoverPayload | null) => void
   readonly onGunHoverChange?: (payload: GunHoverPayload | null) => void
@@ -22,7 +23,7 @@ export interface GameCanvasProps {
   readonly onSceneReady?: (scene: SceneManager) => void
   readonly onLoadProgress?: (progress: SceneLoadProgress) => void
   readonly onLoadError?: (key: string, error: unknown) => void
-  readonly onItemCue?: (item: ItemId, cue: ItemActionCue) => void
+  readonly onItemCue?: (item: ActionVisualId, cue: ItemActionCue) => void
   readonly onItemActionStatus?: (status: ItemActionStatus | null) => void
   readonly onItemPresented?: (event: GameEvent) => void
   readonly onItemSnapshot?: (snapshot: GameSnapshot) => void
@@ -33,9 +34,10 @@ export function GameCanvas({
   snapshot,
   tableActionsAllowed,
   supplyRevealAllowed,
+  stealTargeting = false,
   onTableAction,
   onItemUse,
-  onSupplyPick,
+  onTrumpDeckClick,
   onTargetPick,
   onHoverChange,
   onGunHoverChange,
@@ -51,16 +53,16 @@ export function GameCanvas({
   const hostRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sceneRef = useRef<SceneManager | null>(null)
-  const callbacksRef = useRef({ onTableAction, onItemUse, onSupplyPick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot })
+  const callbacksRef = useRef({ onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot })
   const readyRef = useRef(onSceneReady)
   const [error, setError] = useState<string | null>(null)
   const setErrorRef = useRef(setError)
 
   useEffect(() => {
-    callbacksRef.current = { onTableAction, onItemUse, onSupplyPick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot }
+    callbacksRef.current = { onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot }
     readyRef.current = onSceneReady
     setErrorRef.current = setError
-  }, [onTableAction, onItemUse, onSupplyPick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onSceneReady, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot, setError])
+  }, [onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onSceneReady, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot, setError])
 
   useEffect(() => {
     const host = hostRef.current
@@ -74,7 +76,7 @@ export function GameCanvas({
         onItemHover: (payload) => callbacksRef.current.onHoverChange?.(payload),
         onGunHover: (payload) => callbacksRef.current.onGunHoverChange?.(payload),
         onItemClick: (actor, item) => callbacksRef.current.onItemUse?.(actor, item),
-        onSupplyPick: (item) => callbacksRef.current.onSupplyPick?.(item),
+        onTrumpDeckClick: () => callbacksRef.current.onTrumpDeckClick?.(),
         onTargetPick: (target) => callbacksRef.current.onTargetPick?.(target),
         onBossPoseCue: (cue) => callbacksRef.current.onBossPoseCue?.(cue),
         onLoadProgress: (progress) => callbacksRef.current.onLoadProgress?.(progress),
@@ -111,6 +113,10 @@ export function GameCanvas({
   }, [snapshot, tableActionsAllowed, supplyRevealAllowed])
 
   useEffect(() => {
+    sceneRef.current?.setStealTargeting(stealTargeting)
+  }, [stealTargeting])
+
+  useEffect(() => {
     return engine.subscribe((event, eventSnapshot) => {
       const scene = sceneRef.current
       if (scene) applyVisualEvent(scene, event, eventSnapshot)
@@ -139,8 +145,6 @@ export function GameCanvas({
         })
         break
       case 'shot':
-        // 护心镜的碎裂必须写在枪口命中这一刻，而不是举起镜子时
-        if (event.blocked === 'shield') scene.breakItemShield(event.target)
         scene.playShot({
           by: event.by,
           target: event.target,
@@ -148,9 +152,11 @@ export function GameCanvas({
           damage: event.damage,
           hpAfter: (event.target === 'player' ? eventSnapshot.player : eventSnapshot.boss).hp,
           sawed: event.sawed,
-          blackjack: event.blackjack,
-          blocked: event.blocked,
         })
+        break
+      case 'chamberDiscarded':
+        // 护心镜退弹是公开信息：弹壳当着双方的面从转轮里弹到桌上
+        scene.playChamberEject(event.actor, event.chamber)
         break
       case 'chamberRevealed':
         // 只有玩家自己的窥视才在台面揭晓读数；Boss 的窥视不能泄漏给玩家
@@ -159,13 +165,24 @@ export function GameCanvas({
           scene.setShot('magnify', 0.75)
         }
         break
+      case 'chamberFlipped':
+        if (event.actor === 'player') scene.revealChamber(event.chamber)
+        break
       case 'itemUsed':
         // 派生事件（读数、换牌、沙漏反转）由引擎在动作收尾后才放
         scene.playItemUse(event.actor, event.item)
         break
-      case 'hourglass':
-        scene.playHourglass()
+      case 'playerTableAction':
+        scene.playPlayerTableAction(event.action)
         break
+      case 'bossBark':
+        scene.playBossTableAction(event.action, event.hand)
+        break
+      case 'trumpPlayed': {
+        const visual = trumpAnimationItem(event.trump)
+        if (visual) scene.playItemUse(event.actor, visual)
+        break
+      }
       case 'levelClear':
         scene.setResolutionShot('victory', 1.4)
         break
@@ -200,7 +217,7 @@ export function GameCanvas({
         }}
       />
       <div className="sr-only focus-within:not-sr-only focus-within:absolute focus-within:bottom-4 focus-within:left-1/2 focus-within:-translate-x-1/2 focus-within:flex focus-within:gap-4 focus-within:bg-black focus-within:p-3">
-        <button type="button" aria-keyshortcuts="H" disabled={!tableActionsAllowed}
+        <button type="button" aria-keyshortcuts="H" disabled={!tableActionsAllowed || (snapshot?.player.hand.busted ?? false)}
           onClick={() => sceneRef.current?.activateTableAction('hit')}>要牌</button>
         <button type="button" aria-keyshortcuts="S" disabled={!tableActionsAllowed}
           onClick={() => sceneRef.current?.activateTableAction('stand')}>停牌</button>
@@ -240,8 +257,8 @@ export function ItemTooltip({ payload }: { payload: ItemHoverPayload | null }) {
   }, [payload])
 
   if (!payload) return null
-  const owner = payload.supply ? '门前的补给' : payload.actor === 'player' ? '你的道具' : '对手的道具'
-  const usable = payload.supply || payload.actor === 'player'
+  const owner = payload.supply ? '门前的补给' : payload.steal ? '对手的道具 · 手套选中' : payload.actor === 'player' ? '你的道具' : '对手的道具'
+  const usable = payload.supply || payload.steal || payload.actor === 'player'
   return (
     <div
       ref={ref}
@@ -254,7 +271,9 @@ export function ItemTooltip({ payload }: { payload: ItemHoverPayload | null }) {
       <p className="mt-1 text-[11px] leading-relaxed text-bone-200/45 italic">
         {itemFlavor(payload.item)}
       </p>
-      {payload.supply ? (
+      {payload.steal ? (
+        <p className="mt-1 text-[10px] text-rust-300/70">点击偷走这一件，并立即使用</p>
+      ) : payload.supply ? (
         <p className="mt-1 text-[10px] text-rust-300/70">点击带走这一件</p>
       ) : !usable ? (
         <p className="mt-1 text-[10px] text-bone-200/35">无法动用对手的道具</p>

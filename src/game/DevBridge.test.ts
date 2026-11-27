@@ -61,12 +61,11 @@ describe('DevBridge.winLevel', () => {
 })
 
 describe('DevBridge.setPlayerTotal', () => {
-  it('21 点是两张牌的黑杰克', () => {
+  it('21 点使用两张数字牌', () => {
     const { bridge, engine } = setup()
     bridge.setPlayerTotal(21)
     const hand = engine.getSnapshot().player.hand
     expect(hand.total).toBe(21)
-    expect(hand.blackjack).toBe(true)
     expect(hand.cards).toHaveLength(2)
   })
 
@@ -111,9 +110,9 @@ describe('DevBridge.grantItem', () => {
     bridge.grantItem('saw')
     expect(engine.getSnapshot().player.items).toContain('saw')
     for (let i = 0; i < 8; i += 1) bridge.grantItem('magnifier')
-    bridge.grantItem('dagger')
+    bridge.grantItem('hammer')
     const items = engine.getSnapshot().player.items
     expect(items).toHaveLength(8)
-    expect(items[items.length - 1]).toBe('dagger')
+    expect(items[items.length - 1]).toBe('hammer')
   })
 })

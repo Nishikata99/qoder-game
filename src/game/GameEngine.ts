@@ -19,7 +19,8 @@ export type Phase =
 export const CARD_SUITS = ['spade', 'heart', 'diamond', 'club'] as const
 export type CardSuit = (typeof CARD_SUITS)[number]
 
-export type CardRank = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
+export type CardRank = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11
+export const DECK_SIZE = 11
 
 export interface Card {
   readonly id: string
@@ -32,9 +33,7 @@ export interface HandState {
   /** 与 cards 等长；null 表示盖住的暗牌。仅用于展示，点数始终按真实手牌计算 */
   readonly visible: readonly (Card | null)[]
   readonly total: number
-  readonly soft: boolean
   readonly busted: boolean
-  readonly blackjack: boolean
 }
 
 export type Chamber = 'live' | 'blank'
@@ -43,19 +42,85 @@ export const ITEM_IDS = [
   'magnifier',
   'sedative',
   'saw',
-  'magnet',
   'handcuffs',
   'aegis',
-  'hourglass',
-  'dagger',
   'hammer',
-  'cutter',
   'iou',
-  'seal',
-  'monocle',
+  'gloves',
 ] as const
 
 export type ItemId = (typeof ITEM_IDS)[number]
+export type LegacyAnimationId = 'hourglass' | 'magnet' | 'cutter' | 'seal'
+export type ActionVisualId = ItemId | LegacyAnimationId
+
+export const TRUMP_IDS = [
+  'go24',
+  'go27',
+  'remove',
+  'return',
+  'exchange',
+  'card2',
+  'card3',
+  'card4',
+  'card5',
+  'card6',
+  'card7',
+  'happiness',
+  'destroy',
+  'love',
+] as const
+
+export type TrumpId = (typeof TRUMP_IDS)[number]
+
+export const TRUMP_WEIGHTS: Readonly<Record<TrumpId, number>> = {
+  go24: 7,
+  go27: 7,
+  destroy: 4,
+  remove: 8,
+  return: 7,
+  exchange: 9,
+  card2: 7.5,
+  card3: 7.5,
+  card4: 7.5,
+  card5: 7.5,
+  card6: 7.5,
+  card7: 7.5,
+  happiness: 10,
+  love: 3,
+}
+
+export interface TrumpDefinition {
+  readonly id: TrumpId
+  readonly name: string
+  readonly enName: string
+  readonly summary: string
+  readonly glyph: string
+}
+
+export const TRUMP_CATALOG: Readonly<Record<TrumpId, TrumpDefinition>> = {
+  go24: { id: 'go24', name: '血注·廿四', enName: 'Go for 24', summary: '本局目标改为 24，最接近 24 者胜。', glyph: '24' },
+  go27: { id: 'go27', name: '血注·廿七', enName: 'Go for 27', summary: '本局目标改为 27，最接近 27 者胜。', glyph: '27' },
+  remove: { id: 'remove', name: '封牌', enName: 'Remove', summary: '把对手最后一张明牌弹回牌堆。', glyph: '−' },
+  return: { id: 'return', name: '割牌', enName: 'Return', summary: '把自己最后一张明牌弹回牌堆。', glyph: '↩' },
+  exchange: { id: 'exchange', name: '易牌', enName: 'Exchange', summary: '交换双方最后一张明牌，暗牌不能交换。', glyph: '⇄' },
+  card2: { id: 'card2', name: '索牌·二', enName: '2 Card', summary: '直接抽出数字 2；若已不在牌堆则无事发生。', glyph: '2' },
+  card3: { id: 'card3', name: '索牌·三', enName: '3 Card', summary: '直接抽出数字 3；若已不在牌堆则无事发生。', glyph: '3' },
+  card4: { id: 'card4', name: '索牌·四', enName: '4 Card', summary: '直接抽出数字 4；若已不在牌堆则无事发生。', glyph: '4' },
+  card5: { id: 'card5', name: '索牌·五', enName: '5 Card', summary: '直接抽出数字 5；若已不在牌堆则无事发生。', glyph: '5' },
+  card6: { id: 'card6', name: '索牌·六', enName: '6 Card', summary: '直接抽出数字 6；若已不在牌堆则无事发生。', glyph: '6' },
+  card7: { id: 'card7', name: '索牌·七', enName: '7 Card', summary: '直接抽出数字 7；若已不在牌堆则无事发生。', glyph: '7' },
+  happiness: { id: 'happiness', name: '双喜', enName: 'Happiness', summary: '双方各抽一张王牌。', glyph: '＋' },
+  destroy: { id: 'destroy', name: '销注', enName: 'Destroy', summary: '移除对手台面上的血注王牌，目标恢复 21。', glyph: '×' },
+  love: { id: 'love', name: '以爱资敌', enName: 'Love Your Enemy', summary: '强迫对手抽一张：优先给最贴近目标且不爆的牌；没有这样的牌就给最小的一张，哪怕爆牌。', glyph: '♥' },
+}
+
+export function trumpAnimationItem(trump: TrumpId): LegacyAnimationId | null {
+  if (trump === 'go24' || trump === 'go27') return 'hourglass'
+  if (trump === 'exchange') return 'magnet'
+  if (trump === 'return') return 'cutter'
+  if (trump === 'remove') return 'seal'
+  return null
+}
 
 export interface ItemDefinition {
   readonly id: ItemId
@@ -68,7 +133,7 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
   magnifier: {
     id: 'magnifier',
     name: '放大镜',
-    summary: '窥视当前枪膛内下一发是实弹还是空弹。知道空膛时，开枪阶段可对自己开枪换取道具。',
+    summary: '窥视当前枪膛内下一发是实弹还是空弹。知道空膛时可以对自己开枪跳过本轮，但不再获得道具。',
     glyph: '◎',
   },
   sedative: {
@@ -80,76 +145,46 @@ export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
   saw: {
     id: 'saw',
     name: '锯子',
-    summary: '锯短枪管：实弹伤害翻倍。加成一直保留到真正打出实弹为止。',
+    summary: '锯短枪管：下一发实弹伤害 +1。打出实弹后失效。',
     glyph: '⌁',
-  },
-  magnet: {
-    id: 'magnet',
-    name: '磁铁',
-    summary: '强制将你最后一张明牌与对手的明牌互换。',
-    glyph: '⊂',
   },
   handcuffs: {
     id: 'handcuffs',
     name: '手铐',
-    summary: '锁住对手的下一次行动：不能要牌，也不能使用道具。',
+    summary: '铐住对手：你下一次对他开空枪时，枪权不会转移，你继续持枪。',
     glyph: '∞',
   },
   aegis: {
     id: 'aegis',
     name: '护心镜',
-    summary: '举起一面铜镜：下一次受到的实弹伤害被完全挡下，随后镜面碎裂。',
+    summary: '举镜照膛：退出当前这一发，退出的实弹或空膛双方都看得见，该发从本局弹仓移除。',
     glyph: '⬟',
-  },
-  hourglass: {
-    id: 'hourglass',
-    name: '逆转沙漏',
-    summary: '本局胜负反转：点数更小者获胜（爆牌依然直接判负）。仅玩家可用。',
-    glyph: '⧗',
-  },
-  dagger: {
-    id: 'dagger',
-    name: '献祭匕首',
-    summary: '自损 1 点生命，立刻清空手牌、重洗牌库并重新装填弹仓。',
-    glyph: '†',
   },
   hammer: {
     id: 'hammer',
     name: '重锤',
-    summary: '把膛内当前一发空膛砸成实弹；若这一发本来就是实弹，则无法使用。',
+    summary: '逆转膛内当前这一发：实弹变空膛，空膛变实弹。',
     glyph: '⚒',
-  },
-  cutter: {
-    id: 'cutter',
-    name: '裁纸刀',
-    summary: '亮出裁纸刀，自选一张手牌裁掉，不再补牌。每回合限一次，爆牌时不可用。',
-    glyph: '✂',
   },
   iou: {
     id: 'iou',
     name: '借据',
-    summary: '本局押上血债：你赢下的实弹伤害 +2，输掉时打向你的实弹 +1。每局只能签一张。',
+    summary: '开枪阶段赌命：50% 自损 2 血，50% 恢复 1 血。',
     glyph: '▤',
   },
-  seal: {
-    id: 'seal',
-    name: '封条',
-    summary: '先亮出对手底牌，再自选其一张明牌贴住，本局该牌不计点数。每局限一次。',
-    glyph: '⊘',
-  },
-  monocle: {
-    id: 'monocle',
-    name: '单片眼镜',
-    summary: '看清牌靴顶部三张牌的顺序，只有你知道，不会改变牌序。',
-    glyph: '◍',
+  gloves: {
+    id: 'gloves',
+    name: '窃贼手套',
+    summary: '点选对手一件道具，偷走并立即使用；不能偷窃贼手套，偷到的道具无法使用时放回，手套不消耗。',
+    glyph: '✧',
   },
 }
 
 /** Items unlocked at the start of each level, in level order. */
 export const LEVEL_UNLOCKS: readonly (readonly ItemId[])[] = [
   ['magnifier', 'sedative', 'saw'],
-  ['magnet', 'handcuffs', 'aegis', 'cutter', 'iou'],
-  ['hourglass', 'dagger', 'hammer', 'seal', 'monocle'],
+  ['handcuffs', 'aegis', 'iou'],
+  ['hammer', 'gloves'],
 ]
 
 export type BossPersonality = 'cautious' | 'gambler' | 'executioner'
@@ -162,10 +197,11 @@ export interface LevelConfig {
   readonly hp: number
   /** 玩家生命：每层重置；第一关给足容错，之后收紧 */
   readonly playerHp: number
+  /** 开局发给双方的道具数 */
   readonly supply: number
+  /** 弹仓打空重装时，发给双方的道具数 */
+  readonly reloadSupply?: number
   readonly personality: BossPersonality
-  /** persistent：整层共用一副牌，不逐局重洗（第 3 层算牌人格） */
-  readonly deckPolicy?: 'fresh' | 'persistent'
 }
 
 export const LEVELS: readonly LevelConfig[] = [
@@ -173,29 +209,31 @@ export const LEVELS: readonly LevelConfig[] = [
     id: 1,
     name: '锈蚀看门人',
     title: '门厅 · 滴水的地下室',
-    hp: 6,
-    playerHp: 7,
-    supply: 2,
+    hp: 4,
+    playerHp: 4,
+    supply: 0,
+    reloadSupply: 1,
     personality: 'cautious',
   },
   {
     id: 2,
     name: '赌命收账人',
     title: '账房 · 发霉的赌桌',
-    hp: 8,
-    playerHp: 7,
-    supply: 3,
+    hp: 5,
+    playerHp: 4,
+    supply: 1,
+    reloadSupply: 2,
     personality: 'gambler',
   },
   {
     id: 3,
     name: '深渊执刑者',
     title: '刑台 · 没有出口',
-    hp: 8,
-    playerHp: 7,
-    supply: 4,
+    hp: 6,
+    playerHp: 4,
+    supply: 1,
+    reloadSupply: 4,
     personality: 'executioner',
-    deckPolicy: 'persistent',
   },
 ]
 
@@ -209,13 +247,11 @@ export interface ActorView {
   readonly visibleHand: HandState
   readonly holeCardRevealed: boolean
   readonly standing: boolean
-  readonly skipTurn: boolean
+  readonly stayed: boolean
+  /** 手铐效果生效中：下一次接枪时不能从持枪者手中接走枪权 */
+  readonly gunCuffed: boolean
+  readonly trumps: readonly TrumpId[]
   readonly sawBoost: number
-  /** 护心镜层数：>0 时下一次实弹伤害被完全吸收 */
-  readonly shield: number
-  /** 本局已签下的借据：赢下时实弹 +2，输掉时承受的实弹 +2 */
-  readonly iou: number
-  /** 本回合已经使用的道具数；玩家达到上限后拒绝继续使用 */
   readonly itemsUsedThisTurn: number
 }
 
@@ -225,13 +261,6 @@ export interface CylinderView {
   readonly live: number
   readonly blank: number
   readonly revealed: Chamber | null
-}
-
-export interface CardChoiceView {
-  /** cutter：从自己手牌里选一张裁掉；seal：从对手明牌里选一张封住 */
-  readonly kind: 'cutter' | 'seal'
-  readonly cards: readonly Card[]
-  readonly labels?: readonly string[]
 }
 
 export interface GameSnapshot {
@@ -246,15 +275,17 @@ export interface GameSnapshot {
   readonly turn: ActorId | null
   /** 进入 targeting 阶段时持枪的人；玩家需要选择枪口朝向 */
   readonly pendingShot: ActorId | null
-  /** 本局实弹伤害加成（走火遗恨，中弹后清零） */
-  readonly damageBonus: number
-  /** 已累积的走火层数，等于 damageBonus，供 UI 区分「遗恨」与「基础」 */
-  readonly crisisStacks: number
-  /** 本局是否启用逆转沙漏（点数小者胜） */
-  readonly hourglassActive: boolean
+  /** 本局目标值，默认 21，由血注王牌改写 */
+  readonly roundTarget: number
+  /** 玩家上一局是否满点获胜 */
+  readonly lastPerfectWin: boolean
+  /** 台面上的血注王牌；后打出的覆盖先前的 */
+  readonly tableTrumps: Readonly<Record<ActorId, readonly TrumpId[]>>
   readonly unlockedItems: readonly ItemId[]
   /** supply 阶段的三选一候选；其他阶段为空数组 */
   readonly supplyOptions: readonly ItemId[]
+  /** 系统在候选里替玩家抽中的那件；仅 supply 阶段，决定托盘留下哪一件 */
+  readonly supplyPick: ItemId | null
   /** Boss 的补给候选；supply / bossSupply 阶段展示在它的托盘里 */
   readonly bossSupplyOptions: readonly ItemId[]
   /** Boss 本次门前挑中的道具；仅 bossSupply 阶段（镜头切过去时它已经拿定） */
@@ -263,10 +294,6 @@ export interface GameSnapshot {
   readonly paused: boolean
   /** 本场跨层累计回合数；round 仍是每层回合 */
   readonly runRounds: number
-  /** 第 3 层牌靴剩余张数；其他层为 null */
-  readonly deckRemaining: number | null
-  /** 裁纸刀/封条使用后等待玩家点选一张牌 */
-  readonly cardChoice: CardChoiceView | null
   readonly log: readonly string[]
 }
 
@@ -276,7 +303,8 @@ export type GameEvent =
   | { readonly type: 'roundStart'; readonly level: number; readonly round: number }
   | { readonly type: 'cardDealt'; readonly actor: ActorId; readonly card: Card }
   | { readonly type: 'turn'; readonly actor: ActorId }
-  | { readonly type: 'turnSkipped'; readonly actor: ActorId }
+  | { readonly type: 'playerTableAction'; readonly action: 'hit' | 'stand' }
+  | { readonly type: 'bossBark'; readonly action: 'hit' | 'stand'; readonly hand: boolean }
   | { readonly type: 'bust'; readonly actor: ActorId }
   | { readonly type: 'itemDrawn'; readonly actor: ActorId; readonly item: ItemId }
   | {
@@ -286,19 +314,10 @@ export type GameEvent =
       readonly detail: string
     }
   | { readonly type: 'chamberRevealed'; readonly actor: ActorId; readonly chamber: Chamber }
+  | { readonly type: 'chamberFlipped'; readonly actor: ActorId; readonly chamber: Chamber }
   | { readonly type: 'chamberDiscarded'; readonly actor: ActorId; readonly chamber: Chamber }
-  | { readonly type: 'magnetSwap'; readonly actor: ActorId; readonly card: Card }
-  | { readonly type: 'chamberRecovered'; readonly actor: ActorId; readonly item: ItemId }
-  | { readonly type: 'hourglass'; readonly actor: ActorId }
-  | { readonly type: 'daggerReshuffle'; readonly actor: ActorId; readonly live: number; readonly blank: number }
-  | { readonly type: 'cardCuttered'; readonly actor: ActorId; readonly old: Card }
-  | { readonly type: 'iouSigned'; readonly actor: ActorId }
-  | { readonly type: 'cardSealed'; readonly actor: ActorId; readonly card: Card }
-  | {
-      readonly type: 'deckPeeked'
-      readonly actor: ActorId
-      readonly cards: readonly Card[]
-    }
+  | { readonly type: 'trumpPlayed'; readonly actor: ActorId; readonly trump: TrumpId; readonly detail: string }
+  | { readonly type: 'perfectWin'; readonly actor: ActorId; readonly item: ItemId | null }
   | {
       readonly type: 'execution'
       readonly by: ActorId
@@ -313,9 +332,6 @@ export type GameEvent =
       readonly chamber: Chamber
       readonly damage: number
       readonly sawed: boolean
-      readonly blackjack: boolean
-      /** 实弹被护心镜挡下时为对应来源，否则 null */
-      readonly blocked: 'shield' | null
     }
   | { readonly type: 'tie'; readonly player: number; readonly boss: number }
   | { readonly type: 'reload'; readonly live: number; readonly blank: number }
@@ -326,6 +342,7 @@ export type GameEvent =
       readonly items: readonly ItemId[]
     }
   | { readonly type: 'supplyOffer'; readonly options: readonly ItemId[] }
+  | { readonly type: 'supplyPick'; readonly actor: ActorId; readonly item: ItemId }
   | { readonly type: 'bossSupply'; readonly pick: ItemId }
   | {
       readonly type: 'checkpoint'
@@ -348,53 +365,39 @@ export interface GameEngineOptions {
   readonly itemLockMs?: number
 }
 
-interface CardChoiceState {
-  readonly kind: 'cutter' | 'seal'
-  readonly cards: Card[]
-  readonly item: ItemId
-  readonly itemIndex: number
-  readonly itemsUsedThisTurn: number
-  readonly logLength: number
-  readonly holeRevealed: boolean
-  readonly bossHand: HandState
-}
-
 interface BossProfile {
   readonly label: string
   readonly personality: BossPersonality
   readonly standAt: number
-  readonly itemBudget: number
   readonly thinkingMs: number
 }
 
 const BOSS_PROFILES: Readonly<Record<BossPersonality, BossProfile>> = {
-  cautious: { label: '谨慎', personality: 'cautious', standAt: 15, itemBudget: 1, thinkingMs: 900 },
-  gambler: { label: '赌徒', personality: 'gambler', standAt: 17, itemBudget: 3, thinkingMs: 720 },
-  executioner: { label: '算牌', personality: 'executioner', standAt: 19, itemBudget: 4, thinkingMs: 620 },
-}
-
-/** Boss 只携带自己人格会用的道具；沙漏是玩家专属，永不入池 */
-export const BOSS_ITEM_POOLS: Readonly<Record<BossPersonality, readonly ItemId[]>> = {
-  cautious: ['magnifier', 'sedative', 'saw'],
-  gambler: ['magnifier', 'saw', 'sedative', 'magnet', 'handcuffs'],
-  executioner: ['magnifier', 'saw', 'sedative', 'magnet', 'handcuffs', 'aegis', 'dagger', 'hammer'],
+  cautious: { label: '谨慎', personality: 'cautious', standAt: 15, thinkingMs: 380 },
+  gambler: { label: '赌徒', personality: 'gambler', standAt: 17, thinkingMs: 320 },
+  executioner: { label: '算牌', personality: 'executioner', standAt: 19, thinkingMs: 280 },
 }
 
 export const MAX_ITEMS = 8
-/** 玩家每回合最多使用 3 件道具；Boss 仍受人格 itemBudget 限制 */
-export const PLAYER_ITEM_CAP = 3
 const LOG_LIMIT = 80
 const SUPPLY_OPTION_COUNT = 3
-/** 清层横幅先播完，再摆出三选一 */
-const SUPPLY_DELAY_MS = 2600
-/** 玩家选完后切到 Boss 托盘：等它沉盘、挑完、再升回来 */
-const BOSS_SUPPLY_BEAT_MS = 3000
-/** Boss 门前挑补给的偏好顺序；没人格内可选项时退回随机 */
-const BOSS_SUPPLY_PRIORITY: Readonly<Record<BossPersonality, readonly ItemId[]>> = {
-  cautious: ['sedative', 'magnifier', 'saw'],
-  gambler: ['handcuffs', 'magnet', 'sedative', 'saw', 'magnifier'],
-  executioner: ['dagger', 'aegis', 'sedative', 'handcuffs', 'magnet', 'saw', 'hammer', 'magnifier'],
+/** 每种道具的同时持有上限：抽的时候只在没拿满的里面等概率挑 */
+const ITEM_CAP: Readonly<Record<ItemId, number>> = {
+  magnifier: 8,
+  sedative: 4,
+  saw: 8,
+  handcuffs: 8,
+  aegis: 8,
+  hammer: 2,
+  iou: 4,
+  gloves: 2,
 }
+/** 清层横幅先播完，再摆出补给候选 */
+const SUPPLY_DELAY_MS = 2600
+/** 候选升上桌后停留多久，再整盘沉下去只留选中件（托盘约 2.0s 升完，留出约 1.2s） */
+const SUPPLY_HOLD_MS = 3200
+/** 沉盘、筛掉未选中件、选中件升回桌面的时间；玩家与 Boss 共用 */
+const SUPPLY_PICK_BEAT_MS = 3000
 const SUIT_SYMBOLS: Readonly<Record<CardSuit, string>> = {
   spade: '♠',
   heart: '♥',
@@ -429,49 +432,28 @@ function shuffle<T>(items: readonly T[], rng: RandomSource): T[] {
 
 function createDeck(): Card[] {
   const cards: Card[] = []
-  for (let rank = 1; rank <= 10; rank += 1) {
-    for (const suit of CARD_SUITS) {
-      cards.push({ id: `${suit}-${rank}`, rank: rank as CardRank, suit })
-    }
+  for (let rank = 1; rank <= DECK_SIZE; rank += 1) {
+    const suit = CARD_SUITS[(rank - 1) % CARD_SUITS.length]!
+    cards.push({ id: `${suit}-${rank}`, rank: rank as CardRank, suit })
   }
   return cards
 }
 
 export function formatRank(rank: CardRank): string {
-  return rank === 1 ? 'A' : String(rank)
+  return String(rank)
 }
 
 export function formatCard(card: Card): string {
   return `${SUIT_SYMBOLS[card.suit]}${formatRank(card.rank)}`
 }
 
-/**
- * Aces count as 11 whenever that keeps the hand at or below 21, otherwise as 1.
- * `soft` stays true while an ace is still being counted as 11.
- */
-export function evaluateHand(cards: readonly Card[]): HandState {
-  let hardTotal = 0
-  let aces = 0
-  for (const card of cards) {
-    if (card.rank === 1) {
-      aces += 1
-    } else {
-      hardTotal += card.rank
-    }
-  }
-  let total = hardTotal + aces * 11
-  let softAces = aces
-  while (total > 21 && softAces > 0) {
-    total -= 10
-    softAces -= 1
-  }
+export function evaluateHand(cards: readonly Card[], target = 21): HandState {
+  const total = cards.reduce((sum, card) => sum + card.rank, 0)
   return {
     cards: [...cards],
     visible: [...cards],
     total,
-    soft: softAces > 0,
-    busted: total > 21,
-    blackjack: cards.length === 2 && total === 21,
+    busted: total > target,
   }
 }
 
@@ -492,13 +474,11 @@ class ActorRuntime {
   maxHp: number
   items: ItemId[] = []
   hand: HandState = evaluateHand([])
+  trumps: TrumpId[] = []
   standing = false
-  skipTurn = false
+  stayed = false
+  gunCuffed = false
   sawBoost = 0
-  shield = 0
-  iou = 0
-  cutterUsedThisRound = false
-  sealedThisRound = false
   itemsUsedThisTurn = 0
 
   constructor(id: ActorId, hp: number) {
@@ -541,16 +521,16 @@ class Cylinder {
     return this.remaining - this.liveRemaining
   }
 
-  reload(): Chamber[] {
+  reload(total: number): Chamber[] {
     // 总弹 2~8 发；2 发固定 1 实 1 空。其余实弹 2~4 发，且不超过一半（奇数可多 1 发）。
-    const total = 2 + Math.floor(this.rng() * 7)
+    const capacity = Math.max(2, Math.min(8, Math.round(total)))
     const liveCount =
-      total === 2
+      capacity === 2
         ? 1
-        : 2 + Math.floor(this.rng() * (Math.min(4, Math.ceil(total / 2), total - 1) - 1))
+        : 2 + Math.floor(this.rng() * (Math.min(4, Math.ceil(capacity / 2), capacity - 1) - 1))
     const chambers: Chamber[] = []
     for (let i = 0; i < liveCount; i += 1) chambers.push('live')
-    for (let i = 0; i < total - liveCount; i += 1) chambers.push('blank')
+    for (let i = 0; i < capacity - liveCount; i += 1) chambers.push('blank')
     this.chambers = shuffle(chambers, this.rng)
     this.cursor = 0
     return [...this.chambers]
@@ -572,10 +552,11 @@ class Cylinder {
     return chamber
   }
 
-  /** 重锤：把当前空膛压成实弹；已经是实弹或弹仓见底时返回 false */
-  forceLive(): boolean {
-    if (this.current !== 'blank') return false
-    this.chambers[this.cursor] = 'live'
+  /** 重锤：翻转当前这一发；弹仓见底时返回 false */
+  flip(): boolean {
+    const current = this.current
+    if (current === null) return false
+    this.chambers[this.cursor] = current === 'blank' ? 'live' : 'blank'
     return true
   }
 }
@@ -642,7 +623,7 @@ function actorLabel(id: ActorId): string {
 }
 
 /**
- * Pure-TypeScript blackjack duel state machine.
+ * Pure-TypeScript 21-point duel state machine with alternating turns and trump cards.
  * No DOM, Three.js or audio dependencies: the host wires sounds off `GameEvent`s.
  */
 export class GameEngine {
@@ -650,19 +631,14 @@ export class GameEngine {
   private readonly levelList: readonly LevelConfig[]
   private readonly dealDelay: number
   private readonly thinkOverride: number | null
-  private readonly dealLockMs: number
   private readonly itemLockMs: number
   private inputDelay: PausableDelay | null = null
   private executionDelay: PausableDelay | null = null
   private executionSkip: (() => void) | null = null
   private supplyOptions: ItemId[] = []
+  private supplyPick: ItemId | null = null
   private bossSupplyOptions: ItemId[] = []
   private bossSupplyPick: ItemId | null = null
-  private supplyChoice: ItemId | null = null
-  private supplyResolver: (() => void) | null = null
-  /** 裁纸刀/封条等待点选的牌；暂停/换层/销毁时清空 */
-  private cardChoice: CardChoiceState | null = null
-  private cardChoiceResolver: (() => void) | null = null
   /** 层间三选一选中的道具：beginLevel 会重建 Actor，必须先寄存再注入 */
   private carryOver: ItemId[] = []
   private carryOverBoss: ItemId[] = []
@@ -685,14 +661,20 @@ export class GameEngine {
   private phase: Phase = 'idle'
   private levelIndex = 0
   private round = 0
+  private cylinderRandomized = false
   private player: ActorRuntime = new ActorRuntime('player', 0)
   private boss: ActorRuntime = new ActorRuntime('boss', 0)
   private deck: Card[] = []
+  private trumpPool: TrumpId[] = []
+  private tableTrumps: Record<ActorId, TrumpId[]> = { player: [], boss: [] }
+  private roundTarget = 21
+  private lastPerfectWin = false
+  private cleanStandPasses = 0
+  private standPassDirty = false
   private revealedBy: Record<ActorId, Chamber | null> = { player: null, boss: null }
-  private damageBonus = 0
   private pendingShot: ActorId = 'player'
-  private hourglassActive = false
   private holeRevealed = false
+  private playerHoleRevealed = false
   private inputLocked = false
   private logLines: string[] = []
 
@@ -702,7 +684,6 @@ export class GameEngine {
     this.dealDelay = Math.max(0, options.dealDelayMs ?? 240)
     this.thinkOverride =
       options.thinkDelayMs === undefined ? null : Math.max(0, options.thinkDelayMs)
-    this.dealLockMs = Math.max(0, options.dealLockMs ?? 620)
     this.itemLockMs = Math.max(0, options.itemLockMs ?? 460)
     this.cylinder = new Cylinder(this.rng)
     this.log('深渊在呼吸。锈蚀的轮盘正在等待一笔交易。')
@@ -713,13 +694,14 @@ export class GameEngine {
     this.started = true
     this.generation += 1
     this.runRounds = 0
+    this.cylinderRandomized = false
     this.logLines = []
     this.log('你坐下，牌桌另一端的影子抬起头。')
     void this.beginLevel(0, this.generation)
   }
 
   /** 从层首检查点继续：血袋与补给重置，不保留局内手牌 */
-  startAtLevel(levelIndex: number, carryOver: readonly ItemId[] = [], skipPlayerSupply = false): void {
+  startAtLevel(levelIndex: number, carryOver: readonly ItemId[] = []): void {
     if (this.destroyed) return
     const index = Math.max(0, Math.min(this.levelList.length - 1, Math.floor(levelIndex)))
     if (this.started) this.cancelTimers()
@@ -733,7 +715,7 @@ export class GameEngine {
     this.bossSupplyPick = null
     this.logLines = []
     this.log('你从门缝里退回上一层，血袋重新注满。')
-    void this.beginLevel(index, this.generation, skipPlayerSupply)
+    void this.beginLevel(index, this.generation)
   }
 
   /** 死亡后从本层重来；不保留旧手牌与旧补给 */
@@ -752,22 +734,28 @@ export class GameEngine {
     this.started = false
     this.paused = false
     this.runRounds = 0
+    this.cylinderRandomized = false
     this.phase = 'idle'
     this.levelIndex = 0
     this.round = 0
     this.player = new ActorRuntime('player', 0)
     this.boss = new ActorRuntime('boss', 0)
     this.deck = []
+    this.trumpPool = []
+    this.tableTrumps = { player: [], boss: [] }
+    this.roundTarget = 21
+    this.lastPerfectWin = false
+    this.cleanStandPasses = 0
+    this.standPassDirty = false
     this.clearReveals()
-    this.damageBonus = 0
     this.pendingShot = 'player'
-    this.hourglassActive = false
     this.holeRevealed = false
+    this.playerHoleRevealed = false
     this.logLines = []
     this.supplyOptions = []
+    this.supplyPick = null
     this.bossSupplyOptions = []
     this.bossSupplyPick = null
-    this.supplyChoice = null
     this.carryOver = []
     this.carryOverBoss = []
     this.publish()
@@ -775,63 +763,96 @@ export class GameEngine {
   }
 
   hit(): boolean {
-    if (this.cardChoice) return this.reject('先选好要裁/要封的牌。')
     if (this.phase !== 'playerTurn') {
       return this.reject('现在不是你的回合。')
+    }
+    if (this.player.hand.busted) {
+      return this.reject('你已经爆牌，只能打王牌或停牌。')
     }
     if (this.inputLocked) {
       return this.reject('上一张牌还在飞。')
     }
-    this.dealTo(this.player)
-    if (this.player.hand.busted) {
-      this.dispatch({ type: 'bust', actor: 'player' })
-      this.log('你爆牌了。手指停在半空。')
-      this.player.standing = true
-      this.phase = 'bossTurn'
-      this.publish()
-      void this.runBossTurn(this.generation)
-    } else if (this.player.hand.total === 21) {
-      this.player.standing = true
-      this.log('21 点。你选择停牌。')
-      this.phase = 'bossTurn'
-      this.publish()
-      void this.runBossTurn(this.generation)
-    } else {
-      this.lockInput(this.dealLockMs)
+    this.dispatch({ type: 'playerTableAction', action: 'hit' })
+    if (this.presentationGate) {
+      this.queuePlayerAction(150, () => this.finishPlayerHit())
+      return true
     }
+    this.finishPlayerHit()
     return true
   }
 
+  private finishPlayerHit(): void {
+    this.cleanStandPasses = 0
+    this.standPassDirty = false
+    this.dealTo(this.player)
+    this.maybeDrawTrump(this.player)
+    this.player.stayed = false
+    if (this.player.hand.busted) {
+      // 爆牌不再自动停牌：回合仍归玩家，只能打王牌（抬高目标）或停牌
+      this.dispatch({ type: 'bust', actor: 'player' })
+      this.log('你爆牌了。只能打王牌或停牌。')
+      this.resumeAfterOpponentHit(this.boss)
+      this.phase = 'playerTurn'
+      this.publish()
+      return
+    } else if (this.player.hand.total === this.roundTarget) {
+      this.player.stayed = true
+      this.player.standing = true
+      this.log(`${this.roundTarget} 点。你自动停牌。`)
+    }
+    this.resumeAfterOpponentHit(this.boss)
+    this.phase = 'bossTurn'
+    this.publish()
+    void this.runBossTurn(this.generation)
+  }
+
   stand(): boolean {
-    if (this.cardChoice) return this.reject('先选好要裁/要封的牌。')
     if (this.phase !== 'playerTurn') {
       return this.reject('现在不是你的回合。')
     }
     if (this.inputLocked) {
       return this.reject('动作还没结束。')
     }
+    this.dispatch({ type: 'playerTableAction', action: 'stand' })
+    if (this.presentationGate) {
+      this.queuePlayerAction(220, () => this.finishPlayerStand())
+      return true
+    }
+    this.finishPlayerStand()
+    return true
+  }
+
+  private finishPlayerStand(): void {
+    this.player.stayed = true
     this.player.standing = true
     this.log(`你停牌在 ${this.player.hand.total} 点。`)
     this.phase = 'bossTurn'
     this.publish()
     void this.runBossTurn(this.generation)
-    return true
   }
 
-  useItem(item: ItemId): boolean {
-    if (this.cardChoice) return this.reject('先选好要裁/要封的牌。')
-    // 21 点这轮已经分出胜负、你持枪选枪口时，仍然来得及用道具
-    const shotWindow = this.phase === 'targeting' && this.pendingShot === 'player'
-    if (this.phase !== 'playerTurn' && !shotWindow) {
+  private queuePlayerAction(delayMs: number, finish: () => void): void {
+    const token = this.generation
+    this.inputLocked = true
+    this.publish()
+    void this.wait(delayMs).then(() => {
+      if (!this.alive(token) || this.phase !== 'playerTurn') return
+      this.inputLocked = false
+      finish()
+    })
+  }
+
+  useItem(item: ItemId, target?: ItemId): boolean {
+    if (this.phase !== 'targeting' && this.phase !== 'execution') {
+      return this.reject('21 点阶段只能使用王牌。')
+    }
+    if (this.phase !== 'targeting' || this.pendingShot !== 'player') {
       return this.reject('现在不是使用道具的时机。')
     }
     if (this.inputLocked) {
       return this.reject('动作还没结束。')
     }
-    if (this.player.itemsUsedThisTurn >= PLAYER_ITEM_CAP) {
-      return this.reject('本回合的道具已经用尽。')
-    }
-    if (!this.applyItem(this.player, item)) return false
+    if (!this.applyItem(this.player, item, target)) return false
     if (this.resolveDeaths()) return true
     if (this.itemPresentationGate) {
       this.clearInputDelay()
@@ -870,68 +891,7 @@ export class GameEngine {
     return true
   }
 
-  /** 层间三选一：只能带走一件，选完才开门 */
-  chooseSupply(item: ItemId): boolean {
-    if (this.phase !== 'supply') {
-      return this.reject('现在没有可供挑选的补给。')
-    }
-    if (!this.supplyOptions.includes(item)) {
-      return this.reject('这件补给不在桌上。')
-    }
-    if (this.supplyResolver === null) return false
-    this.supplyChoice = item
-    this.supplyResolver()
-    return true
-  }
-
-  /** 裁纸刀/封条的选牌结算：index 对应快照 cardChoice.cards */
-  resolveCardChoice(index: number): boolean {
-    const choice = this.cardChoice
-    if (!choice) return this.reject('现在没有等待选择的牌。')
-    if (!Number.isInteger(index) || index < 0 || index >= choice.cards.length) {
-      return this.reject('这不是可以选择的牌。')
-    }
-    const card = choice.cards[index]
-    if (!card) return this.reject('这不是可以选择的牌。')
-    this.cardChoice = null
-
-    if (choice.kind === 'cutter') {
-      if (this.player.hand.busted) return this.reject('已经爆牌，裁牌也救不回来。')
-      this.player.hand = evaluateHand(this.player.hand.cards.filter((value) => value !== card))
-      this.player.cutterUsedThisRound = true
-      this.log(`你裁掉了 ${formatCard(card)}，现为 ${this.player.hand.total} 点。`)
-      this.dispatch({ type: 'cardCuttered', actor: 'player', old: card })
-    } else {
-      this.boss.hand = withHoleCard(
-        evaluateHand(this.boss.hand.cards.filter((value) => value !== card)),
-        false,
-      )
-      this.player.sealedThisRound = true
-      this.log(`你把封条贴在 ${formatCard(card)} 上，对手现为 ${this.boss.hand.total} 点。`)
-      this.dispatch({ type: 'cardSealed', actor: 'player', card })
-    }
-    this.cardChoiceResolver?.()
-    this.cardChoiceResolver = null
-    this.publish()
-    return true
-  }
-
-  cancelCardChoice(): boolean {
-    const choice = this.cardChoice
-    if (!choice) return false
-    this.cardChoice = null
-    this.player.items.splice(choice.itemIndex, 0, choice.item)
-    this.player.itemsUsedThisTurn = choice.itemsUsedThisTurn
-    this.holeRevealed = choice.holeRevealed
-    this.boss.hand = choice.bossHand
-    this.logLines.length = choice.logLength
-    this.log(`你收起了【${ITEM_CATALOG[choice.item].name}】，本次没有消耗。`)
-    this.cardChoiceResolver?.()
-    this.cardChoiceResolver = null
-    this.publish()
-    return true
-  }
-
+  /** 层间补给由系统随机抽取，不再等玩家点击 */
   subscribe(listener: GameEventListener): () => void {
     this.listeners.add(listener)
     const snapshot = this.getSnapshot()
@@ -968,22 +928,21 @@ export class GameEngine {
             ? 'boss'
             : null,
       pendingShot: this.phase === 'targeting' ? this.pendingShot : null,
-      damageBonus: this.damageBonus,
-      crisisStacks: this.damageBonus,
-      hourglassActive: this.hourglassActive,
+      roundTarget: this.roundTarget,
+      lastPerfectWin: this.lastPerfectWin,
+      tableTrumps: {
+        player: [...this.tableTrumps.player],
+        boss: [...this.tableTrumps.boss],
+      },
       unlockedItems: this.unlockedItems(),
       supplyOptions: this.phase === 'supply' ? [...this.supplyOptions] : [],
+      supplyPick: this.phase === 'supply' ? this.supplyPick : null,
       bossSupplyOptions:
         this.phase === 'supply' || this.phase === 'bossSupply' ? [...this.bossSupplyOptions] : [],
       bossSupplyPick: this.phase === 'bossSupply' ? this.bossSupplyPick : null,
       inputLocked: this.inputLocked,
       paused: this.paused,
       runRounds: this.runRounds,
-      deckRemaining:
-        this.currentLevel().deckPolicy === 'persistent' ? this.deck.length : null,
-      cardChoice: this.cardChoice
-        ? { kind: this.cardChoice.kind, cards: [...this.cardChoice.cards] }
-        : null,
       log: [...this.logLines],
     }
   }
@@ -995,16 +954,23 @@ export class GameEngine {
     this.listeners.clear()
   }
 
-  private async beginLevel(index: number, token: number, skipPlayerSupply = false): Promise<void> {
+  private async beginLevel(index: number, token: number): Promise<void> {
     if (!this.alive(token)) return
     this.levelIndex = index
     this.phase = 'reloading'
     this.round = 0
-    this.damageBonus = 0
-    this.hourglassActive = false
+    this.roundTarget = 21
+    this.lastPerfectWin = false
+    this.trumpPool = []
+    this.tableTrumps = { player: [], boss: [] }
     this.holeRevealed = false
+    this.playerHoleRevealed = false
     this.clearReveals()
     this.pendingShot = 'player'
+    this.supplyOptions = []
+    this.supplyPick = null
+    this.bossSupplyOptions = []
+    this.bossSupplyPick = null
     const level = this.currentLevel()
     this.player = new ActorRuntime('player', level.playerHp)
     this.boss = new ActorRuntime('boss', level.hp)
@@ -1012,27 +978,27 @@ export class GameEngine {
       const carried = this.carryOver
       this.carryOver = []
       for (const item of carried) {
-        if (this.player.items.length >= MAX_ITEMS) break
+        if (!this.canHoldItem(this.player, item)) break
         this.player.items.push(item)
       }
       this.log(
         `门前的补给还在你身上：${carried.map((item) => `【${ITEM_CATALOG[item].name}】`).join('')}。`,
       )
     }
-    if (!skipPlayerSupply) this.giveSupply(this.player, level.supply)
+    this.giveSupply(this.player, level.supply)
     this.giveSupply(this.boss, level.supply)
     if (this.carryOverBoss.length > 0) {
       const carried = this.carryOverBoss
       this.carryOverBoss = []
       for (const item of carried) {
-        if (this.boss.items.length >= MAX_ITEMS) break
+        if (!this.canHoldItem(this.boss, item)) break
         this.boss.items.push(item)
       }
       this.log(
         `它也把门前的补给带了进来：${carried.map((item) => `【${ITEM_CATALOG[item].name}】`).join('')}。`,
       )
     }
-    const chambers = this.cylinder.reload()
+    const chambers = this.reloadCylinder()
     this.log(`—— 第 ${index + 1} 层 · ${level.title} ——`)
     this.log(`「${level.name}」把一枚生锈的转轮推到你面前。`)
     // 进入新层即是一个可继续的检查点：血袋与补给已按本层重置
@@ -1060,35 +1026,39 @@ export class GameEngine {
     this.phase = 'dealing'
     this.clearReveals()
     this.pendingShot = 'player'
-    // 走火遗恨是「永久叠加」的，直到有人真的中弹才清零，因此这里不重置
-    this.hourglassActive = false
+    this.roundTarget = 21
+    this.lastPerfectWin = false
+    this.cleanStandPasses = 0
+    this.standPassDirty = false
+    this.tableTrumps = { player: [], boss: [] }
     this.holeRevealed = false
+    this.playerHoleRevealed = false
     this.player.itemsUsedThisTurn = 0
     this.boss.itemsUsedThisTurn = 0
-    this.cardChoice = null
-    this.cardChoiceResolver = null
-    this.player.cutterUsedThisRound = false
-    this.boss.cutterUsedThisRound = false
-    this.player.sealedThisRound = false
-    this.boss.sealedThisRound = false
+    this.retainOneTrump(this.player)
+    this.retainOneTrump(this.boss)
+    // 加权随机排序后 pop，保持每回合不重复抽取
+    this.trumpPool = [...TRUMP_IDS]
+      .map((id) => ({
+        id,
+        key: -Math.log(Math.max(this.rng(), Number.EPSILON)) / TRUMP_WEIGHTS[id],
+      }))
+      .sort((a, b) => b.key - a.key)
+      .map((entry) => entry.id)
     this.player.hand = evaluateHand([])
     this.player.standing = false
+    this.player.stayed = false
     this.boss.hand = evaluateHand([])
     this.boss.standing = false
+    this.boss.stayed = false
     this.ensureCylinder()
-    // 第 3 层整层共用一副牌靴：牌数不足 8 张才重洗，让「算牌」真正跨局成立
-    if (this.currentLevel().deckPolicy === 'persistent') {
-      if (this.deck.length < 8) {
-        this.deck = shuffle(createDeck(), this.rng)
-        this.log('牌靴见底，发牌人重新洗牌。')
-      }
-    } else {
-      this.deck = shuffle(createDeck(), this.rng)
-    }
-    this.log(`—— 第 ${this.round} 回合 ——`)
-    if (this.damageBonus > 0) {
-      this.log(`走火遗恨未散：本回合实弹伤害 +${this.damageBonus}。`)
-    }
+    // 所有层每个回合都重新洗牌，Boss 只能根据本回合剩余牌靴算牌
+    this.deck = shuffle(createDeck(), this.rng)
+    this.drawTrump(this.player)
+    this.drawTrump(this.player)
+    this.drawTrump(this.boss)
+    this.drawTrump(this.boss)
+    this.log(`—— 第 ${this.round} 回合 · 目标 ${this.roundTarget} ——`)
     this.dispatch({ type: 'roundStart', level: this.levelIndex + 1, round: this.round })
     this.publish()
 
@@ -1101,33 +1071,48 @@ export class GameEngine {
       this.dealTo(this.boss)
     }
 
-    // 对手第 2 张牌扣住，玩家看不到；点数额照旧
+    // 双方第 2 张牌都扣住，结算时再亮牌；点数额仍按真实手牌计算
+    this.player.hand = withHoleCard(this.player.hand, !this.playerHoleRevealed)
     this.boss.hand = withHoleCard(this.boss.hand, !this.holeRevealed)
 
-    if (this.player.hand.blackjack) {
-      this.log('黑杰克。你的实弹将额外造成 1 点伤害。')
-    }
-    if (this.boss.hand.blackjack) {
-      this.log('它摸到了黑杰克，指关节在灯下泛白。')
-    }
     this.publish()
-
-    if (this.player.skipTurn) {
-      this.player.skipTurn = false
-      this.player.standing = true
-      this.log('手铐仍锁着你的手腕，本回合你无法行动。')
-      this.dispatch({ type: 'turnSkipped', actor: 'player' })
-      this.phase = 'bossTurn'
-      this.publish()
-      await this.wait(650)
-      if (!this.alive(token)) return
-      void this.runBossTurn(token)
-      return
-    }
 
     this.phase = 'playerTurn'
     this.dispatch({ type: 'turn', actor: 'player' })
     this.publish()
+  }
+
+  private resolveStandPass(token: number): void {
+    if (this.standPassDirty) {
+      this.standPassDirty = false
+      this.cleanStandPasses = 0
+      this.resetStandConfirmation()
+      this.dispatch({ type: 'notice', message: '本轮使用过王牌，连续停牌计数重新开始。' })
+      this.phase = 'playerTurn'
+      this.dispatch({ type: 'turn', actor: 'player' })
+      this.publish()
+      return
+    }
+
+    this.cleanStandPasses += 1
+    if (this.cleanStandPasses >= 2) {
+      this.log('双方连续两轮未使用王牌并停牌，开始结算。')
+      void this.settleRound(token)
+      return
+    }
+
+    this.resetStandConfirmation()
+    this.dispatch({ type: 'notice', message: '双方连续停牌 1/2：再连续停牌一轮且不使用王牌才会结算。' })
+    this.phase = 'playerTurn'
+    this.dispatch({ type: 'turn', actor: 'player' })
+    this.publish()
+  }
+
+  private resetStandConfirmation(): void {
+    this.player.stayed = false
+    this.player.standing = false
+    this.boss.stayed = false
+    this.boss.standing = false
   }
 
   private async runBossTurn(token: number): Promise<void> {
@@ -1138,64 +1123,82 @@ export class GameEngine {
     this.dispatch({ type: 'turn', actor: 'boss' })
     this.publish()
 
-    if (this.boss.skipTurn) {
-      this.boss.skipTurn = false
-      this.boss.standing = true
-      this.log('手铐崩紧——它本回合无法摸牌。')
-      this.dispatch({ type: 'turnSkipped', actor: 'boss' })
-      this.publish()
-      await this.wait(600)
-      if (!this.alive(token)) return
-      void this.settleRound(token)
-      return
-    }
-
-    const used = new Set<ItemId>()
-    for (let i = 0; i < profile.itemBudget; i += 1) {
-      const item = this.chooseBossItem(used)
-      if (!item) break
-      used.add(item)
-      this.log(`「${this.currentLevel().name}」从大衣里摸出一件东西。`)
-      this.publish()
-      await this.wait(Math.max(180, think * 0.6))
-      if (!this.alive(token) || this.phase !== 'bossTurn') return
-      if (!this.applyItem(this.boss, item)) break
+    while (this.alive(token) && this.phase === 'bossTurn') {
+      const trumpIndex = this.chooseBossTrump()
+      if (trumpIndex === null) break
+      const trumpCount = this.boss.trumps.length
+      this.useTrumpInternal(this.boss, trumpIndex)
+      if (this.boss.trumps.length === trumpCount) break
       if (this.resolveDeaths()) return
       if (this.itemPresentationGate) await this.itemPresentationGate()
-      if (!this.alive(token) || this.phase !== 'bossTurn') return
       this.releaseDeferredItemEvents()
-      await this.wait(Math.max(160, think * 0.4))
       if (!this.alive(token) || this.phase !== 'bossTurn') return
     }
 
-    while (this.alive(token) && this.phase === 'bossTurn' && !this.boss.hand.busted) {
-      const target = this.bossTarget(profile, profile.personality)
-      if (this.boss.hand.total >= target) break
-      await this.wait(Math.max(160, think * 0.55))
+    const target = this.bossTarget(profile, profile.personality)
+    const wantHit = !this.boss.hand.busted && this.boss.hand.total < target
+    if (wantHit) {
+      this.dispatch({ type: 'bossBark', action: 'hit', hand: true })
+      await this.wait(150)
       if (!this.alive(token) || this.phase !== 'bossTurn') return
+      this.cleanStandPasses = 0
+      this.standPassDirty = false
       this.dealTo(this.boss)
+      this.maybeDrawTrump(this.boss)
+      this.boss.stayed = false
+      if (this.boss.hand.busted) {
+        this.dispatch({ type: 'bust', actor: 'boss' })
+        this.log('它爆牌了，喉咙里滚出一声低笑。')
+        this.boss.stayed = true
+        this.boss.standing = true
+      } else if (this.boss.hand.total === this.roundTarget) {
+        this.boss.stayed = true
+        this.boss.standing = true
+        this.dispatch({ type: 'bossBark', action: 'stand', hand: false })
+        this.log(`它摸到 ${this.roundTarget} 点，自动停牌。`)
+      }
+      this.resumeAfterOpponentHit(this.player)
+    } else {
+      this.dispatch({ type: 'bossBark', action: 'stand', hand: true })
+      await this.wait(220)
+      if (!this.alive(token) || this.phase !== 'bossTurn') return
+      this.boss.stayed = true
+      this.boss.standing = true
+      this.log(`「${this.currentLevel().name}」停牌在 ${this.boss.hand.total} 点。`)
     }
 
-    if (this.boss.hand.busted) {
-      this.dispatch({ type: 'bust', actor: 'boss' })
-      this.log('它爆牌了，喉咙里滚出一声低笑。')
-    }
-    this.boss.standing = true
-    this.log(`「${this.currentLevel().name}」停牌在 ${this.boss.hand.total} 点。`)
     this.publish()
     await this.wait(450)
     if (!this.alive(token)) return
-    void this.settleRound(token)
+    if (this.player.stayed && this.boss.stayed) {
+      this.resolveStandPass(token)
+      return
+    }
+    this.phase = 'playerTurn'
+    this.dispatch({ type: 'turn', actor: 'player' })
+    this.publish()
   }
 
   private async settleRound(token: number): Promise<void> {
     if (!this.alive(token)) return
+    if (!this.player.stayed || !this.boss.stayed) {
+      this.phase = !this.player.stayed ? 'playerTurn' : 'bossTurn'
+      this.publish()
+      return
+    }
     this.phase = 'resolving'
-    // 结算时亮出底牌
-    const wasHidden = !this.holeRevealed
+    // 结算时双方亮出暗牌
+    const wasPlayerHidden = !this.playerHoleRevealed
+    const wasBossHidden = !this.holeRevealed
+    this.playerHoleRevealed = true
     this.holeRevealed = true
+    this.player.hand = withHoleCard(this.player.hand, false)
     this.boss.hand = withHoleCard(this.boss.hand, false)
-    if (wasHidden) {
+    if (wasPlayerHidden) {
+      const hole = this.player.hand.cards[1]
+      if (hole) this.log(`你亮出暗牌 ${formatCard(hole)}，共 ${this.player.hand.total} 点。`)
+    }
+    if (wasBossHidden) {
       const hole = this.boss.hand.cards[1]
       if (hole) {
         this.log(`它亮出底牌 ${formatCard(hole)}，共 ${this.boss.hand.total} 点。`)
@@ -1208,9 +1211,9 @@ export class GameEngine {
     const playerTotal = this.player.hand.total
     const bossTotal = this.boss.hand.total
     let winner: ActorId | null = null
-    // 爆牌永远直接判负，沙漏不改变这一点
+    // 双方都爆牌时，离本局目标更近的一方获胜；同点仍为平局
     if (this.player.hand.busted && this.boss.hand.busted) {
-      winner = null
+      winner = playerTotal === bossTotal ? null : playerTotal < bossTotal ? 'player' : 'boss'
     } else if (this.player.hand.busted) {
       winner = 'boss'
     } else if (this.boss.hand.busted) {
@@ -1218,10 +1221,7 @@ export class GameEngine {
     } else if (playerTotal === bossTotal) {
       winner = null
     } else {
-      const playerHigher = playerTotal > bossTotal
-      // 逆转沙漏：点数更小者获胜
-      const playerWins = this.hourglassActive ? !playerHigher : playerHigher
-      winner = playerWins ? 'player' : 'boss'
+      winner = playerTotal > bossTotal ? 'player' : 'boss'
     }
 
     if (winner === null) {
@@ -1230,13 +1230,12 @@ export class GameEngine {
       } else {
         this.log(`走火危机：双方都停在 ${playerTotal} 点，这一枪没人开。`)
       }
-      const mine = this.giveRandomItem(this.player)
-      const theirs = this.giveRandomItem(this.boss)
+      const mine = this.giveOne(this.player)
+      const theirs = this.giveOne(this.boss)
       if (mine) this.log(`你从桌下摸到了【${ITEM_CATALOG[mine].name}】。`)
+      else this.log('你的背包已满，摸不到新道具。')
       if (theirs) this.log(`它也摸到了【${ITEM_CATALOG[theirs].name}】。`)
-      // 永久叠加，直到有人中弹才清零
-      this.damageBonus += 1
-      this.log(`轮盘发出空转的咔哒声。走火遗恨 +1，此后实弹伤害 +${this.damageBonus}。`)
+      this.log('轮盘发出空转的咔哒声。双方各摸一件补给。')
       this.dispatch({ type: 'tie', player: playerTotal, boss: bossTotal })
       this.publish()
       this.phase = 'roundEnd'
@@ -1246,19 +1245,51 @@ export class GameEngine {
       return
     }
 
+    if (this.player.hand.busted && this.boss.hand.busted) {
+      this.log(`双方都爆牌（你 ${playerTotal}，它 ${bossTotal}），点数更小的${winner === 'player' ? '你' : '它'}获胜。`)
+    }
+
+    this.lastPerfectWin = false
+    const winnerTotal = winner === 'player' ? playerTotal : bossTotal
+    if (winnerTotal === this.roundTarget) {
+      const winnerActor = winner === 'player' ? this.player : this.boss
+      const bonus = this.giveOne(winnerActor)
+      if (winner === 'player') this.lastPerfectWin = true
+      this.log(bonus
+        ? `${winner === 'player' ? '你' : '它'}满点收局。发牌人多推来一件【${ITEM_CATALOG[bonus].name}】。`
+        : `${winner === 'player' ? '你' : '它'}满点收局，但背包已经塞不下了。`)
+      this.dispatch({ type: 'perfectWin', actor: winner, item: bonus })
+    }
+
     // 赢家拿到枪，由它决定枪口朝向：对手，或者自己
     this.pendingShot = winner
     this.phase = 'targeting'
     this.publish()
 
     if (winner === 'boss') {
-      await this.wait(760)
-      if (!this.alive(token) || this.phase !== 'targeting') return
-      const target = this.chooseBossTarget()
-      this.log(`「${this.currentLevel().name}」把枪口对准${target === 'boss' ? '自己' : '你'}。`)
-      this.publish()
-      await this.resolveShot(this.boss, target === 'boss' ? this.boss : this.player, token)
+      void this.runBossTargeting(token)
     }
+  }
+
+  private async runBossTargeting(token: number): Promise<void> {
+    if (!this.alive(token) || this.phase !== 'targeting' || this.pendingShot !== 'boss') return
+    while (this.alive(token) && this.phase === 'targeting') {
+      const item = this.chooseBossItem()
+      if (!item) break
+      this.log(`「${this.currentLevel().name}」从大衣里摸出一件东西。`)
+      this.publish()
+      if (!this.applyItem(this.boss, item)) break
+      if (this.resolveDeaths()) return
+      if (this.itemPresentationGate) await this.itemPresentationGate()
+      this.releaseDeferredItemEvents()
+      if (!this.alive(token) || this.phase !== 'targeting') return
+    }
+    await this.wait(760)
+    if (!this.alive(token) || this.phase !== 'targeting') return
+    const target = this.chooseBossTarget()
+    this.log(`「${this.currentLevel().name}」把枪口对准${target === 'boss' ? '自己' : '你'}。`)
+    this.publish()
+    await this.resolveShot(this.boss, target === 'boss' ? this.boss : this.player, token)
   }
 
   /** 处决阶段：持枪者选择枪口。只有玩家持枪时才能调用。 */
@@ -1302,16 +1333,14 @@ export class GameEngine {
   private async resolveShot(attacker: ActorRuntime, target: ActorRuntime, token: number): Promise<void> {
     if (!this.alive(token) || this.phase !== 'targeting') return
     const selfShot = attacker === target
+    const foe = attacker.id === 'player' ? this.boss : this.player
+    const cuffedActor = selfShot ? foe : target
+    const transferBlocked = !selfShot && cuffedActor.gunCuffed
     this.ensureCylinder()
     const sawed = attacker.sawBoost > 0
-    const blackjack = attacker.hand.blackjack && !attacker.hand.busted
     const chamber = this.cylinder.current ?? 'blank'
-    // 高牌奖励：赢下本轮且手牌 ≥20 点才算「碾压」。
-    // 原来用点差 ≥5，但 AI 停牌线决定了第 2/3 关几乎不可能打出这个点差，等于死条款。
-    const overwhelmed = !attacker.hand.busted && attacker.hand.total >= 20
 
     this.phase = 'execution'
-    this.hourglassActive = false
     this.pendingShot = 'player'
     this.publish()
     this.dispatch({
@@ -1325,53 +1354,25 @@ export class GameEngine {
     if (!this.alive(token)) return
 
     this.cylinder.fire()
+    cuffedActor.gunCuffed = false
     this.clearReveals()
-    // 基础 2 点；黑杰克 +1；碾压（手牌 ≥20）+1；走火遗恨 +N；借据押注 +2；锯子整体翻倍
-    const stacks = this.damageBonus
-    // 借据：赢下的实弹 +2，输掉时挨的实弹 +1
-    const iouBonus =
-      !selfShot && chamber === 'live'
-        ? (attacker.iou > 0 ? 2 : 0) + (target.iou > 0 ? 1 : 0)
-        : 0
-    const base = 2 + (blackjack ? 1 : 0) + (overwhelmed ? 1 : 0) + stacks + iouBonus
-    const rawDamage = chamber === 'live' ? (sawed ? base * 2 : base) : 0
-    // 护心镜挡任何来源的实弹，只挡一发
-    let blocked: 'shield' | null = null
-    if (rawDamage > 0 && target.shield > 0) {
-      target.shield = 0
-      blocked = 'shield'
-    }
-    const damage = blocked === null ? rawDamage : 0
-    let reward: ItemId | null = null
+    const damage = chamber === 'live' ? 1 + (sawed ? 1 : 0) : 0
     if (chamber === 'live') {
       target.hp = Math.max(0, target.hp - damage)
-      // 只有真的扣到血，走火遗恨与锯子加成才会耗尽；被护心镜完全挡下时保留
-      if (damage > 0) {
-        this.damageBonus = 0
-        attacker.sawBoost = 0
-      }
-    } else if (selfShot) {
-      // 空膛对己：弹壳掉进黑暗，换回一件道具
-      reward = this.giveRandomItem(attacker)
+      attacker.sawBoost = 0
     }
 
     const who = actorLabel(attacker.id)
     const victim = selfShot ? '自己' : actorLabel(target.id)
-    if (chamber === 'live' && blocked === 'shield') {
-      this.log(`${who}扣下扳机：实弹。${victim}的护心镜应声碎裂，伤害被完全挡下。`)
-    } else if (chamber === 'live') {
-      const tags: string[] = []
-      if (blackjack) tags.push('黑杰克')
-      if (overwhelmed) tags.push('碾压')
-      if (sawed) tags.push('锯短枪管')
-      if (stacks > 0) tags.push(`走火遗恨 +${stacks}`)
-      if (iouBonus > 0) tags.push(`借据 +${iouBonus}`)
-      const tag = tags.length > 0 ? `（${tags.join(' · ')}）` : ''
+    if (chamber === 'live') {
+      const tag = sawed ? '（锯短枪管 +1）' : ''
       this.log(`${who}扣下扳机：实弹${tag}。${victim}承受 ${damage} 点伤害。`)
-    } else if (reward) {
-      this.log(`${who}把枪口对准${victim}：空膛。捡回一枚空弹，摸到【${ITEM_CATALOG[reward].name}】。`)
+    } else if (selfShot) {
+      this.log(`${who}把枪口对准自己：空膛。本次开枪结束，没有拿到补给。`)
+    } else if (transferBlocked) {
+      this.log(`${who}把枪口对准${victim}：空膛。手铐锁住对手的手，枪没有脱手。`)
     } else {
-      this.log(`${who}扣下扳机：空膛。只有撞针的脆响。`)
+      this.log(`${who}把枪口对准${victim}：空膛。枪权转移给${actorLabel(target.id)}。`)
     }
     this.dispatch({
       type: 'shot',
@@ -1380,16 +1381,24 @@ export class GameEngine {
       chamber,
       damage,
       sawed,
-      blackjack,
-      blocked,
     })
-    if (reward) {
-      this.dispatch({ type: 'chamberRecovered', actor: attacker.id, item: reward })
-    }
     this.publish()
     await this.wait(1500)
     if (!this.alive(token)) return
     if (this.resolveDeaths()) return
+
+    if (chamber === 'blank' && !selfShot) {
+      const nextShooter = transferBlocked ? attacker : target
+      this.phase = 'targeting'
+      this.pendingShot = nextShooter.id
+      this.publish()
+      if (this.presentationGate) {
+        await this.presentationGate()
+        if (!this.alive(token)) return
+      }
+      if (nextShooter.id === 'boss') void this.runBossTargeting(token)
+      return
+    }
 
     this.phase = 'roundEnd'
     this.publish()
@@ -1403,10 +1412,9 @@ export class GameEngine {
     void this.startRound(token)
   }
 
-  /** 对手的枪口选择：已知空膛且道具槽没满就对自己开枪换道具，否则打玩家 */
+  /** 对手的枪口选择：看穿空膛就一定自射跳过本轮，不把枪交回来；否则打玩家 */
   private chooseBossTarget(): ActorId {
-    // 自射换道具是对局道具经济的一部分，Boss 同样保留这项赌博
-    if (this.revealedBy.boss === 'blank' && this.boss.items.length < MAX_ITEMS) return 'boss'
+    if (this.revealedBy.boss === 'blank') return 'boss'
     return 'player'
   }
 
@@ -1445,8 +1453,9 @@ export class GameEngine {
   }
 
   /**
-   * 清层后先让横幅播完，再摆出三件补给；玩家挑好才开门，不设时限。
-   * 玩家选完后镜头切到 Boss 托盘，看它挑一件带入下一层。
+   * 清层后先让横幅播完，再摆出补给。
+   * 玩家与 Boss 同一套演出：候选升上桌 → 停留 → 整盘沉下只留随机选中件 → 选中件升回桌面。
+   * 选中件先存进 carryOver，beginLevel 重建 Actor 时再注入。
    */
   private async offerSupply(token: number): Promise<void> {
     await this.wait(SUPPLY_DELAY_MS)
@@ -1458,35 +1467,41 @@ export class GameEngine {
     }
     const bossOptions = this.rollBossSupplyOptions(options.length)
     this.supplyOptions = options
-    this.supplyChoice = null
+    this.supplyPick = null
     this.bossSupplyOptions = bossOptions
     this.bossSupplyPick = null
     this.phase = 'supply'
     this.log(
       options.length >= 3
-        ? '门前的桌上摆着三件补给，你只能带走一件。'
-        : `门前的桌上摆着 ${options.length} 件补给，你只能带走一件。`,
+        ? '门前的桌上摆着三件补给，随机留下一件。'
+        : `门前的桌上摆着 ${options.length} 件补给，随机留下一件。`,
     )
     this.dispatch({ type: 'supplyOffer', options: [...options] })
     this.publish()
-    await this.waitSupplyPick()
+    await this.wait(SUPPLY_HOLD_MS)
     if (!this.alive(token) || this.phase !== 'supply') return
-    const picked = this.consumeSupplyChoice()
-    this.supplyOptions = []
+    const picked = options[Math.floor(this.rng() * options.length)] ?? null
     if (picked) {
+      this.supplyPick = picked
       this.carryOver.push(picked)
-      this.log(`你把【${ITEM_CATALOG[picked].name}】别在腰间，推开了下一道生锈的铁门。`)
+      this.log(`你带走了【${ITEM_CATALOG[picked].name}】，推开了下一道生锈的铁门。`)
+      this.dispatch({ type: 'supplyPick', actor: 'player', item: picked })
+      this.publish()
+      await this.wait(SUPPLY_PICK_BEAT_MS)
+      if (!this.alive(token)) return
     }
+    this.supplyOptions = []
+    this.supplyPick = null
     if (bossOptions.length > 0) {
-      const bossPick = this.pickBossSupply(bossOptions)
+      const bossPick = bossOptions[Math.floor(this.rng() * bossOptions.length)] ?? null
       if (bossPick) {
         this.bossSupplyPick = bossPick
+        this.carryOverBoss.push(bossPick)
         this.phase = 'bossSupply'
         this.dispatch({ type: 'bossSupply', pick: bossPick })
         this.publish()
-        await this.wait(BOSS_SUPPLY_BEAT_MS)
+        await this.wait(SUPPLY_PICK_BEAT_MS)
         if (!this.alive(token)) return
-        this.carryOverBoss.push(bossPick)
         this.log(`它把【${ITEM_CATALOG[bossPick].name}】收进斗篷，留给下一层。`)
       }
     }
@@ -1498,48 +1513,237 @@ export class GameEngine {
   }
 
   private rollSupplyOptions(): ItemId[] {
-    // 第 1 层只摆两件，避免开局补给堆叠；之后仍三选一
+    // 第 1 层只摆两件，之后三件；随机取一件
     const count = this.levelIndex === 0 ? 2 : SUPPLY_OPTION_COUNT
     return shuffle(this.unlockedItems(), this.rng).slice(0, count)
   }
 
-  /** Boss 的候选从自己人格的补给池里抽，和玩家一样只带走一件 */
+  /** Boss 与玩家使用同一份已解锁道具池 */
   private rollBossSupplyOptions(count: number): ItemId[] {
     if (count <= 0) return []
-    const pool = BOSS_ITEM_POOLS[this.currentLevel().personality]
-    return shuffle([...pool], this.rng).slice(0, count)
+    return shuffle([...this.unlockedItems()], this.rng).slice(0, count)
   }
 
-  private pickBossSupply(options: readonly ItemId[]): ItemId | null {
-    const priority = BOSS_SUPPLY_PRIORITY[this.currentLevel().personality]
-    for (const item of priority) {
-      if (options.includes(item)) return item
+  useTrump(index: number): boolean {
+    if (this.phase !== 'playerTurn') return this.reject('现在不是使用王牌的时机。')
+    if (this.inputLocked) return this.reject('动作还没结束。')
+    if (!this.useTrumpInternal(this.player, index)) return false
+    if (this.resolveDeaths()) return true
+    if (this.itemPresentationGate) {
+      this.clearInputDelay()
+      this.itemPresentationPending = true
+      this.itemPresentationFinished = false
+      this.inputLocked = true
+      const token = this.generation
+      this.publish()
+      void this.itemPresentationGate().then(() => {
+        if (!this.alive(token)) return
+        this.releaseDeferredItemEvents()
+        this.itemPresentationFinished = true
+        this.finishItemPresentation()
+      })
+    } else {
+      this.releaseDeferredItemEvents()
+      this.lockInput(this.itemLockMs)
     }
-    return options[Math.floor(this.rng() * options.length)] ?? null
+    return true
   }
 
-  /** 不设时限：一直等到玩家点选或按键，才继续开门 */
-  private waitSupplyPick(): Promise<void> {
-    return new Promise<void>((resolve) => {
-      this.supplyResolver = () => {
-        this.supplyResolver = null
-        resolve()
+  private useTrumpInternal(actor: ActorRuntime, index: number): boolean {
+    const trump = actor.trumps[index]
+    if (!trump) return this.reject('没有这张王牌。')
+    const foe = actor.id === 'player' ? this.boss : this.player
+    let detail: string | null = null
+
+    if (trump === 'go24' || trump === 'go27') {
+      this.roundTarget = trump === 'go24' ? 24 : 27
+      this.tableTrumps.player = []
+      this.tableTrumps.boss = []
+      this.tableTrumps[actor.id].push(trump)
+      this.reevaluateHands()
+      this.player.stayed = false
+      this.boss.stayed = false
+      this.player.standing = this.player.hand.busted
+      this.boss.standing = this.boss.hand.busted
+      this.phase = 'playerTurn'
+      detail = `目标值改为 ${this.roundTarget}，双方重新获得行动权。`
+    } else if (trump === 'return' || trump === 'remove') {
+      const targetActor = trump === 'return' ? actor : foe
+      const cardIndex = this.lastVisibleCardIndex(targetActor)
+      if (cardIndex === null) return this.reject('没有可以弹回的明牌。')
+      const nextCards = targetActor.hand.cards.filter((_, i) => i !== cardIndex)
+      const card = targetActor.hand.cards[cardIndex]
+      if (!card) return this.reject('没有可以弹回的明牌。')
+      targetActor.hand = evaluateHand(nextCards, this.roundTarget)
+      this.deck.push(card)
+      this.deck = shuffle(this.deck, this.rng)
+      this.reevaluateActorHand(targetActor)
+      detail = `${trump === 'return' ? '你' : '对手'}弹回了 ${formatCard(card)}。`
+    } else if (trump === 'exchange') {
+      const mineIndex = this.lastVisibleCardIndex(actor)
+      const foeIndex = this.lastVisibleCardIndex(foe)
+      if (mineIndex === null || foeIndex === null) return this.reject('没有可以交换的明牌。')
+      const mine = [...actor.hand.cards]
+      const theirs = [...foe.hand.cards]
+      const myCard = mine[mineIndex]
+      const foeCard = theirs[foeIndex]
+      if (!myCard || !foeCard) return this.reject('没有可以交换的明牌。')
+      mine[mineIndex] = foeCard
+      theirs[foeIndex] = myCard
+      actor.hand = evaluateHand(mine, this.roundTarget)
+      foe.hand = evaluateHand(theirs, this.roundTarget)
+      this.preserveHoleCard(actor)
+      this.preserveHoleCard(foe)
+      detail = `双方交换了 ${formatCard(myCard)} 与 ${formatCard(foeCard)}。`
+    } else if (trump.startsWith('card')) {
+      const rank = Number(trump.slice(4)) as CardRank
+      const deckIndex = this.deck.findIndex((card) => card.rank === rank)
+      if (deckIndex === -1) {
+        detail = `数字 ${rank} 已不在牌堆，王牌落空。`
+      } else {
+        const [card] = this.deck.splice(deckIndex, 1)
+        if (card) {
+          this.appendCard(actor, card)
+          detail = `${actorLabel(actor.id)}抽到了 ${formatCard(card)}。`
+        }
       }
-    })
+    } else if (trump === 'happiness') {
+      this.drawTrump(this.player)
+      this.drawTrump(this.boss)
+      detail = '双方各抽了一张王牌。'
+    } else if (trump === 'destroy') {
+      const hadTarget = this.tableTrumps[foe.id].some((id) => id === 'go24' || id === 'go27')
+      this.tableTrumps[foe.id] = []
+      if (hadTarget) {
+        this.roundTarget = 21
+        this.reevaluateHands()
+        this.resetStayedAfterRetarget()
+        detail = '对手的目标王牌被移除，目标恢复 21。'
+      } else {
+        detail = '对手台面上没有可移除的目标王牌。'
+      }
+    } else if (trump === 'love') {
+      if (this.deck.length === 0) return this.reject('牌堆里没有牌。')
+      const safeCards = this.deck.filter((entry) => foe.hand.total + entry.rank <= this.roundTarget)
+      const best = safeCards.length > 0
+        ? safeCards.reduce((a, b) => (b.rank > a.rank ? b : a))
+        : this.deck.reduce((a, b) => (b.rank < a.rank ? b : a))
+      this.deck.splice(this.deck.indexOf(best), 1)
+      this.appendCard(foe, best)
+      detail = safeCards.length > 0
+        ? `对手得到了牌堆里最贴近目标的一张：${formatCard(best)}。`
+        : `牌堆里没有不爆的牌，对手拿到了最小的一张：${formatCard(best)}，仍然爆牌。`
+    }
+
+    if (detail === null) return false
+    this.cleanStandPasses = 0
+    this.standPassDirty = true
+    actor.trumps.splice(index, 1)
+    this.log(`${actorLabel(actor.id)}使用了【${TRUMP_CATALOG[trump].name}】。${detail}`)
+    this.dispatch({ type: 'trumpPlayed', actor: actor.id, trump, detail })
+    this.publish()
+    return true
   }
 
-  private consumeSupplyChoice(): ItemId | null {
-    const choice = this.supplyChoice
-    this.supplyChoice = null
-    return choice
+  private drawTrump(actor: ActorRuntime): void {
+    const trump = this.trumpPool.pop()
+    if (!trump) return
+    actor.trumps.push(trump)
   }
 
-  private applyItem(actor: ActorRuntime, item: ItemId): boolean {
+  private maybeDrawTrump(actor: ActorRuntime): void {
+    if (this.rng() < 0.15) this.drawTrump(actor)
+  }
+
+  private retainOneTrump(actor: ActorRuntime): void {
+    if (actor.trumps.length > 1) actor.trumps = actor.trumps.slice(-1)
+  }
+
+  private lastVisibleCardIndex(actor: ActorRuntime): number | null {
+    for (let i = actor.hand.visible.length - 1; i >= 0; i -= 1) {
+      if (actor.hand.visible[i] !== null) return i
+    }
+    return null
+  }
+
+  private appendCard(actor: ActorRuntime, card: Card): void {
+    actor.hand = evaluateHand([...actor.hand.cards, card], this.roundTarget)
+    this.preserveHoleCard(actor)
+  }
+
+  private preserveHoleCard(actor: ActorRuntime): void {
+    const revealed = actor.id === 'boss' ? this.holeRevealed : this.playerHoleRevealed
+    if (!revealed) actor.hand = withHoleCard(actor.hand, true)
+  }
+
+  private reevaluateActorHand(actor: ActorRuntime): void {
+    actor.hand = evaluateHand(actor.hand.cards, this.roundTarget)
+    this.preserveHoleCard(actor)
+  }
+
+  private reevaluateHands(): void {
+    this.reevaluateActorHand(this.player)
+    this.reevaluateActorHand(this.boss)
+  }
+
+  private resetStayedAfterRetarget(): void {
+    this.player.stayed = false
+    this.boss.stayed = false
+    this.player.standing = this.player.hand.busted
+    this.boss.standing = this.boss.hand.busted
+    this.phase = 'playerTurn'
+  }
+
+  private resumeAfterOpponentHit(actor: ActorRuntime): void {
+    if (!actor.hand.busted && actor.hand.total !== this.roundTarget) {
+      actor.stayed = false
+      actor.standing = false
+    }
+  }
+
+  private chooseBossTrump(): number | null {
+    const indexOf = (id: TrumpId) => this.boss.trumps.indexOf(id)
+    if (this.boss.hand.busted) {
+      const index = indexOf('return')
+      if (index !== null) {
+        const cardIndex = this.lastVisibleCardIndex(this.boss)
+        const card = cardIndex === null ? null : this.boss.hand.cards[cardIndex]
+        if (card && this.boss.hand.total - card.rank <= this.roundTarget) return index
+      }
+    }
+    if (this.boss.hand.total < this.roundTarget && this.boss.hand.total < this.player.hand.total) {
+      const preferred = this.roundTarget >= 27 ? 'go27' : this.roundTarget >= 24 ? 'go24' : null
+      if (preferred && indexOf(preferred) !== null) return indexOf(preferred)
+    }
+    if (
+      this.wouldLose() &&
+      indexOf('exchange') !== null &&
+      this.lastVisibleCardIndex(this.boss) !== null &&
+      this.lastVisibleCardIndex(this.player) !== null
+    ) return indexOf('exchange')
+    for (let rank = 2; rank <= 7; rank += 1) {
+      const id = `card${rank}` as TrumpId
+      const index = indexOf(id)
+      const next = this.boss.hand.total + rank
+      if (index !== null && next <= this.roundTarget && next > this.boss.hand.total) return index
+    }
+    if (this.tableTrumps.player.some((id) => id === 'go24' || id === 'go27') && indexOf('destroy') !== null) {
+      return indexOf('destroy')
+    }
+    if (this.boss.trumps.length < 2 && indexOf('happiness') !== null) return indexOf('happiness')
+    if (!this.player.hand.busted && this.deck.length > 0 && indexOf('love') !== null) {
+      const lowest = Math.min(...this.deck.map((card) => card.rank))
+      if (this.player.hand.total + lowest > this.roundTarget) return indexOf('love')
+    }
+    return null
+  }
+
+  private applyItem(actor: ActorRuntime, item: ItemId, target?: ItemId): boolean {
     this.itemEvents = []
     let success = false
     let events: GameEvent[] = []
     try {
-      success = this.applyItemEffect(actor, item)
+      success = this.applyItemEffect(actor, item, target)
       events = this.itemEvents
     } finally {
       this.itemEvents = null
@@ -1564,281 +1768,157 @@ export class GameEngine {
     this.publish()
   }
 
-  private applyItemEffect(actor: ActorRuntime, item: ItemId): boolean {
+  private applyItemEffect(actor: ActorRuntime, item: ItemId, target?: ItemId): boolean {
     const index = actor.items.indexOf(item)
     if (index === -1) {
       return this.reject(`${actorLabel(actor.id)}没有【${ITEM_CATALOG[item].name}】。`)
     }
+    const result = this.resolveItemEffect(actor, item, target)
+    if (!result.ok || result.detail === null) return false
+    actor.items.splice(index, 1)
+    actor.itemsUsedThisTurn += 1
+    this.log(`${actorLabel(actor.id)}使用了【${ITEM_CATALOG[item].name}】。${result.detail}`)
+    this.dispatch({ type: 'itemUsed', actor: actor.id, item, detail: result.detail })
+    this.publish()
+    return true
+  }
+
+  private resolveItemEffect(
+    actor: ActorRuntime,
+    item: ItemId,
+    target?: ItemId,
+  ): { ok: boolean; detail: string | null } {
     const foe = actor.id === 'player' ? this.boss : this.player
-    let detail: string | null = null
+    const fail = (message: string): { ok: false; detail: null } => {
+      this.reject(message)
+      return { ok: false, detail: null }
+    }
 
     switch (item) {
       case 'magnifier': {
         this.ensureCylinder()
         const chamber = this.cylinder.current
-        if (!chamber) return this.reject('弹仓里空无一物。')
+        if (!chamber) return fail('弹仓里空无一物。')
         this.revealedBy[actor.id] = chamber
         // Boss 的窥视不能写进日志，否则等于把膛内读数告诉了玩家
-        detail =
+        const detail =
           actor.id === 'player'
             ? chamber === 'live'
               ? '窥见实弹。'
               : '窥见空膛。'
             : '它窥视了枪膛，指节停了一瞬。'
         this.dispatch({ type: 'chamberRevealed', actor: actor.id, chamber })
-        break
+        return { ok: true, detail }
       }
       case 'sedative': {
-        if (actor.hp >= actor.maxHp) return this.reject('生命已经满了。')
+        if (actor.hp >= actor.maxHp) return fail('生命已经满了。')
         actor.hp = Math.min(actor.maxHp, actor.hp + 1)
-        detail = `生命恢复至 ${actor.hp}/${actor.maxHp}。`
-        break
+        return { ok: true, detail: `生命恢复至 ${actor.hp}/${actor.maxHp}。` }
       }
       case 'saw': {
-        if (actor.sawBoost > 0) return this.reject('枪管已经锯短了。')
+        if (actor.sawBoost > 0) return fail('枪管已经锯短了。')
         actor.sawBoost = 1
-        detail = '枪管被锯短，本局实弹伤害翻倍。'
-        break
-      }
-      case 'magnet': {
-        const mine = actor.hand.cards
-        const theirs = foe.hand.cards
-        // 必须拿「明牌」交换：对手的明牌是第 1 张（第 2 张是暗牌），玩家没有暗牌取最后一张
-        const mineIndex = actor.id === 'boss' ? 0 : mine.length - 1
-        const foeIndex = foe.id === 'boss' ? 0 : theirs.length - 1
-        if (mineIndex < 0 || foeIndex < 0) return this.reject('桌上没有可以互换的明牌。')
-        const myCard = mine[mineIndex]
-        const foeCard = theirs[foeIndex]
-        if (!myCard || !foeCard) return this.reject('桌上没有可以互换的明牌。')
-        const mineNext = [...mine]
-        const foeNext = [...theirs]
-        mineNext[mineIndex] = foeCard
-        foeNext[foeIndex] = myCard
-        actor.hand = evaluateHand(mineNext)
-        foe.hand = evaluateHand(foeNext)
-        // 原明牌已被换走，底牌必须亮出，否则桌面信息会自相矛盾
-        this.holeRevealed = true
-        this.boss.hand = withHoleCard(this.boss.hand, false)
-        detail = `磁铁换走了对手的明牌，当前 ${this.player.hand.total} 对 ${this.boss.hand.total}。`
-        this.dispatch({ type: 'magnetSwap', actor: actor.id, card: foeCard })
-        break
+        return { ok: true, detail: '枪管被锯短，下一发实弹伤害 +1。' }
       }
       case 'handcuffs': {
-        if (foe.skipTurn) return this.reject('对手已经被锁住了。')
-        foe.skipTurn = true
-        detail = `${actorLabel(foe.id)}下一次行动被跳过。`
-        break
+        if (foe.gunCuffed) return fail('对手已经被铐住了。')
+        foe.gunCuffed = true
+        return { ok: true, detail: '对手的手被铐住：你下一次对他开空枪时，枪权不会转移。' }
       }
       case 'aegis': {
-        if (actor.shield > 0) return this.reject('护心镜已经举起来了。')
-        actor.shield = 1
-        detail = '护心镜展开：下一次实弹伤害将被完全挡下。'
-        break
-      }
-      case 'cutter': {
-        if (actor.hand.busted) return this.reject('已经爆牌，裁牌也救不回来。')
-        if (actor.cutterUsedThisRound) return this.reject('这一手已经裁过牌了。')
-        if (actor.hand.cards.length === 0) return this.reject('手里没有可以裁掉的牌。')
-        if (actor.id === 'player') {
-          // 玩家自选一张：进入待选状态，resolveCardChoice 结算
-          this.cardChoice = {
-            kind: 'cutter', cards: [...actor.hand.cards], item, itemIndex: index,
-            itemsUsedThisTurn: actor.itemsUsedThisTurn, logLength: this.logLines.length,
-            holeRevealed: this.holeRevealed, bossHand: this.boss.hand,
-          }
-          detail = '亮出裁纸刀，选择要裁掉的一张牌。'
-          break
+        const ejected = this.cylinder.discard()
+        if (ejected === null) return fail('弹仓里空无一物。')
+        // 退掉的就是被看穿/记住的那一发，读数必须一起失效
+        this.clearReveals()
+        this.dispatch({ type: 'chamberDiscarded', actor: actor.id, chamber: ejected })
+        const left = this.cylinder.remaining
+        return {
+          ok: true,
+          detail: `退出一发${ejected === 'live' ? '实弹' : '空膛'}，弹仓还剩 ${left} 发。`,
         }
-        // Boss 没有交互：裁掉点数最高的一张
-        let cutIndex = 0
-        let cutRank = -1
-        actor.hand.cards.forEach((cardValue, i) => {
-          const rank = cardValue.rank === 1 ? 11 : cardValue.rank
-          if (rank > cutRank) {
-            cutRank = rank
-            cutIndex = i
-          }
-        })
-        const old = actor.hand.cards[cutIndex]
-        if (!old) return this.reject('手里没有可以裁掉的牌。')
-        actor.hand = evaluateHand(actor.hand.cards.filter((_, i) => i !== cutIndex))
-        if (actor.id === 'boss') actor.hand = withHoleCard(actor.hand, !this.holeRevealed)
-        actor.cutterUsedThisRound = true
-        detail = `裁掉 ${formatCard(old)}，现为 ${actor.hand.total} 点。`
-        this.dispatch({ type: 'cardCuttered', actor: actor.id, old })
-        break
       }
       case 'iou': {
-        if (actor.iou > 0) return this.reject('借据已经签过了。')
-        actor.iou = 1
-        detail = '借据落印：本局你赢下的实弹 +2，输掉时打向你的实弹 +1。'
-        this.dispatch({ type: 'iouSigned', actor: actor.id })
-        break
-      }
-      case 'seal': {
-        if (actor.sealedThisRound) return this.reject('这一手已经贴过封条了。')
-        if (this.boss.hand.cards.length === 0) return this.reject('桌上还没有可以封的牌。')
-        // 封牌是公开动作：先亮出底牌，再让玩家从明牌里任选一张
-        const wasHidden = !this.holeRevealed
-        const previousHoleRevealed = this.holeRevealed
-        const previousBossHand = this.boss.hand
-        const previousLogLength = this.logLines.length
-        this.holeRevealed = true
-        this.boss.hand = withHoleCard(this.boss.hand, false)
-        if (wasHidden) {
-          const hole = this.boss.hand.cards[1]
-          if (hole) this.log(`它亮出底牌 ${formatCard(hole)}。`)
+        if (this.rng() < 0.5) {
+          actor.hp = Math.max(0, actor.hp - 2)
+          return { ok: true, detail: `借据兑现：你自损 2 血，现为 ${actor.hp}/${actor.maxHp}。` }
         }
-        const visible = this.boss.hand.visible.filter((cardValue): cardValue is Card => cardValue !== null)
-        if (visible.length === 0) return this.reject('对手没有可以封的明牌。')
-        if (actor.id === 'player') {
-          this.cardChoice = {
-            kind: 'seal', cards: visible, item, itemIndex: index,
-            itemsUsedThisTurn: actor.itemsUsedThisTurn, logLength: previousLogLength,
-            holeRevealed: previousHoleRevealed, bossHand: previousBossHand,
-          }
-          detail = '封条已经蘸好朱砂，选择对手的一张明牌。'
-          break
-        }
-        const sealed = visible[0]
-        if (!sealed) return this.reject('对手没有可以封的明牌。')
-        const remaining = this.boss.hand.cards.filter((cardValue) => cardValue !== sealed)
-        this.boss.hand = withHoleCard(evaluateHand(remaining), false)
-        actor.sealedThisRound = true
-        detail = `封条贴上 ${formatCard(sealed)}，对手现为 ${this.boss.hand.total} 点。`
-        this.dispatch({ type: 'cardSealed', actor: actor.id, card: sealed })
-        break
-      }
-      case 'monocle': {
-        if (this.deck.length === 0) return this.reject('牌靴里没有可以窥看的牌。')
-        const peek = this.deck.slice(-3).reverse()
-        if (actor.id === 'player') {
-          detail = `牌靴顶部依次是 ${peek.map((cardValue) => formatCard(cardValue)).join('、')}。`
-        } else {
-          detail = '它扶了一下单片眼镜，记下了牌序。'
-        }
-        this.dispatch({ type: 'deckPeeked', actor: actor.id, cards: peek })
-        break
+        actor.hp = Math.min(actor.maxHp, actor.hp + 1)
+        return { ok: true, detail: `借据兑现：你恢复 1 血，现为 ${actor.hp}/${actor.maxHp}。` }
       }
       case 'hammer': {
-        this.ensureCylinder()
-        if (this.cylinder.current === null) return this.reject('弹仓里空无一物。')
-        if (!this.cylinder.forceLive()) return this.reject('膛内已是实弹，无需再砸。')
-        // 重锤是公开动作：只有已经窥视过的人，读数需要跟着改成实弹
-        this.markRevealsLive()
-        detail = '重锤落下：空膛被砸成了实弹。'
-        break
-      }
-      case 'hourglass': {
-        if (this.hourglassActive) return this.reject('沙漏已经在逆转了。')
-        this.hourglassActive = true
-        detail = '沙漏倒转：本局点数更小者获胜，爆牌依然直接判负。'
-        this.dispatch({ type: 'hourglass', actor: actor.id })
-        break
-      }
-      case 'dagger': {
-        if (actor.hp <= 1) return this.reject('生命不足以献祭。')
-        actor.hp -= 1
-        // 手牌作废后必须立刻重发，否则 0 点对 0 点会让回合卡死
-        this.deck = shuffle(createDeck(), this.rng)
-        this.player.hand = evaluateHand([])
-        this.boss.hand = evaluateHand([])
-        this.player.standing = false
-        this.boss.standing = false
-        this.holeRevealed = false
-        for (let pass = 0; pass < 2; pass += 1) {
-          this.dealTo(this.player)
-          this.dealTo(this.boss)
+        const before = this.cylinder.current
+        if (before === null) return fail('弹仓里空无一物。')
+        if (!this.cylinder.flip()) return fail('弹仓里空无一物。')
+        this.flipReveals()
+        for (const id of ['player', 'boss'] as const) {
+          const revealed = this.revealedBy[id]
+          if (revealed) this.dispatch({ type: 'chamberFlipped', actor: id, chamber: revealed })
         }
-        this.boss.hand = withHoleCard(this.boss.hand, true)
-        const chambers = this.cylinder.reload()
-        this.clearReveals()
-        const live = chambers.filter((chamber) => chamber === 'live').length
-        const blank = chambers.filter((chamber) => chamber === 'blank').length
-        detail = `献出 1 点生命。手牌重发为 ${this.player.hand.total} 对 ${this.boss.hand.total}，弹仓重装 ${live} 实 ${blank} 空。`
-        this.dispatch({ type: 'daggerReshuffle', actor: actor.id, live, blank })
-        break
+        return {
+          ok: true,
+          detail: before === 'blank' ? '重锤落下：空膛被砸成了实弹。' : '重锤落下：实膛被震成了空膛。',
+        }
+      }
+      case 'gloves': {
+        // 玩家点选目标；Boss 仍随机挑一件
+        let targetId: ItemId | null = null
+        if (actor.id === 'player') {
+          if (!target) return fail('先点选它的一件道具。')
+          if (target === 'gloves' || !foe.items.includes(target)) return fail('它身上没有这件道具。')
+          targetId = target
+        } else {
+          const candidates = foe.items.filter((id) => id !== 'gloves')
+          targetId = candidates.length > 0 ? candidates[Math.floor(this.rng() * candidates.length)] ?? null : null
+        }
+        if (targetId === null) return fail('对手没有可以偷取的道具。')
+        const picked = { id: targetId, index: foe.items.indexOf(targetId) }
+        if (picked.index === -1) return fail('它身上没有这件道具。')
+        foe.items.splice(picked.index, 1)
+        const used = this.resolveItemEffect(actor, picked.id)
+        if (!used.ok || used.detail === null) {
+          foe.items.splice(picked.index, 0, picked.id)
+          return fail('偷到的道具当前无法使用。')
+        }
+        return {
+          ok: true,
+          detail: `偷走了【${ITEM_CATALOG[picked.id].name}】并立即使用：${used.detail}`,
+        }
       }
       default: {
-        detail = null
+        return { ok: false, detail: null }
       }
     }
-
-    if (detail === null) return false
-    actor.items.splice(index, 1)
-    actor.itemsUsedThisTurn += 1
-    this.log(`${actorLabel(actor.id)}使用了【${ITEM_CATALOG[item].name}】。${detail}`)
-    this.dispatch({ type: 'itemUsed', actor: actor.id, item, detail })
-    this.publish()
-    return true
   }
 
-  private chooseBossItem(used: ReadonlySet<ItemId>): ItemId | null {
+  private chooseBossItem(): ItemId | null {
     const me = this.boss
     const foe = this.player
-    const personality = this.currentLevel().personality
-    const has = (id: ItemId): boolean => me.items.includes(id) && !used.has(id)
-    const liveRate = this.liveRate()
-    const loses = this.wouldLose()
-    const behind = me.hand.total < foe.hand.total
-    // 锯子会一直保留到打出实弹，重复使用会被引擎拒绝并浪费整轮预算
-    const canSaw = me.sawBoost === 0
-
-    // ---- 胆小看守者：保守保命 ----
-    if (personality === 'cautious') {
-      if (has('sedative') && me.hp < me.maxHp) return 'sedative'
-      if (canSaw && has('saw') && liveRate > 0.7 && me.hand.total >= 15 && !loses) return 'saw'
-      if (has('magnifier') && this.revealedBy.boss === null && this.cylinder.remaining <= 2) {
-        return 'magnifier'
-      }
-      return null
-    }
-
-    // ---- 狂热老千：激进赌徒 ----
-    if (personality === 'gambler') {
-      if (has('sedative') && me.hp < me.maxHp) return 'sedative'
-      if (has('handcuffs') && !foe.skipTurn && !foe.hand.busted) return 'handcuffs'
-      if (has('magnet') && behind && foe.hand.total >= 8) return 'magnet'
-      if (canSaw && has('saw') && me.hand.total >= 16 && liveRate >= 0.4) return 'saw'
-      if (has('magnifier') && this.revealedBy.boss === null) return 'magnifier'
-      return null
-    }
-
-    // ---- 机械典狱长：冷酷算牌 ----
-    // 下一发必为实弹且自己大概率输牌 → 用匕首强行续命
-    if (has('dagger') && this.cylinder.remaining > 0 && liveRate >= 1 && loses && me.hp > 1) {
-      return 'dagger'
-    }
+    const has = (id: ItemId): boolean => me.items.includes(id)
     if (has('sedative') && me.hp < me.maxHp) return 'sedative'
-    if (has('aegis') && me.shield === 0 && this.cylinder.current === 'live' && loses) {
-      return 'aegis'
-    }
-    if (has('handcuffs') && !foe.skipTurn && !foe.hand.busted && foe.hand.total >= 16) {
-      return 'handcuffs'
-    }
-    if (has('magnet') && behind && foe.hand.total >= 9) return 'magnet'
-    if (canSaw && has('saw') && me.hand.total >= 17 && !loses && liveRate > 0.5) return 'saw'
-    if (has('hammer') && this.cylinder.current === 'blank' && !loses) return 'hammer'
-    if (has('magnifier') && this.revealedBy.boss === null) return 'magnifier'
+    if (has('iou') && me.hp > 2 && me.hp < me.maxHp) return 'iou'
+    if (has('magnifier') && this.revealedBy.boss === null && this.cylinder.remaining > 0) return 'magnifier'
+    // 护心镜是「跳过哑弹」：当前空膛、后面还压着实弹时退掉它，把实弹顶上膛口。
+    // 已经看穿这一发是空膛就不用镜子，直接留给自己自射跳过本轮。
+    if (
+      has('aegis') &&
+      this.cylinder.current === 'blank' &&
+      this.cylinder.liveRemaining > 0 &&
+      this.revealedBy.boss !== 'blank'
+    ) return 'aegis'
+    if (has('saw') && me.sawBoost === 0 && this.cylinder.current === 'live') return 'saw'
+    if (has('hammer') && this.cylinder.current === 'blank') return 'hammer'
+    if (has('handcuffs') && !foe.gunCuffed) return 'handcuffs'
+    if (has('gloves') && foe.items.some((id) => id !== 'gloves')) return 'gloves'
     return null
   }
 
-  /** 剩余弹仓中实弹的比例，供 AI 判断锯枪收益 */
-  private liveRate(): number {
-    const remaining = this.cylinder.remaining
-    if (remaining <= 0) return 0
-    return this.cylinder.liveRemaining / remaining
-  }
-
   private wouldLose(): boolean {
-    if (this.boss.hand.busted) return true
-    if (this.player.hand.busted) return false
     const mine = this.boss.hand.total
     const theirs = this.player.hand.total
-    if (mine === theirs) return false
-    const higher = mine > theirs
-    // 沙漏生效时，点数小者赢
-    return this.hourglassActive ? higher : !higher
+    if (this.boss.hand.busted && this.player.hand.busted) return mine >= theirs
+    if (this.boss.hand.busted) return true
+    if (this.player.hand.busted) return false
+    return mine < theirs
   }
 
   private bossTarget(profile: BossProfile, personality: BossPersonality): number {
@@ -1849,31 +1929,26 @@ export class GameEngine {
     let target = profile.standAt
 
     if (personality === 'cautious') {
-      // 谨慎：玩家停牌后，只要玩家 ≤17 就追到 +1；玩家 ≥18 保持 15 认输
-      if (this.player.standing) {
-        const tooGreedy = theirs > 17
-        if (!tooGreedy) target = Math.max(target, Math.min(21, theirs + 1))
+      if (this.player.stayed) {
+        const tooGreedy = theirs >= this.roundTarget - 3
+        if (!tooGreedy) target = Math.max(target, Math.min(this.roundTarget, theirs + 1))
       }
     } else if (personality === 'gambler') {
-      // 赌徒：玩家高牌时真赌 21；自己已是高牌而玩家低时停牌；其余追 +1
-      if (this.player.standing) {
-        if (theirs >= 18 && mine <= 16) target = 21
-        else if (theirs <= 16 && mine >= 17) target = mine
-        else target = Math.max(target, Math.min(21, theirs + 1))
+      if (this.player.stayed) {
+        if (theirs >= this.roundTarget - 3 && mine <= this.roundTarget - 5) target = this.roundTarget
+        else if (theirs <= this.roundTarget - 5 && mine >= this.roundTarget - 4) target = mine
+        else target = Math.max(target, Math.min(this.roundTarget, theirs + 1))
       } else if (mine < visible) {
-        target = Math.max(target, Math.min(21, visible + 1))
+        target = Math.max(target, Math.min(this.roundTarget, visible + 1))
       }
     } else {
-      // 算牌：先按牌靴爆牌概率修正，再决定追分或止损
       const risk = this.bustRisk()
       target += this.executionerAdjustment()
       if (risk > 0.62) target = Math.min(target, mine)
-      else if (risk < 0.25) target = Math.max(target, 21)
-      else if (this.player.standing) target = Math.max(target, Math.min(21, theirs + 1))
+      else if (risk < 0.25) target = Math.max(target, this.roundTarget)
+      else if (this.player.stayed) target = Math.max(target, Math.min(this.roundTarget, theirs + 1))
     }
-    // 沙漏生效时点数小者胜：再摸一张只会把自己推高，立即停牌才是最优
-    if (this.hourglassActive && !this.player.hand.busted) return 0
-    return Math.max(0, Math.min(21, target))
+    return Math.max(0, Math.min(this.roundTarget, target))
   }
 
   /** 玩家明牌点数（不含扣住的底牌） */
@@ -1892,7 +1967,7 @@ export class GameEngine {
   }
 
   private bustRisk(): number {
-    const total = 21 - this.boss.hand.total
+    const total = this.roundTarget - this.boss.hand.total
     if (total <= 0) return 1
     let bust = 0
     let count = 0
@@ -1906,36 +1981,59 @@ export class GameEngine {
 
   private dealTo(actor: ActorRuntime): void {
     const card = this.drawCard()
-    actor.hand = evaluateHand([...actor.hand.cards, card])
+    let hand = evaluateHand([...actor.hand.cards, card], this.roundTarget)
+    const revealed = actor.id === 'boss' ? this.holeRevealed : this.playerHoleRevealed
+    if (!revealed && hand.cards.length >= 2) hand = withHoleCard(hand, true)
+    actor.hand = hand
     this.dispatch({ type: 'cardDealt', actor: actor.id, card })
-    // 对手的第二张牌是暗牌，日志不能报点数
-    const concealed = actor.id === 'boss' && !this.holeRevealed && actor.hand.cards.length === 2
+    // 双方的第 2 张起手牌都是暗牌，日志不能提前报出牌面
+    const concealed = !revealed && actor.hand.cards.length === 2
     this.log(
       concealed
-        ? '它扣下一张暗牌。'
-        : `${actorLabel(actor.id)}摸到 ${formatCard(card)}，${actor.hand.total} 点${actor.hand.soft ? '（软牌）' : ''}。`,
+        ? `${actor.id === 'player' ? '你' : '它'}扣下一张暗牌。`
+        : `${actorLabel(actor.id)}摸到 ${formatCard(card)}，${actor.hand.total} 点。`,
     )
     this.publish()
   }
 
   private drawCard(): Card {
     if (this.deck.length === 0) {
-      this.deck = shuffle(createDeck(), this.rng)
-      this.log('牌靴见底，发牌人重新洗牌。')
+      throw new Error('Numeric deck exhausted inside a round')
     }
     const card = this.deck.pop()
     if (!card) throw new Error('Deck is unexpectedly empty')
     return card
   }
 
+  private cylinderCapacity(): number {
+    const levelGrowth = this.levelIndex * 2
+    const roundGrowth = Math.floor(Math.max(0, this.round - 1) / 2)
+    return Math.min(8, 2 + levelGrowth + roundGrowth)
+  }
+
+  private reloadCylinder(): Chamber[] {
+    if (!this.cylinderRandomized) {
+      const capacity = this.cylinderCapacity()
+      if (capacity === 8) this.cylinderRandomized = true
+      return this.cylinder.reload(capacity)
+    }
+    const total = 2 + Math.floor(this.rng() * 7)
+    return this.cylinder.reload(total)
+  }
+
   private ensureCylinder(): void {
     if (this.cylinder.remaining > 0) return
-    const chambers = this.cylinder.reload()
+    const chambers = this.reloadCylinder()
     this.clearReveals()
     const live = chambers.filter((chamber) => chamber === 'live').length
     const blank = chambers.filter((chamber) => chamber === 'blank').length
     this.log(`弹仓打空，重新装填：${live} 实 ${blank} 空，顺序已打乱。`)
     this.dispatch({ type: 'reload', live, blank })
+    const supply = this.currentLevel().reloadSupply ?? 0
+    if (supply > 0) {
+      this.giveSupply(this.player, supply)
+      this.giveSupply(this.boss, supply)
+    }
   }
 
   private unlockedItems(): ItemId[] {
@@ -1950,37 +2048,47 @@ export class GameEngine {
     return unlocked.length > 0 ? unlocked : [...ITEM_IDS]
   }
 
+  private itemCount(actor: ActorRuntime, item: ItemId): number {
+    let count = 0
+    for (const held of actor.items) {
+      if (held === item) count += 1
+    }
+    return count
+  }
+
+  private canHoldItem(actor: ActorRuntime, item: ItemId): boolean {
+    return actor.items.length < MAX_ITEMS && this.itemCount(actor, item) < ITEM_CAP[item]
+  }
+
+  /** 只在还没拿满上限的类型里抽，所以池子永远抽不完 */
+  private availableTypes(actor: ActorRuntime): ItemId[] {
+    return this.unlockedItems().filter((item) => this.canHoldItem(actor, item))
+  }
+
+  private giveOne(actor: ActorRuntime): ItemId | null {
+    const pool = this.availableTypes(actor)
+    const item = pool[Math.floor(this.rng() * pool.length)] ?? null
+    if (item === null) return null
+    actor.items.push(item)
+    this.dispatch({ type: 'itemDrawn', actor: actor.id, item })
+    return item
+  }
+
   private giveSupply(actor: ActorRuntime, count: number): void {
-    const pool = shuffle([...this.itemPoolFor(actor)], this.rng)
     const drawn: ItemId[] = []
-    for (let i = 0; i < count && i < pool.length; i += 1) {
-      const item = pool[i]
-      if (!item) continue
-      if (actor.items.length >= MAX_ITEMS) break
-      actor.items.push(item)
+    for (let i = 0; i < count; i += 1) {
+      const item = this.giveOne(actor)
+      if (item === null) break
       drawn.push(item)
-      this.dispatch({ type: 'itemDrawn', actor: actor.id, item })
     }
     if (drawn.length > 0) {
       this.log(
         `${actorLabel(actor.id)}获得补给：${drawn.map((item) => `【${ITEM_CATALOG[item].name}】`).join('')}。`,
       )
     }
-  }
-
-  private giveRandomItem(actor: ActorRuntime): ItemId | null {
-    if (actor.items.length >= MAX_ITEMS) return null
-    const pool = this.itemPoolFor(actor)
-    const item = pool[Math.floor(this.rng() * pool.length)]
-    if (!item) return null
-    actor.items.push(item)
-    this.dispatch({ type: 'itemDrawn', actor: actor.id, item })
-    return item
-  }
-
-  private itemPoolFor(actor: ActorRuntime): readonly ItemId[] {
-    if (actor.id === 'player') return this.unlockedItems()
-    return BOSS_ITEM_POOLS[this.currentLevel().personality]
+    if (drawn.length < count) {
+      this.log(`${actorLabel(actor.id)}的背包已满，剩下的补给留在桌上。`)
+    }
   }
 
   private clearReveals(): void {
@@ -1988,14 +2096,19 @@ export class GameEngine {
     this.revealedBy.boss = null
   }
 
-  private markRevealsLive(): void {
-    if (this.revealedBy.player !== null) this.revealedBy.player = 'live'
-    if (this.revealedBy.boss !== null) this.revealedBy.boss = 'live'
+  private flipReveals(): void {
+    if (this.revealedBy.player !== null) {
+      this.revealedBy.player = this.revealedBy.player === 'live' ? 'blank' : 'live'
+    }
+    if (this.revealedBy.boss !== null) {
+      this.revealedBy.boss = this.revealedBy.boss === 'live' ? 'blank' : 'live'
+    }
   }
 
   private viewOf(actor: ActorRuntime): ActorView {
-    const hidden = actor.id === 'boss' && !this.holeRevealed && this.boss.hand.cards.length >= 2
-    const hand = hidden ? withHoleCard(this.boss.hand, true) : actor.hand
+    const revealed = actor.id === 'boss' ? this.holeRevealed : this.playerHoleRevealed
+    const hidden = !revealed && actor.hand.cards.length >= 2
+    const hand = hidden ? withHoleCard(actor.hand, true) : actor.hand
     return {
       id: actor.id,
       hp: actor.hp,
@@ -2003,12 +2116,12 @@ export class GameEngine {
       items: [...actor.items],
       hand: { ...actor.hand, cards: [...actor.hand.cards], visible: [...actor.hand.visible] },
       visibleHand: { ...hand, cards: [...hand.cards], visible: [...hand.visible] },
-      holeCardRevealed: actor.id === 'boss' ? this.holeRevealed : true,
+      holeCardRevealed: revealed,
       standing: actor.standing,
-      skipTurn: actor.skipTurn,
+      stayed: actor.stayed,
+      gunCuffed: actor.gunCuffed,
+      trumps: [...actor.trumps],
       sawBoost: actor.sawBoost,
-      shield: actor.shield,
-      iou: actor.iou,
       itemsUsedThisTurn: actor.itemsUsedThisTurn,
     }
   }
@@ -2154,11 +2267,5 @@ export class GameEngine {
     this.itemPresentationPending = false
     this.itemPresentationFinished = false
     this.deferredItemEvents = []
-    this.cardChoice = null
-    this.cardChoiceResolver = null
-    // 取消 supply 等待时也要放行挂起的 offerSupply，否则 Promise 永久悬空
-    const supplyFinish = this.supplyResolver
-    this.supplyResolver = null
-    supplyFinish?.()
   }
 }

@@ -1,14 +1,8 @@
 import * as THREE from 'three'
-import type { CardRank, CardSuit } from '../game/GameEngine'
+import { TRUMP_CATALOG, type CardRank, type CardSuit, type TrumpId } from '../game/GameEngine'
 
 const CARD_W = 256
 const CARD_H = 358
-const SUIT_GLYPH: Readonly<Record<CardSuit, string>> = {
-  spade: '\u2660',
-  heart: '\u2665',
-  diamond: '\u2666',
-  club: '\u2663',
-}
 const RED_SUITS: ReadonlySet<CardSuit> = new Set<CardSuit>(['heart', 'diamond'])
 const MASK_KEYS = ['mask-1', 'mask-2', 'mask-3'] as const
 const BASE_KEYS: readonly string[] = [
@@ -123,64 +117,23 @@ function drawCardFace(canvas: HTMLCanvasElement, rank: CardRank, suit: CardSuit)
   ctx.lineWidth = 1
   ctx.strokeRect(15, 15, w - 30, h - 30)
 
-  ctx.font = '90px Georgia, "Times New Roman", serif'
+  const label = String(rank)
+  const ink = red ? '#ae4438' : '#c9b98f'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillStyle = red ? 'rgba(150,36,32,0.16)' : 'rgba(206,190,158,0.13)'
-  ctx.fillText(SUIT_GLYPH[suit], w / 2, h * 0.54)
-
-  const ink = red ? '#c8483c' : '#d9c9a6'
-  const label = rank === 1 ? 'A' : String(rank)
+  ctx.font = `700 ${rank >= 10 ? 174 : 202}px Impact, "Arial Black", sans-serif`
+  ctx.lineJoin = 'round'
+  ctx.strokeStyle = 'rgba(4,3,2,0.72)'
+  ctx.lineWidth = 12
+  ctx.strokeText(label, w / 2, h / 2 + 5)
+  ctx.shadowColor = 'rgba(0,0,0,0.45)'
+  ctx.shadowBlur = 10
+  ctx.shadowOffsetY = 6
   ctx.fillStyle = ink
-  ctx.textAlign = 'left'
-  ctx.textBaseline = 'alphabetic'
-  ctx.font = 'bold 62px Georgia, "Times New Roman", serif'
-  ctx.fillText(label, 26, 78)
-  ctx.font = '26px Georgia, "Times New Roman", serif'
-  ctx.fillText(SUIT_GLYPH[suit], 30, 108)
-
-  ctx.save()
-  ctx.translate(w - 26, h - 32)
-  ctx.rotate(Math.PI)
-  ctx.textAlign = 'left'
-  ctx.textBaseline = 'alphabetic'
-  ctx.font = 'bold 62px Georgia, "Times New Roman", serif'
-  ctx.fillText(label, 0, 0)
-  ctx.font = '26px Georgia, "Times New Roman", serif'
-  ctx.fillText(SUIT_GLYPH[suit], 4, 30)
-  ctx.restore()
-
-  const cx = w / 2
-  const cy = h * 0.54
-  ctx.strokeStyle = 'rgba(177,138,80,0.5)'
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.arc(cx, cy, 72, 0, Math.PI * 2)
-  ctx.stroke()
-  ctx.setLineDash([3, 7])
-  ctx.beginPath()
-  ctx.arc(cx, cy, 62, 0, Math.PI * 2)
-  ctx.stroke()
-  ctx.setLineDash([])
-  for (let i = 0; i < rank; i += 1) {
-    const angle = (i / 10) * Math.PI * 2 - Math.PI / 2
-    ctx.strokeStyle = red ? 'rgba(190,60,48,0.55)' : 'rgba(190,168,128,0.4)'
-    ctx.beginPath()
-    ctx.moveTo(cx + Math.cos(angle) * 24, cy + Math.sin(angle) * 24)
-    ctx.lineTo(cx + Math.cos(angle) * (46 + rank * 2.2), cy + Math.sin(angle) * (46 + rank * 2.2))
-    ctx.stroke()
-  }
-  ctx.strokeStyle = red ? 'rgba(190,60,48,0.45)' : 'rgba(190,168,128,0.32)'
-  ctx.beginPath()
-  for (let i = 0; i < 5; i += 1) {
-    const angle = (i / 5) * Math.PI * 2 - Math.PI / 2
-    const px = cx + Math.cos(angle) * 26
-    const py = cy + Math.sin(angle) * 26
-    if (i === 0) ctx.moveTo(px, py)
-    else ctx.lineTo(px, py)
-  }
-  ctx.closePath()
-  ctx.stroke()
+  ctx.fillText(label, w / 2, h / 2 + 5)
+  ctx.shadowColor = 'transparent'
+  ctx.shadowBlur = 0
+  ctx.shadowOffsetY = 0
 
   scratches(ctx, rnd, w, h, 22)
   bloodSplatter(ctx, rnd, rnd() > 0.5 ? w - 34 : 30, h * (0.2 + rnd() * 0.6), 28 + rnd() * 26, 0.9)
@@ -191,6 +144,87 @@ function drawCardFace(canvas: HTMLCanvasElement, rank: CardRank, suit: CardSuit)
   edge.addColorStop(0.92, 'rgba(0,0,0,0)')
   edge.addColorStop(1, 'rgba(0,0,0,0.4)')
   ctx.fillStyle = edge
+  ctx.fillRect(0, 0, w, h)
+}
+
+function fitFontSize(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  baseSize: number,
+  minSize: number,
+  font: (size: number) => string,
+): number {
+  for (let size = baseSize; size > minSize; size -= 1) {
+    ctx.font = font(size)
+    if (ctx.measureText(text).width <= maxWidth) return size
+  }
+  ctx.font = font(minSize)
+  return minSize
+}
+
+function drawTrumpFace(canvas: HTMLCanvasElement, trump: TrumpId): void {
+  const ctx = getContext(canvas)
+  const w = canvas.width
+  const h = canvas.height
+  const definition = TRUMP_CATALOG[trump]
+  const base = ctx.createLinearGradient(0, 0, w, h)
+  base.addColorStop(0, '#241913')
+  base.addColorStop(0.5, '#3a2118')
+  base.addColorStop(1, '#160e0b')
+  ctx.fillStyle = base
+  ctx.fillRect(0, 0, w, h)
+  noise(ctx, w, h, mulberry32(trump.length * 971 + trump.charCodeAt(0)), 1800)
+
+  ctx.strokeStyle = 'rgba(211,170,92,0.9)'
+  ctx.lineWidth = 3
+  ctx.strokeRect(10, 10, w - 20, h - 20)
+  ctx.strokeStyle = 'rgba(211,170,92,0.32)'
+  ctx.lineWidth = 1
+  ctx.strokeRect(17, 17, w - 34, h - 34)
+
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.font = `700 ${definition.glyph.length > 2 ? 92 : 142}px Georgia, "Times New Roman", serif`
+  ctx.lineJoin = 'round'
+  ctx.strokeStyle = 'rgba(5,3,2,0.85)'
+  ctx.lineWidth = 12
+  ctx.strokeText(definition.glyph, w / 2, h * 0.44)
+  ctx.fillStyle = '#e2c27d'
+  ctx.fillText(definition.glyph, w / 2, h * 0.44)
+
+  const safeWidth = w - 52
+  const nameSize = fitFontSize(
+    ctx,
+    definition.name,
+    safeWidth,
+    32,
+    20,
+    (size) => `700 ${size}px "Microsoft YaHei", sans-serif`,
+  )
+  ctx.font = `700 ${nameSize}px "Microsoft YaHei", sans-serif`
+  ctx.fillStyle = '#d9c08f'
+  ctx.fillText(definition.name, w / 2, h * 0.735)
+  const enSize = fitFontSize(
+    ctx,
+    definition.enName,
+    safeWidth,
+    14,
+    9,
+    (size) => `${size}px Georgia, "Times New Roman", serif`,
+  )
+  ctx.font = `${enSize}px Georgia, "Times New Roman", serif`
+  ctx.fillStyle = 'rgba(205,185,143,0.58)'
+  ctx.fillText(definition.enName, w / 2, h * 0.805)
+  ctx.font = '700 12px Georgia, serif'
+  ctx.fillStyle = 'rgba(205,185,143,0.42)'
+  ctx.fillText('TRUMP', w / 2, h * 0.878)
+
+  scratches(ctx, mulberry32(trump.length * 313), w, h, 26)
+  const shade = ctx.createRadialGradient(w / 2, h / 2, h * 0.2, w / 2, h / 2, h * 0.72)
+  shade.addColorStop(0, 'rgba(0,0,0,0)')
+  shade.addColorStop(1, 'rgba(0,0,0,0.58)')
+  ctx.fillStyle = shade
   ctx.fillRect(0, 0, w, h)
 }
 
@@ -271,6 +305,19 @@ function drawCardBack(canvas: HTMLCanvasElement): void {
   shade.addColorStop(1, 'rgba(0,0,0,0.68)')
   ctx.fillStyle = shade
   ctx.fillRect(0, 0, w, h)
+}
+
+function drawHoleRank(canvas: HTMLCanvasElement, rank: CardRank): void {
+  const ctx = getContext(canvas)
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.font = `700 ${rank >= 10 ? 48 : 56}px Georgia, "Times New Roman", serif`
+  ctx.lineJoin = 'round'
+  ctx.strokeStyle = 'rgba(8,4,3,0.9)'
+  ctx.lineWidth = 8
+  ctx.strokeText(String(rank), canvas.width / 2, 62)
+  ctx.fillStyle = '#c9b98f'
+  ctx.fillText(String(rank), canvas.width / 2, 62)
 }
 
 function drawTable(canvas: HTMLCanvasElement): void {
@@ -1027,8 +1074,16 @@ export class TextureFactory {
     return 'card-back'
   }
 
+  playerHoleBackKey(rank: CardRank): string {
+    return `card-player-hole-${rank}`
+  }
+
   cardKey(rank: CardRank, suit: CardSuit): string {
     return `card-${suit}-${rank}`
+  }
+
+  trumpKey(trump: TrumpId): string {
+    return `trump-${trump}`
   }
 
   maskKey(levelIndex: number): string {
@@ -1071,6 +1126,14 @@ export class TextureFactory {
   private build(key: string): THREE.Texture {
     if (key === 'table') return this.buildCanvasTexture(1024, 1024, (canvas) => drawTable(canvas))
     if (key === 'card-back') return this.buildCanvasTexture(CARD_W, CARD_H, (canvas) => drawCardBack(canvas))
+    const holeMatch = /^card-player-hole-(11|10|[1-9])$/.exec(key)
+    if (holeMatch) {
+      const rank = Number(holeMatch[1]) as CardRank
+      return this.buildCanvasTexture(CARD_W, CARD_H, (canvas) => {
+        drawCardBack(canvas)
+        drawHoleRank(canvas, rank)
+      })
+    }
     if (key === 'dust') return this.buildCanvasTexture(64, 64, (canvas) => drawDust(canvas))
     if (key === 'paper-scrap') return this.buildCanvasTexture(256, 256, (canvas) => drawPaperScrap(canvas))
     if (key === 'towel-blurry') return this.buildCanvasTexture(256, 256, (canvas) => drawTowel(canvas, false))
@@ -1090,7 +1153,11 @@ export class TextureFactory {
         else drawMaskOne(canvas)
       })
     }
-    const cardMatch = /^card-(spade|heart|diamond|club)-(10|[1-9])$/.exec(key)
+    const trumpMatch = /^trump-(go24|go27|remove|return|exchange|card2|card3|card4|card5|card6|card7|happiness|destroy|love)$/.exec(key)
+    if (trumpMatch) {
+      return this.buildCanvasTexture(CARD_W, CARD_H, (canvas) => drawTrumpFace(canvas, trumpMatch[1] as TrumpId))
+    }
+    const cardMatch = /^card-(spade|heart|diamond|club)-(11|10|[1-9])$/.exec(key)
     if (cardMatch) {
       const suit = cardMatch[1] as CardSuit
       const rank = Number(cardMatch[2]) as CardRank

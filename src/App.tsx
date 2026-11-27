@@ -27,6 +27,7 @@ import {
   ITEM_IDS,
   LEVELS,
   MAX_ITEMS,
+  TRUMP_CATALOG,
   createSeededRandom,
   evaluateHand,
 } from './game/GameEngine'
@@ -38,6 +39,12 @@ interface LootBanner {
   readonly id: number
   readonly level: number
   readonly items: readonly ItemId[]
+}
+
+interface TrumpBanner {
+  readonly id: number
+  readonly text: string
+  readonly glyph: string
 }
 
 interface ClueLine {
@@ -268,6 +275,7 @@ export default function App() {
   const [modal, setModal] = useState<ModalTab | null>(null)
   const [guideOpen, setGuideOpen] = useState(() => !hasSeenGuide())
   const [loot, setLoot] = useState<LootBanner | null>(null)
+  const [trumpBanner, setTrumpBanner] = useState<TrumpBanner | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [bloodFlash, setBloodFlash] = useState(0)
   const [muzzleFlash, setMuzzleFlash] = useState(0)
@@ -318,6 +326,7 @@ export default function App() {
   const endingThenCutsceneRef = useRef<(() => void) | null>(null)
   const noticeTimer = useRef<number | null>(null)
   const lootTimer = useRef<number | null>(null)
+  const trumpBannerTimer = useRef<number | null>(null)
   const bloodTimer = useRef<number | null>(null)
   const muzzleTimer = useRef<number | null>(null)
   const splatterTimer = useRef<number | null>(null)
@@ -507,9 +516,19 @@ export default function App() {
           break
         case 'itemUsed':
           break
-        case 'trumpPlayed':
-          if (event.actor === 'player') showNotice(`${event.detail}`)
+        case 'trumpPlayed': {
+          const catalog = TRUMP_CATALOG[event.trump]
+          bannerId.current += 1
+          setTrumpBanner({
+            id: bannerId.current,
+            text: event.actor === 'player' ? `使用王牌【${catalog.name}】` : '敌人使用了王牌',
+            glyph: catalog.glyph,
+          })
+          if (trumpBannerTimer.current !== null) window.clearTimeout(trumpBannerTimer.current)
+          trumpBannerTimer.current = window.setTimeout(() => setTrumpBanner(null), 3400)
+          sound.playSpin()
           break
+        }
         case 'perfectWin':
           showNotice(
             event.actor === 'player'
@@ -554,7 +573,7 @@ export default function App() {
           break
       }
     },
-    [showNotice, sound],
+    [sound],
   )
 
   const soundHandlerRef = useRef(handleEventSound)
@@ -1304,6 +1323,25 @@ export default function App() {
           className="volume-slider w-24 max-[420px]:w-20"
         />
       </div>
+
+      {/* Trump banner: 点击可提前关闭，否则 3.4s 后自动滑出。 */}
+      {trumpBanner ? (
+        <div className="absolute inset-x-0 top-[16%] z-30 flex justify-center">
+          <button
+            key={trumpBanner.id}
+            type="button"
+            aria-label="关闭王牌提示"
+            onClick={() => {
+              if (trumpBannerTimer.current !== null) window.clearTimeout(trumpBannerTimer.current)
+              setTrumpBanner(null)
+            }}
+            className="trump-banner flex cursor-pointer items-center gap-3 border border-rust-500/45 bg-abyss-900/92 px-8 py-3 shadow-[0_0_36px_rgba(180,85,45,0.22)] hover:border-rust-400/70"
+          >
+            <span className="font-display text-xl text-rust-400/90">{trumpBanner.glyph}</span>
+            <span className="text-xs tracking-[0.15em] text-bone-200/90">{trumpBanner.text}</span>
+          </button>
+        </div>
+      ) : null}
 
       {/* Loot banner. */}
       {loot ? (

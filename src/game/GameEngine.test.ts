@@ -81,7 +81,7 @@ describe('数字牌与目标值', () => {
   })
 
   it('每回合使用 11 张唯一数字牌，局内抽干直接报错', async () => {
-    const { engine, probe } = newEngine({ rng: createSeededRandom(20261126) })
+    const { engine, probe } = newEngine({ rng: createSeededRandom(20261127) })
     await toPlayerTurn(engine)
     const ranks = [...probe.deck, ...probe.player.hand.cards, ...probe.boss.hand.cards]
       .map((entry: Card) => entry.rank)
@@ -292,7 +292,7 @@ describe('严格交替回合', () => {
   })
 
   it('玩家先按要牌键再发牌，等待期间拒绝重复输入', async () => {
-    const { engine } = newEngine()
+    const { engine } = newEngine({ rng: createSeededRandom(20261127) })
     await toPlayerTurn(engine)
     engine.setPresentationGate(() => Promise.resolve())
     expect(engine.hit()).toBe(true)

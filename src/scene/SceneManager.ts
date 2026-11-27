@@ -979,6 +979,8 @@ export class SceneManager {
   private gunRestYaw = 1.3
   /** 开局枪平躺在桌面上；第一次处决时抬起，之后沿用原有持枪动画 */
   private gunHolstered = true
+  /** 枪已端起（处决瞄准位）；dealInGun 只负责展示位，端起单独记状态 */
+  private gunRaised = false
   private gunRaiseGeneration = 0
   private gunHolsterY = GUN_PIVOT.y
   /** 枪从展示位沉入桌底的垂直距离；按枪身包围盒 + 间隙计算 */
@@ -1318,18 +1320,13 @@ export class SceneManager {
       this.bossPose.spawn(BOSS_VISUAL_LEVEL)
     }
     this.lastSnapshot = snapshot
-    const wasTargetPickActive = this.targetPickActive
-    this.targetPickActive =
-      snapshot.phase === 'targeting' && snapshot.pendingShot === 'player' && !snapshot.paused
-    if (!this.targetPickActive) this.disarmTargetPick()
-    else if (!wasTargetPickActive) {
-      this.disarmTargetPick()
-      this.refreshShotTargetBoxes()
-    }
-    // 执枪回合开始（玩家或 Boss 持枪）：枪从桌底弹出；回合结束收回桌底
+    // 执枪回合开始（玩家或 Boss 持枪）：枪从桌底弹出；回合结束收回桌底。
+    // 处决阶段不收枪：端起/瞄准由 playExecution 接管，落枪交给开枪后的镜头收尾
     const gunWanted = snapshot.phase === 'targeting' && snapshot.pendingShot !== null
     if (gunWanted && this.gunHolstered) this.dealInGun()
-    else if (!gunWanted && !this.gunHolstered) this.stowGunIfShown()
+    else if (!gunWanted && !this.gunHolstered && snapshot.phase !== 'execution') this.stowGunIfShown()
+    // 枪口选择等枪完全弹出、停在展示位后才点亮
+    this.refreshTargetPick()
     this.applyLevel(snapshot.levelIndex)
     this.syncCards(snapshot)
     this.syncTrumps(snapshot)
@@ -2474,6 +2471,27 @@ export class SceneManager {
     return this.itemActions.getStatus()
   }
 
+  /** DEV 验收：枪状态机读数（弹出/端起/动画中/可见/高度） */
+  gunDebugState(): {
+    holstered: boolean
+    raised: boolean
+    motionActive: boolean
+    visible: boolean
+    y: number
+    restY: number
+    shot: CameraShot
+  } {
+    return {
+      holstered: this.gunHolstered,
+      raised: this.gunRaised,
+      motionActive: this.gunMotionActive,
+      visible: this.gunShake.visible,
+      y: this.gunAim.position.y,
+      restY: this.gunHolsterY,
+      shot: this.shot,
+    }
+  }
+
   seekItemAction(seconds: number): ItemActionStatus | null {
     return this.itemActions.seek(seconds)
   }
@@ -3422,7 +3440,6 @@ export class SceneManager {
           return
         }
         const settled =
-          this.gunHolstered &&
           !this.gunMotionActive &&
           this.shot === 'table' &&
           this.cameraBlend >= 1 &&
@@ -3441,6 +3458,7 @@ export class SceneManager {
 
   private holsterGun(): void {
     this.gunHolstered = true
+    this.gunRaised = false
     this.gunMotionActive = false
     this.gunRaiseGeneration += 1
     this.gunAim.position.copy(GUN_PIVOT)
@@ -3475,6 +3493,7 @@ export class SceneManager {
   private dealInGun(): void {
     if (!this.gunHolstered) return
     this.gunHolstered = false
+    this.gunRaised = false
     this.gunMotionActive = true
     const generation = ++this.gunRaiseGeneration
     // 从隐藏位起步，先落好桌面平躺姿态再显形
@@ -3496,6 +3515,8 @@ export class SceneManager {
         if (generation !== this.gunRaiseGeneration) return
         this.gunAim.position.y = this.gunHolsterY
         this.gunMotionActive = false
+        // 枪完全落位后才点亮枪口选择
+        this.refreshTargetPick()
       },
     })
   }
@@ -3507,8 +3528,11 @@ export class SceneManager {
 
   /** 处决开始：抬升、翻正、瞄准同步完成，整段是一条连贯的「端起」弧线 */
   private raiseGun(): void {
-    if (!this.gunHolstered) return
+    // 枪此时可能已停在展示位（targeting 已弹出），也可能还藏在桌底：都从当前位置端起
+    if (this.gunRaised) return
+    this.gunRaised = true
     this.gunHolstered = false
+    this.gunShake.visible = true
     this.gunMotionActive = true
     // dealInGun 已经把枪露出桌面，端起翻正才会扫到台面
     this.gunClampToTable = true
@@ -3556,6 +3580,7 @@ export class SceneManager {
   private lowerGun(delay: number): void {
     if (this.gunHolstered) return
     this.gunHolstered = true
+    this.gunRaised = false
     this.gunMotionActive = true
     const generation = ++this.gunRaiseGeneration
     const fromY = this.gunAim.position.y
@@ -7506,6 +7531,24 @@ export class SceneManager {
     this.targetArmedHover = null
     this.restoreArmedRacks()
     this.setGunHover(false)
+  }
+
+  /** 选靶点亮的统一入口：枪必须已弹出并停在展示位，玩家输入也没被其它演出锁住 */
+  private refreshTargetPick(): void {
+    const snapshot = this.lastSnapshot
+    const wasActive = this.targetPickActive
+    this.targetPickActive =
+      !!snapshot &&
+      snapshot.phase === 'targeting' &&
+      snapshot.pendingShot === 'player' &&
+      !snapshot.paused &&
+      !snapshot.inputLocked &&
+      !this.gunMotionActive
+    if (!this.targetPickActive) this.disarmTargetPick()
+    else if (!wasActive) {
+      this.disarmTargetPick()
+      this.refreshShotTargetBoxes()
+    }
   }
 
   /** 记录双方架子的原发光并统一换成目标色，亮度每帧由 updateArmedRacks 写入 */

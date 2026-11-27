@@ -3,6 +3,7 @@ import { SoundEngine } from './audio/SoundEngine'
 import { GameCanvas, GunTooltip, ItemTooltip } from './components/GameCanvas'
 import { RulesModal, type ModalTab } from './components/RulesModal'
 import { TrumpHandOverlay } from './components/TrumpHandOverlay'
+import { EnemyTrumpOverlay } from './components/EnemyTrumpOverlay'
 import { NarrativeDirector, type NarrativeMode, type NarrativeVisual } from './narrative/NarrativeDirector'
 import { DevBridge } from './game/DevBridge'
 import { DevPanel } from './components/DevPanel'
@@ -19,7 +20,7 @@ import type { QualityPreset, SceneManager } from './scene/SceneManager'
 import type { BossPoseCue } from './scene/SceneManager'
 import type { ItemActionCue } from './scene/ItemActions'
 import { ITEM_ACTION_SPECS } from './scene/itemActionConfig'
-import type { ActionVisualId, ActorId, ActorView, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
+import type { ActionVisualId, ActorId, ActorView, Card, GameEvent, GameSnapshot, ItemId, TrumpId } from './game/GameEngine'
 import {
   GameEngine,
   DECK_SIZE,
@@ -27,7 +28,6 @@ import {
   ITEM_IDS,
   LEVELS,
   MAX_ITEMS,
-  TRUMP_CATALOG,
   createSeededRandom,
   evaluateHand,
 } from './game/GameEngine'
@@ -40,13 +40,6 @@ interface LootBanner {
   readonly level: number
   readonly items: readonly ItemId[]
 }
-
-interface TrumpBanner {
-  readonly id: number
-  readonly text: string
-  readonly glyph: string
-}
-
 interface ClueLine {
   readonly text: string
   readonly channel: DialogueChannel
@@ -275,7 +268,8 @@ export default function App() {
   const [modal, setModal] = useState<ModalTab | null>(null)
   const [guideOpen, setGuideOpen] = useState(() => !hasSeenGuide())
   const [loot, setLoot] = useState<LootBanner | null>(null)
-  const [trumpBanner, setTrumpBanner] = useState<TrumpBanner | null>(null)
+  /** 敌方亮王牌：卡面侧滑入场，位置比我方王牌扇更靠上 */
+  const [enemyTrump, setEnemyTrump] = useState<{ readonly id: number; readonly trump: TrumpId } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [bloodFlash, setBloodFlash] = useState(0)
   const [muzzleFlash, setMuzzleFlash] = useState(0)
@@ -326,7 +320,6 @@ export default function App() {
   const endingThenCutsceneRef = useRef<(() => void) | null>(null)
   const noticeTimer = useRef<number | null>(null)
   const lootTimer = useRef<number | null>(null)
-  const trumpBannerTimer = useRef<number | null>(null)
   const bloodTimer = useRef<number | null>(null)
   const muzzleTimer = useRef<number | null>(null)
   const splatterTimer = useRef<number | null>(null)
@@ -517,15 +510,11 @@ export default function App() {
         case 'itemUsed':
           break
         case 'trumpPlayed': {
-          const catalog = TRUMP_CATALOG[event.trump]
           bannerId.current += 1
-          setTrumpBanner({
-            id: bannerId.current,
-            text: event.actor === 'player' ? `使用王牌【${catalog.name}】` : '敌人使用了王牌',
-            glyph: catalog.glyph,
-          })
-          if (trumpBannerTimer.current !== null) window.clearTimeout(trumpBannerTimer.current)
-          trumpBannerTimer.current = window.setTimeout(() => setTrumpBanner(null), 3400)
+          // 自己用的王牌不弹提示：出牌面板/桌面动作已经表达了；只有敌方亮牌才需要演出
+          if (event.actor === 'boss') {
+            setEnemyTrump({ id: bannerId.current, trump: event.trump })
+          }
           sound.playSpin()
           break
         }
@@ -782,6 +771,11 @@ export default function App() {
       memory: () => sceneRef.current?.previewRenderMemory() ?? null,
       phase: () => game.getSnapshot().phase,
       items: () => [...game.getSnapshot().player.items],
+      gun: () => sceneRef.current?.gunDebugState() ?? null,
+      enemyTrump: (trump: TrumpId) => {
+        bannerId.current += 1
+        setEnemyTrump({ id: bannerId.current, trump })
+      },
     }
     return () => { delete host.__itemActionDebug }
   }, [game, devBridge])
@@ -1324,25 +1318,6 @@ export default function App() {
         />
       </div>
 
-      {/* Trump banner: 点击可提前关闭，否则 3.4s 后自动滑出。 */}
-      {trumpBanner ? (
-        <div className="absolute inset-x-0 top-[16%] z-30 flex justify-center">
-          <button
-            key={trumpBanner.id}
-            type="button"
-            aria-label="关闭王牌提示"
-            onClick={() => {
-              if (trumpBannerTimer.current !== null) window.clearTimeout(trumpBannerTimer.current)
-              setTrumpBanner(null)
-            }}
-            className="trump-banner flex cursor-pointer items-center gap-3 border border-rust-500/45 bg-abyss-900/92 px-8 py-3 shadow-[0_0_36px_rgba(180,85,45,0.22)] hover:border-rust-400/70"
-          >
-            <span className="font-display text-xl text-rust-400/90">{trumpBanner.glyph}</span>
-            <span className="text-xs tracking-[0.15em] text-bone-200/90">{trumpBanner.text}</span>
-          </button>
-        </div>
-      ) : null}
-
       {/* Loot banner. */}
       {loot ? (
         <div
@@ -1694,6 +1669,10 @@ export default function App() {
       ) : null}
 
       {modal ? <RulesModal initialTab={modal} onClose={() => setModal(null)} /> : null}
+
+      {enemyTrump ? (
+        <EnemyTrumpOverlay key={enemyTrump.id} trump={enemyTrump.trump} onDismiss={() => setEnemyTrump(null)} />
+      ) : null}
 
       {trumpHandOpen && snapshot ? (
         <TrumpHandOverlay

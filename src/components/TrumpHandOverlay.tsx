@@ -1,6 +1,23 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { TRUMP_CATALOG, type TrumpId } from '../game/GameEngine'
 
+/** 王牌卡面：玩家手牌与敌方亮牌共用同一套视觉，避免两处样式漂移 */
+export function TrumpFace({ trump }: { readonly trump: TrumpId }) {
+  const definition = TRUMP_CATALOG[trump]
+  return (
+    <>
+      <span className="absolute inset-[7px] border border-amber-200/25" />
+      <span className="relative flex h-full flex-col items-center text-center">
+        <span className="mt-3 font-display text-[10px] tracking-[0.28em] text-amber-200/55 uppercase">Trump</span>
+        <span className="my-2 font-display text-5xl leading-none text-amber-200">{definition.glyph}</span>
+        <span className="font-display text-lg leading-tight text-bone-100">{definition.name}</span>
+        <span className="mt-0.5 font-display text-[9px] tracking-[0.16em] text-bone-200/40 uppercase">{definition.enName}</span>
+        <span className="mt-2 line-clamp-4 text-[11px] leading-relaxed text-bone-200/65">{definition.summary}</span>
+      </span>
+    </>
+  )
+}
+
 export function TrumpHandOverlay({
   cards,
   onUse,
@@ -79,14 +96,7 @@ export function TrumpHandOverlay({
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => close(index)}
             >
-              <span className="absolute inset-[7px] border border-amber-200/25" />
-              <span className="relative flex h-full flex-col items-center text-center">
-                <span className="mt-3 font-display text-[10px] tracking-[0.28em] text-amber-200/55 uppercase">Trump</span>
-                <span className="my-2 font-display text-5xl leading-none text-amber-200">{definition.glyph}</span>
-                <span className="font-display text-lg leading-tight text-bone-100">{definition.name}</span>
-                <span className="mt-0.5 font-display text-[9px] tracking-[0.16em] text-bone-200/40 uppercase">{definition.enName}</span>
-                <span className="mt-2 line-clamp-4 text-[11px] leading-relaxed text-bone-200/65">{definition.summary}</span>
-              </span>
+              <TrumpFace trump={trump} />
             </button>
           )
         })}

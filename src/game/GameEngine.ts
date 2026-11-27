@@ -677,6 +677,8 @@ export class GameEngine {
   private holeRevealed = false
   private playerHoleRevealed = false
   private inputLocked = false
+  /** 玩家拿到枪但场景里枪还没完全弹出：枪口选择与王牌先不放行（不进入快照，避免和道具锁混淆） */
+  private targetAwaitingGun = false
   private logLines: string[] = []
 
   constructor(options: GameEngineOptions = {}) {
@@ -1271,12 +1273,12 @@ export class GameEngine {
     }
 
     // 赢家拿到枪，由它决定枪口朝向：对手，或者自己
-    this.pendingShot = winner
-    this.phase = 'targeting'
-    this.publish()
+    this.enterTargeting(winner)
 
     if (winner === 'boss') {
       void this.runBossTargeting(token)
+    } else {
+      void this.armTargeting(token)
     }
   }
 
@@ -1311,8 +1313,30 @@ export class GameEngine {
     if (this.pendingShot !== 'player') {
       return this.reject('枪在它手里。')
     }
+    if (this.targetAwaitingGun) {
+      return this.reject('枪还没完全举起来。')
+    }
     void this.resolveShot(this.player, target === 'player' ? this.player : this.boss, this.generation)
     return true
+  }
+
+  /** 分胜负拿到枪：玩家持枪先挂起输入，等枪从桌底完全弹出再放开 */
+  private enterTargeting(shooter: ActorId): void {
+    this.pendingShot = shooter
+    this.phase = 'targeting'
+    this.targetAwaitingGun = shooter === 'player' && this.presentationGate !== null
+    this.publish()
+  }
+
+  /** 等枪弹出到位、镜头落定后才放开枪口选择；无场景（测试）时保持立即可选 */
+  private async armTargeting(token: number): Promise<void> {
+    if (!this.presentationGate) return
+    await this.presentationGate()
+    if (!this.alive(token)) return
+    await this.waitUntilResumed()
+    if (!this.alive(token) || this.phase !== 'targeting' || !this.targetAwaitingGun) return
+    this.targetAwaitingGun = false
+    this.publish()
   }
 
   /** 注入场景演出闸门；传 null 恢复立即发牌（测试与无场景环境） */
@@ -1400,14 +1424,8 @@ export class GameEngine {
 
     if (chamber === 'blank' && !selfShot) {
       const nextShooter = transferBlocked ? attacker : target
-      this.phase = 'targeting'
-      this.pendingShot = nextShooter.id
-      this.publish()
-      if (this.presentationGate) {
-        await this.presentationGate()
-        if (!this.alive(token)) return
-      }
-      await this.waitUntilResumed()
+      this.enterTargeting(nextShooter.id)
+      await this.armTargeting(token)
       if (!this.alive(token)) return
       if (nextShooter.id === 'boss') void this.runBossTargeting(token)
       return

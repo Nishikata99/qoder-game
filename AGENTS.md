@@ -4,8 +4,8 @@
 
 ## 项目
 
-《Blood Ante · 血色底注》— 第一人称 3D 暗黑桌面博弈：21 点 × 霰弹枪裁决 × 三关处决。
-React 19 + TypeScript 7 + Three.js r187 + Tailwind CSS 4。所有贴图由 Canvas 2D 程序化生成，零外部美术资源；音效采用 Mixkit/Pixabay 授权素材与 Web Audio 合成混合方案。
+《Blood Ante · 血色底注》— 第一人称 3D 暗黑桌面博弈：21 点 × 恶魔轮盘 × 三关处决。
+React 19 + TypeScript 7 + Three.js r187 + Tailwind CSS 4。所有贴图由 Canvas 2D 程序化生成，零外部美术资源。
 
 ```bash
 npm install
@@ -45,12 +45,13 @@ src/
 {
   phase, levelIndex, level, round,
   player: ActorView, boss: ActorView,      // 含 hp / items / hand / visibleHand
-  cylinder: CylinderView,                  // 剩余实弹/空膛、是否被放大镜窥视
+  cylinder: CylinderView,                  // 剩余实弹/空弹、是否被放大镜窥视
   turn,
   pendingShot,                             // targeting 阶段持枪者；非该阶段为 null
   damageBonus, crisisStacks,               // damageBonus = 走火遗恨（永久叠加直到中弹）
   hourglassActive,                         // 本局沙漏反转为低分胜
-  supplyOptions,                           // 仅 supply 阶段：层间三选一候选
+  supplyOptions, supplyPick,               // 仅 supply 阶段：门前候选与系统随机留下的那件
+  bossSupplyOptions, bossSupplyPick,       // 仅 supply/bossSupply：Boss 的候选与随机选中件
   unlockedItems, inputLocked, log,
 }
 ```
@@ -63,12 +64,12 @@ src/
 
 ### 动作入口
 
-所有玩家意图只能走引擎方法：`hit()` / `stand()` / `useItem(id)` / `chooseTarget(target)` / `chooseSupply(item)` / `restart()` / `advanceLevel()`。
+所有玩家意图只能走引擎方法：`hit()` / `stand()` / `useItem(id)` / `chooseTarget(target)` / `restart()` / `advanceLevel()`。
 **禁止在 UI 或场景里改血量、手牌、弹仓。**
 
-### 层间遗物（supply 阶段）
+### 层间补给（supply 阶段）
 
-清层后不再自动进下一层：引擎先播 2.6s 横幅，再进入 `supply` 摆出候选（`supplyOptions`，第 1 层两件，之后三件），玩家调 `chooseSupply(item)`；不设时限，选好后才开门。选中道具先存进 `carryOver`，因为 `beginLevel` 会重建双方 `ActorRuntime`——直接 push 会被覆盖。新增道具时记得它可能出现在候选里。
+清层后不再自动进下一层：引擎先播 2.6s 横幅，再进入 `supply` 摆出候选（第 1 层 2 件，之后 3 件，`supplyOptions`）。**玩家不再点击**：候选升上桌停约 1.2s 后，系统等概率留一件（`supplyPick`），整盘沉下只留它再升回；随后 `bossSupply` 用同一套动作为 Boss 随机留一件。选中件先存进 `carryOver` / `carryOverBoss`，因为 `beginLevel` 会重建双方 `ActorRuntime`。T2/T3 章节叙事期间引擎保持 `pause()`，叙事结束（或跳过）才放行补给，否则整套演出会在覆盖层背后播完。
 
 ### 关卡间 2D 像素过场
 
@@ -100,7 +101,7 @@ src/
 
 ### 血量（3D 血袋，不进 HUD）
 
-每格生命对应架上一只血袋：`syncBlood()` 以 `ActorView.maxHp` 决定袋数、`hp` 决定注满的袋数，掉血从右往左排空、回血重新注满；`maxHp` 变化时整架重建。位置/尺寸集中在 `BLOOD_RACK_LAYOUT`（玩家小架在桌面左前角，Boss 落地架在左后侧），单袋液体盒高度取满袋液高，`liquid.scale.y` 就是填充比例——**不要把液体几何高度写成 1 再用 scale 当比例**，会变成一米高的红板。细管（汇流管→各自身体）挂在独立 `extra` 组里用世界坐标，换架时随 `rack.extra` 一并销毁。改布局后必须按真实游戏镜头截图确认双方都能读出剩余袋数，并比对 `docs/screenshots/` 的关键状态基线。
+每格生命对应架上一只血袋：`syncBlood()` 以 `ActorView.maxHp` 决定袋数、`hp` 决定注满的袋数，掉血从右往左排空、回血重新注满；`maxHp` 变化时整架重建。位置/尺寸集中在 `BLOOD_RACK_LAYOUT`（玩家小架在桌面左前角，Boss 落地架在左后侧），单袋液体盒高度取满袋液高，`liquid.scale.y` 就是填充比例——**不要把液体几何高度写成 1 再用 scale 当比例**，会变成一米高的红板。细管（汇流管→各自身体）挂在独立 `extra` 组里用世界坐标，换架时随 `rack.extra` 一并销毁。改布局后必须按真实游戏镜头截图确认双方都能读出剩余袋数。
 
 ## 三、规则要点（易踩坑）
 
@@ -109,14 +110,14 @@ src/
 | 对手 1 明 1 暗 | `withHoleCard()` / `ActorView.visibleHand` | 点数额始终按真实手牌算，只隐藏**显示**；亮牌在 `settleRound` 开头。`withHoleCard` 必须每次从 `cards` 重建 `visible`——若 hidden=false 时直接返回原对象，暗牌就永远翻不回来 |
 | 战斗日志 | `dealTo()` / `App.tsx` 的 `LogPanel` | HUD 只显示最后 3 条。对手暗牌发下时日志写「它扣下一张暗牌」，**不能**写牌面与点数；亮牌时在 `settleRound` 补「亮出底牌」 |
 | 枪口选择 | `phase='targeting'` + `chooseTarget()` | 只有玩家持枪才等输入；Boss 持枪由 `chooseBossTarget()` 自动决定。台面点数贴片必须按 `visible` 手牌重新计算，不能用 `visibleHand.total`（那是真实点数） |
-| 伤害公式 | `resolveShot()` | 实弹基础 2 + 黑杰克 1 + 碾压（赢家手牌≥20）1 + 遗恨 N + 借据方向加成，锯子整体 ×2；空膛 0 |
+| 伤害公式 | `resolveShot()` | 实弹基础 2 + 黑杰克 1 + 碾压（赢家手牌≥20）1 + 遗恨 N，锯子整体 ×2；空膛 0 |
 | 锯子翻倍 | `sawBoost` | 不是 +1，是**整体翻倍**；只在**真的打出实弹**时消耗，空膛不浪费 |
-| 空膛对己 | `resolveShot()` 的 `selfShot` 分支 | 空膛摸一件道具（`chamberRecovered` 事件）；实弹则伤害打在自己身上 |
+| 空膛对己 | `resolveShot()` 的 `selfShot` 分支 | 空膛只结束本轮、不发道具；实弹则伤害打在自己身上。Boss 看穿空膛依旧自射 |
 | 磁铁换明牌 | `applyItem` 的 `magnet` 分支 | **必须换明牌**：Boss 的明牌是第 1 张（第 2 张是暗牌），玩家取最后一张；换完立刻亮底牌 |
-| 沙漏低分胜 | `settleRound` + `bossTarget()` | 单方爆牌判负；双方爆牌或同点仍僵持。沙漏生效时 AI 立即停牌（再摸只会把自己推高） |
+| 沙漏低分胜 | `settleRound` + `bossTarget()` | 爆牌**永远**直接判负；沙漏生效时 AI 立即停牌（再摸只会把自己推高） |
 | 匕首重洗 | `applyItem` 的 `dagger` 分支 | 手牌必须立即重发，否则 0 对 0 卡死回合 |
 | 走火遗恨 | `damageBonus` | 永久叠加；只有**真的中弹**才清零（包括对自己开枪） |
-| 弹仓 | `Cylinder.reload()` | 2–8 发；2 发固定 1 实 1 空，其余实弹 2–4 发且不超过一半；打空才重装 |
+| 弹仓 | `Cylinder.reload()` | 4~6 发、实弹 2~3 发；打空才重装 |
 
 `LEVELS` 里 `hp` 是对手生命、`playerHp` 是玩家生命，二者每层重置。改数值只动这一处。
 
@@ -183,7 +184,7 @@ src/moyan/scene.ts    3D 棋盘表现（CRT 器官屏只在蔓延页保留）
 src/scene/PixelArt.ts 器官像素画，仅蔓延页使用
 ```
 
-- 入口链路：走廊序章左门新开一局并清除旧检查点，右门在有检查点时续档；`moyan.html` 保留独立入口，不在当前走廊双门链路中。
+- 入口链路：走廊序章点「左门」→ `CorridorScene.chooseDoor('L')` 开门动画结束 → `onEnterMoyan` → `window.location.assign('./moyan.html')`；蔓延页「返回走廊」回 `./`。
 - `vite.config.ts` 的 `rollupOptions.input` 必须同时保留 `main` 与 `moyan` 两个入口，`manualChunks` 不要删。
 - 主游戏牌面保持花色字形（♠♥♦♣），右门场景无 CRT；器官像素画与 CRT 数据屏只属于蔓延页。
 - 规则文档：`docs/游戏规则.md`。

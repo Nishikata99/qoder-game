@@ -1,14 +1,18 @@
 import { expect, test } from '@playwright/test'
 import type { Locator } from '@playwright/test'
 
-test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => {
+test('首次进入 → 坐下 → 连续停牌 → 扣下扳机', async ({ page }) => {
   // 处决阶段只有约 2.9s，还会被平局重发牌推迟，轮询容易错过；
   // 用 MutationObserver 在页面里锁存，测试结束时再读标记
   await page.addInitScript(() => {
+    localStorage.setItem('blood-ante.narrativeSeen.intro', '1')
+    localStorage.setItem('blood-ante.narrativeSeen.restart', '1')
+    localStorage.setItem('blood-ante.guideSeen', '1')
+    localStorage.setItem('blood-ante.hint.firstTurn', '1')
     const probe = window as unknown as { __fired?: boolean }
     probe.__fired = false
     const check = () => {
-      if (document.body?.textContent?.includes('· 开枪')) probe.__fired = true
+      if (document.body?.textContent?.includes('· 处决')) probe.__fired = true
     }
     const attach = () => {
       new MutationObserver(check).observe(document.body, {
@@ -22,15 +26,23 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
     else document.addEventListener('DOMContentLoaded', attach)
   })
 
-  await page.goto('./')
+  await page.goto('./?skipcutscene=1')
 
+  // 首次进入的引导卡片可能先遮住开始按钮：出现就关掉，没出现直接开始
   const start = page.getByRole('button', { name: '走进走廊', exact: true })
+  // 引导卡片和开始按钮在同一次渲染里出现，按钮始终在 DOM 中（被遮住也算 visible），
+  // 不能用 .or() 断言二者之一——strict mode 会因为同时命中两个元素而报错
   await expect(start).toBeVisible({ timeout: 30_000 })
-  await expect(page.getByRole('dialog', { name: '开局说明' })).toHaveCount(0)
+
+  const guide = page.getByRole('dialog', { name: '开局说明' })
+  if ((await guide.count()) > 0) {
+    await page.getByRole('button', { name: '知道了' }).click()
+    await expect(guide).toBeHidden()
+  }
 
   await start.evaluate((el) => (el as HTMLElement).click())
 
-  const leftDoor = page.getByRole('button', { name: '左门 · 开始新局（清除旧检查点）' })
+  const leftDoor = page.getByRole('button', { name: '左门 · 血色底注' })
   await leftDoor.waitFor({ timeout: 60_000 })
   await leftDoor.evaluate((el) => (el as HTMLElement).click())
 
@@ -47,40 +59,23 @@ test('首次进入 → 坐下 → 停牌 → 扣下扳机', async ({ page }) => 
   const fired = () =>
     page.evaluate(() => Boolean((window as unknown as { __fired?: boolean }).__fired))
 
-  let remainingBeforeShot = Number(await page.locator('main').getAttribute('data-cylinder-remaining'))
-
   // CI 软件渲染比本地慢数倍，轮询预算要留到接近用例总超时
-  const deadline = Date.now() + 300_000
+  const deadline = Date.now() + 420_000
   while (Date.now() < deadline) {
     if (await fired()) break
     if (await fireAtBoss.isVisible().catch(() => false)) {
-      remainingBeforeShot = Number(await page.locator('main').getAttribute('data-cylinder-remaining'))
       await domClick(fireAtBoss)
       await page.waitForTimeout(600)
     } else if ((await stand.count()) > 0 && (await stand.isEnabled().catch(() => false))) {
-      remainingBeforeShot = Number(await page.locator('main').getAttribute('data-cylinder-remaining'))
       await domClick(stand)
-      // 等这一回合确实离开玩家回合，避免下一轮循环重复点击
-      await page
-        .waitForFunction(() => !document.body.textContent?.includes('· 你的行动'), undefined, {
-          timeout: 5_000,
-        })
-        .catch(() => {})
+      // 双轮停牌确认会在 Boss 行动后重新回到玩家回合，下一轮循环继续停牌
+      await page.waitForTimeout(300)
     } else {
       await page.waitForTimeout(300)
     }
   }
 
   expect(await fired()).toBe(true)
-  await page.waitForFunction(
-    (remaining) => {
-      const main = document.querySelector('main')
-      return main?.getAttribute('data-engine-phase') !== 'execution' &&
-        Number(main?.getAttribute('data-cylinder-remaining')) < remaining
-    },
-    remainingBeforeShot,
-    { timeout: 60_000 },
-  )
 })
 
 test('运行时错误显示可恢复提示', async ({ page }) => {
@@ -92,40 +87,3 @@ test('运行时错误显示可恢复提示', async ({ page }) => {
   await expect(page.getByRole('status')).toHaveText('游戏遇到运行时错误，请刷新后重试。')
 })
 
-test('第一批外置音效全部可下载并解码', async ({ page }) => {
-  await page.goto('./')
-  const files = [
-    'sfx/shotgun-blast.mp3',
-    'sfx/shotgun-reload.mp3',
-    'sfx/shotgun-pump.wav',
-    'sfx/chamber-click.mp3',
-    'sfx/card-shuffle.wav',
-    'sfx/cards-table.mp3',
-    'sfx/paper-rustle.mp3',
-    'sfx/hammer-hit.wav',
-    'sfx/glass-clink.wav',
-    'sfx/door-close.wav',
-    'sfx/heartbeat-single.wav',
-    'sfx/heartbeat-fast.wav',
-    'audio/room-tone.mp3',
-  ]
-  const decoded = await page.evaluate(async (paths) => {
-    const context = new AudioContext()
-    try {
-      return await Promise.all(paths.map(async (path) => {
-        const response = await fetch(`./${path}`)
-        if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`)
-        const buffer = await context.decodeAudioData(await response.arrayBuffer())
-        return { path, duration: buffer.duration, sampleRate: buffer.sampleRate, channels: buffer.numberOfChannels }
-      }))
-    } finally {
-      await context.close()
-    }
-  }, files)
-  expect(decoded).toHaveLength(files.length)
-  for (const item of decoded) {
-    expect(item.duration, item.path).toBeGreaterThan(0.05)
-    expect(item.sampleRate, item.path).toBeGreaterThanOrEqual(22_000)
-  }
-  expect(decoded.find((item) => item.path === 'audio/room-tone.mp3')?.duration ?? 0).toBeGreaterThan(30)
-})

@@ -598,6 +598,10 @@ const GUN_LIFT_CLEARANCE = 0.18
 const GUN_RAISE_DURATION = 0.62
 /** 开枪后枪落回桌面的过渡时长 */
 const GUN_LOWER_DURATION = 0.6
+/** 21点进行中枪藏在桌面之下：枪身最高点距台面的间隙，太浅会被低机位看穿 */
+const GUN_HIDDEN_CLEARANCE = 0.15
+/** 执枪回合开始，枪从桌底弹出到展示位的过渡时长 */
+const GUN_DEAL_IN_DURATION = 0.5
 const GUN_SHAKE = {
   delay: 0.045,
   offsetMin: -0.006,
@@ -972,8 +976,12 @@ export class SceneManager {
   private gunHolstered = true
   private gunRaiseGeneration = 0
   private gunHolsterY = GUN_PIVOT.y
+  /** 枪从展示位沉入桌底的垂直距离；按枪身包围盒 + 间隙计算 */
+  private gunHiddenDrop = 0.5
   /** 抬枪/落枪过渡进行中：引擎要等它结束才允许重新发牌 */
   private gunMotionActive = false
+  /** 端枪翻正期间把枪身压在桌面之上；桌底弹出/沉回不需要这条约束 */
+  private gunClampToTable = false
   private gunShakeAfterAim = false
   private gunShakeActive = false
   private readonly gunShakeBase = new THREE.Vector3()
@@ -1114,6 +1122,7 @@ export class SceneManager {
     this.gunShake.add(gun.root)
     this.gunGroup.add(this.gunAim)
     this.holsterGun()
+    this.computeGunHiddenDrop()
     this.drum = gun.drum
     this.muzzleLight = gun.muzzleLight
     this.flash = gun.flash
@@ -1312,6 +1321,10 @@ export class SceneManager {
       this.disarmTargetPick()
       this.refreshShotTargetBoxes()
     }
+    // 执枪回合开始（玩家或 Boss 持枪）：枪从桌底弹出；回合结束收回桌底
+    const gunWanted = snapshot.phase === 'targeting' && snapshot.pendingShot !== null
+    if (gunWanted && this.gunHolstered) this.dealInGun()
+    else if (!gunWanted && !this.gunHolstered) this.stowGunIfShown()
     this.applyLevel(snapshot.levelIndex)
     this.syncCards(snapshot)
     this.syncTrumps(snapshot)
@@ -2998,7 +3011,24 @@ export class SceneManager {
     }
 
     // 换模型会改变包围盒，平躺姿态要按新枪重新贴一次桌面
-    if (this.gunHolstered) this.settleGunOnTable()
+    if (this.gunHolstered) {
+      this.settleGunOnTable()
+      this.hideGunBelowTable()
+    }
+  }
+
+  /** 按枪身包围盒高度算出「沉入桌底」的下沉量：最高点留一段间隙再藏 */
+  private computeGunHiddenDrop(): void {
+    const holder =
+      this.gunShake.getObjectByName('ShotgunGLB') ?? this.gunShake.getObjectByName('GunPlaceholder')
+    if (!holder) return
+    this.gunAim.updateWorldMatrix(true, true)
+    const box = new THREE.Box3().setFromObject(holder)
+    if (!Number.isFinite(box.min.y) || !Number.isFinite(box.max.y)) return
+    const height = box.max.y - box.min.y
+    if (height <= 0) return
+    this.gunHiddenDrop = height + GUN_HIDDEN_CLEARANCE
+    if (this.gunHolstered) this.hideGunBelowTable()
   }
 
   /**
@@ -3241,7 +3271,7 @@ export class SceneManager {
     this.updateNarrativeGrade(dt)
     this.updateChains(dt)
     this.updateGunAim(dt)
-    if (this.gunMotionActive) this.keepGunAboveTable()
+    if (this.gunMotionActive && this.gunClampToTable) this.keepGunAboveTable()
     this.updateGunShake(dt)
     this.updateArmedRacks()
     this.updateItems(dt)
@@ -3411,6 +3441,8 @@ export class SceneManager {
     this.gunAim.position.copy(GUN_PIVOT)
     this.gunAim.rotation.set(0, this.gunRestYaw, GUN_REST_ROLL)
     this.settleGunOnTable()
+    // 常态（21点进行中）枪沉在桌底；进 targeting 才由 dealInGun 弹出展示
+    this.hideGunBelowTable()
   }
 
   /** 侧翻后按包围盒最低点贴住桌面，换模型/换姿态都能复用 */
@@ -3425,11 +3457,56 @@ export class SceneManager {
     this.gunHolsterY = this.gunAim.position.y
   }
 
+  /** 从展示姿态整体下沉到桌面以下并隐藏；姿态不变，只动高度 */
+  private hideGunBelowTable(): void {
+    this.gunAim.position.y -= this.gunHiddenDrop
+    this.gunShake.visible = false
+  }
+
+  /**
+   * 执枪回合开始：像道具一样从桌底弹出，升到桌面平躺展示位。
+   * 结束姿态与 raiseGun 的起点完全一致，后续瞄准/落枪逻辑零改动。
+   */
+  private dealInGun(): void {
+    if (!this.gunHolstered) return
+    this.gunHolstered = false
+    this.gunMotionActive = true
+    const generation = ++this.gunRaiseGeneration
+    // 从隐藏位起步，先落好桌面平躺姿态再显形
+    this.gunAim.position.copy(GUN_PIVOT)
+    this.gunAim.rotation.set(0, this.gunRestYaw, GUN_REST_ROLL)
+    this.gunAim.position.y = this.gunHolsterY - this.gunHiddenDrop
+    this.gunShake.visible = true
+    const fromY = this.gunAim.position.y
+    const overshoot = this.reducedMotion ? 0 : 0.045
+    this.tween({
+      duration: this.reducedMotion ? 0.24 : GUN_DEAL_IN_DURATION,
+      onUpdate: (t) => {
+        if (generation !== this.gunRaiseGeneration) return
+        // 轻微过冲再回落，读起来是「弹」出而不是匀速升起
+        const pulse = Math.sin(Math.PI * t) * overshoot
+        this.gunAim.position.y = fromY + (this.gunHolsterY - fromY) * easeOutCubic(t) + pulse
+      },
+      onComplete: () => {
+        if (generation !== this.gunRaiseGeneration) return
+        this.gunAim.position.y = this.gunHolsterY
+        this.gunMotionActive = false
+      },
+    })
+  }
+
+  /** 离开 targeting 的兜底：枪还展示着就按落枪路径收回桌底 */
+  private stowGunIfShown(): void {
+    if (!this.gunHolstered) this.lowerGun(0.1)
+  }
+
   /** 处决开始：抬升、翻正、瞄准同步完成，整段是一条连贯的「端起」弧线 */
   private raiseGun(): void {
     if (!this.gunHolstered) return
     this.gunHolstered = false
     this.gunMotionActive = true
+    // dealInGun 已经把枪露出桌面，端起翻正才会扫到台面
+    this.gunClampToTable = true
     const generation = ++this.gunRaiseGeneration
     const fromY = this.gunAim.position.y
     const fromRoll = this.gunAim.rotation.z
@@ -3446,6 +3523,7 @@ export class SceneManager {
         this.gunAim.position.copy(GUN_PIVOT)
         this.gunAim.rotation.z = 0
         this.gunMotionActive = false
+        this.gunClampToTable = false
       },
     })
   }
@@ -3480,7 +3558,8 @@ export class SceneManager {
     const fromYaw = this.gunAim.rotation.y
     const fromPitch = this.gunAim.rotation.x
     const yawDelta = Math.atan2(Math.sin(this.gunRestYaw - fromYaw), Math.cos(this.gunRestYaw - fromYaw))
-    const targetY = this.gunHolsterY
+    // 落枪目标从桌面平躺位延伸到桌底：21点继续时枪不该一直摆在台上
+    const targetY = this.gunHolsterY - this.gunHiddenDrop
     this.tween({
       delay,
       duration: this.reducedMotion ? 0.24 : GUN_LOWER_DURATION,
@@ -3497,6 +3576,9 @@ export class SceneManager {
         this.gunAim.position.y = targetY
         this.gunAim.rotation.set(0, this.gunRestYaw, GUN_REST_ROLL)
         this.gunMotionActive = false
+        this.gunClampToTable = false
+        // 完全沉入桌底后再隐身，下落过程保持可见
+        if (this.gunHolstered) this.gunShake.visible = false
       },
     })
   }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { SoundEngine } from './audio/SoundEngine'
+import gameData from './data/game.json'
 import { GameCanvas, GunTooltip, ItemTooltip } from './components/GameCanvas'
 import { RulesModal, type ModalTab } from './components/RulesModal'
 import { TrumpHandOverlay } from './components/TrumpHandOverlay'
@@ -19,7 +20,7 @@ import type { QualityPreset, SceneManager } from './scene/SceneManager'
 import type { BossPoseCue } from './scene/SceneManager'
 import type { ItemActionCue } from './scene/ItemActions'
 import { ITEM_ACTION_SPECS } from './scene/itemActionConfig'
-import type { ActionVisualId, ActorId, ActorView, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
+import type { ActionVisualId, ActorId, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
 import {
   GameEngine,
   DECK_SIZE,
@@ -28,7 +29,6 @@ import {
   LEVELS,
   MAX_ITEMS,
   createSeededRandom,
-  evaluateHand,
 } from './game/GameEngine'
 import { bossName, levelTitle, narrativeLog } from './narrative/copy'
 import { useDialogFocus } from './components/useDialogFocus'
@@ -47,6 +47,7 @@ interface ClueLine {
 }
 
 const GUIDE_KEY = 'blood-ante.guideSeen'
+const sfxFiles = gameData.sfxFiles
 
 const GUIDE_LINES = [
   '比 21 点：要牌或停牌；赢下这轮，枪就归你。牌库只有 1–11 共 11 张，没有 J/Q/K。',
@@ -464,7 +465,7 @@ export default function App() {
     (event: GameEvent) => {
       switch (event.type) {
         case 'cardDealt':
-          sound.playCardSlide()
+          sound.playCardDealRecorded()
           break
         case 'shot':
           if (event.chamber === 'live') {
@@ -502,7 +503,7 @@ export default function App() {
               }, 100)
             }
           } else {
-            sound.playClickEmpty()
+            sound.playEmptyClickRecorded()
           }
           break
         case 'itemUsed':
@@ -800,7 +801,10 @@ export default function App() {
     await sound.unlock()
     sound.setMasterVolume(muted ? 0 : volume)
     if (!sound.isAmbientPlaying) sound.startAmbient()
-    void sound.startRoomTone(`${import.meta.env.BASE_URL}audio/room-tone.ogg`)
+    void sound.startRoomTone(`${import.meta.env.BASE_URL}${sfxFiles.roomTone}`)
+    void sound.preloadIntroDoor(`${import.meta.env.BASE_URL}${sfxFiles.introDoor}`)
+    void sound.preloadEmptyClick(`${import.meta.env.BASE_URL}${sfxFiles.emptyClick}`)
+    void sound.preloadCardDeal(`${import.meta.env.BASE_URL}${sfxFiles.cardDeal}`)
     // 走廊里的「开始」：解锁音频后人开始往前走，右门黑场结束才进入入场导演层
     setCorridorState('playing')
   }
@@ -817,6 +821,13 @@ export default function App() {
     sound.setMasterVolume(muted ? 0 : volume)
     if (!sound.isAmbientPlaying) sound.startAmbient()
     void sound.startRoomTone(`${import.meta.env.BASE_URL}audio/room-tone.ogg`)
+    // 门扇转开后接黑场 + 模糊睁眼，和中枪恢复同一套语言
+    if (blurTimer.current !== null) window.clearTimeout(blurTimer.current)
+    if (wakeBlurTimer.current !== null) window.clearTimeout(wakeBlurTimer.current)
+    setVisionBlur((n) => n + 1)
+    setWakeBlur((n) => n + 1)
+    blurTimer.current = window.setTimeout(() => setVisionBlur(0), 1500)
+    wakeBlurTimer.current = window.setTimeout(() => setWakeBlur(0), 2150)
     setCorridorState('done')
     game.startAtLevel(checkpoint.levelIndex, checkpoint.carryOver)
   }
@@ -1218,10 +1229,7 @@ export default function App() {
         <div
           className={`transition-opacity duration-1000 ${narrativeActive ? 'opacity-0' : 'opacity-100'}`}
         >
-          <ActorPanel className="top-14 left-4" label="你" actor={snapshot.player} target={snapshot.roundTarget} accent />
-          <ActorPanel className="top-14 right-4" label="它" actor={snapshot.boss} target={snapshot.roundTarget} />
           <LogPanel snapshot={snapshot} />
-          <CylinderPanel snapshot={snapshot} />
         </div>
       ) : null}
 
@@ -1739,40 +1747,6 @@ export default function App() {
   )
 }
 
-function ActorPanel({
-  className,
-  label,
-  actor,
-  target,
-  accent = false,
-}: {
-  className: string
-  label: string
-  actor: ActorView
-  target: number
-  accent?: boolean
-}) {
-  const visibleCards = actor.visibleHand.visible.filter((card): card is Card => card !== null)
-  const shown = evaluateHand(visibleCards, target)
-  return (
-    <div
-      className={`pointer-events-none absolute w-36 border bg-black/50 px-3 py-2 backdrop-blur-sm max-[420px]:w-32 ${
-        accent ? 'border-rust-500/35' : 'border-white/8'
-      } ${className}`}
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] tracking-[0.25em] text-bone-200/60 uppercase">{label}</span>
-      </div>
-      <p className="mt-1 flex items-center gap-2 text-[11px] tracking-[0.12em] text-bone-200/50">
-        <span>
-          {shown.busted ? '爆牌' : actor.stayed ? '已停牌' : '在局中'} · 道具 {actor.items.length} · 王牌 {actor.trumps.length}
-        </span>
-        {actor.sawBoost > 0 ? <span className="text-amber-300/80">锯</span> : null}
-      </p>
-    </div>
-  )
-}
-
 function LogPanel({ snapshot }: { snapshot: GameSnapshot }) {
   const lines = snapshot.log.slice(-3).map((line) => narrativeLog(line, snapshot.levelIndex))
   if (lines.length === 0) return null
@@ -1788,35 +1762,6 @@ function LogPanel({ snapshot }: { snapshot: GameSnapshot }) {
           {line}
         </p>
       ))}
-    </div>
-  )
-}
-
-function CylinderPanel({ snapshot }: { snapshot: GameSnapshot }) {
-  const { cylinder, roundTarget } = snapshot
-  // 窄屏把弹仓挪到左上角：留在下方会盖住牌桌上的手牌点数
-  return (
-    <div className="pointer-events-none absolute bottom-24 left-4 w-40 border border-white/8 bg-black/50 px-3 py-2 backdrop-blur-sm max-[420px]:top-32 max-[420px]:bottom-auto max-[420px]:w-32">
-      <div className="flex items-center justify-between text-[9px] tracking-[0.2em] text-bone-200/35 uppercase">
-        <span>弹仓</span>
-        <span className="text-bone-200/60">
-          {cylinder.remaining}/{cylinder.total}
-        </span>
-      </div>
-      <div className="mt-1 flex items-center gap-3 text-[10px] tracking-[0.12em]">
-        <span className="text-rust-400/90">实 {cylinder.live}</span>
-        <span className="text-sky-300/80">空 {cylinder.blank}</span>
-      </div>
-      {cylinder.revealed ? (
-        <p
-          className={`mt-1 text-[10px] tracking-[0.12em] ${
-            cylinder.revealed === 'live' ? 'text-rust-400' : 'text-sky-300'
-          }`}
-        >
-          膛内 · {cylinder.revealed === 'live' ? '实弹' : '空膛'}
-        </p>
-      ) : null}
-      <p className="mt-1 text-[10px] tracking-[0.12em] text-bone-200/55">目标 · {roundTarget}</p>
     </div>
   )
 }

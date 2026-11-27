@@ -88,7 +88,7 @@ export function NarrativeOverlay({
           <div className="h-px bg-[#5a4632]/25" />
           <dl className="space-y-1.5 pt-2 text-[0.8rem] leading-relaxed tracking-[0.08em]">
             <div className="flex justify-between gap-2">
-              <dt className="opacity-55">契主</dt>
+              <dt className="opacity-55">原担保人</dt>
               <dd>小棠</dd>
             </div>
             <div className="flex justify-between gap-2">

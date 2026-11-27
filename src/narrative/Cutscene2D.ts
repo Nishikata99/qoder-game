@@ -1,4 +1,5 @@
 import type { SoundEngine } from '../audio/SoundEngine'
+import { isDocumentBackgrounded } from '../browserVisibility'
 import type { DialogueChannel } from './dialogue'
 import { PIXEL_HEIGHT, PIXEL_WIDTH, type Ctx } from './pixelDraw'
 
@@ -160,7 +161,7 @@ export class Cutscene2D {
       this.lastTs = ts
       return
     }
-    if (document.hidden) {
+    if (isDocumentBackgrounded()) {
       this.lastTs = null
       return
     }

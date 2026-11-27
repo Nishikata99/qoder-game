@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { CardRank, CardSuit } from '../game/GameEngine'
+import { isDocumentBackgrounded } from '../browserVisibility'
 
 const CARD_W = 256
 const CARD_H = 358
@@ -1051,7 +1052,7 @@ export class TextureFactory {
     if (import.meta.env.DEV) {
       void this.scan(true)
       this.watchTimer = window.setInterval(() => {
-        if (document.hidden) return
+        if (isDocumentBackgrounded()) return
         void this.scan(false)
       }, 2500)
     }

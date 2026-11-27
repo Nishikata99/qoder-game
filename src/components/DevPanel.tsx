@@ -54,7 +54,7 @@ export function DevPanel({
             直接赢下这一关
           </button>
           <p className="mt-1 text-[0.6rem] text-bone-200/40">
-            {canWin ? '赢层后选一件补给才开下一层' : '清层 / 补给 / 过场中不可用'}
+            {canWin ? '赢层后选一件遗物才开下一层' : '清层 / 遗物 / 过场中不可用'}
           </p>
         </div>
 
@@ -83,7 +83,7 @@ export function DevPanel({
               实弹
             </button>
             <button type="button" className={btn} onClick={() => onForceChamber('blank')}>
-              空弹
+              空膛
             </button>
           </div>
         </div>

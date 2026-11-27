@@ -75,7 +75,7 @@ describe('evaluateHand', () => {
     expect(state.busted).toBe(true)
   })
 
-  it('只有起手两张恰好 21 点算黑杰克', () => {
+  it('开枪时当前两张恰好 21 点算黑杰克', () => {
     expect(hand(1, 10).blackjack).toBe(true)
     expect(hand(10, 6, 5).blackjack).toBe(false)
   })

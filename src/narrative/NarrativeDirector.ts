@@ -1,4 +1,5 @@
 import type { SoundEngine } from '../audio/SoundEngine'
+import { isDocumentBackgrounded } from '../browserVisibility'
 import type { SceneManager } from '../scene/SceneManager'
 import type { DialogueChannel } from './dialogue'
 import {
@@ -130,7 +131,7 @@ export class NarrativeDirector {
     const raw = (ts - this.lastTs) / 1000
     this.lastTs = ts
     // 后台标签页 rAF 本就停摆；这里再兜一层，防止某些环境回补大量帧
-    if (document.hidden) return
+    if (isDocumentBackgrounded()) return
     // 低帧率按真实时间推进，最多补 0.25s，避免镜头跳过整拍
     this.time += Math.min(0.25, raw)
     while (this.index < this.beats.length && this.beats[this.index]!.at <= this.time) {

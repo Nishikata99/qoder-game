@@ -68,7 +68,7 @@ test('首次进入 → 坐下 → 连续停牌 → 扣下扳机', async ({ page 
       await page.waitForTimeout(600)
     } else if ((await stand.count()) > 0 && (await stand.isEnabled().catch(() => false))) {
       await domClick(stand)
-      // 双轮停牌确认会在 Boss 行动后重新回到玩家回合，下一轮循环继续停牌
+      // 停牌后若出现平局会重新发牌回到玩家回合，下一轮循环继续停牌
       await page.waitForTimeout(300)
     } else {
       await page.waitForTimeout(300)

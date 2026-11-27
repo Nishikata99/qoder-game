@@ -169,7 +169,7 @@ describe('严格交替回合', () => {
     expect(engine.getSnapshot().player.standing).toBe(false)
   })
 
-  it('只有双方连续停牌才结算', async () => {
+  it('只有双方都停牌才结算', async () => {
     const { engine, probe } = newEngine()
     await toPlayerTurn(engine)
     probe.player.stayed = true
@@ -185,91 +185,56 @@ describe('严格交替回合', () => {
     expect(engine.getSnapshot().pendingShot).toBe('player')
   })
 
-  it('双方第一次干净停牌不结算，第二次才结算', async () => {
+  it('双方停牌一次即结算', async () => {
     const { engine, probe } = newEngine({ thinkDelayMs: 0 })
     await toPlayerTurn(engine)
     probe.boss.trumps = []
     probe.player.hand = hand(10, 11)
-    probe.boss.hand = hand(10, 10)
-    const round = probe.round
-    const playerCards = [...probe.player.hand.cards]
-
-    expect(engine.stand()).toBe(true)
-    await settleUntil(() => engine.getSnapshot().phase === 'playerTurn' && probe.cleanStandPasses === 1)
-    expect(engine.getSnapshot().phase).toBe('playerTurn')
-    expect(engine.getSnapshot().player.stayed).toBe(false)
-    expect(engine.getSnapshot().boss.stayed).toBe(false)
-    expect(probe.round).toBe(round)
-    expect(probe.player.hand.cards).toEqual(playerCards)
-
+    probe.boss.hand = hand(10, 10, 5)
     expect(engine.stand()).toBe(true)
     await settleUntil(() => engine.getSnapshot().phase === 'targeting')
-    expect(probe.cleanStandPasses).toBe(2)
     expect(engine.getSnapshot().pendingShot).toBe('player')
   })
 
-  it('Boss 停牌不会撤销玩家刚做出的停牌', async () => {
-    const { engine, probe } = newEngine({ thinkDelayMs: 0 })
-    await toPlayerTurn(engine)
-    probe.boss.trumps = []
-    probe.player.hand = hand(10, 2)
-    probe.boss.hand = hand(10, 9)
-
-    expect(engine.stand()).toBe(true)
-    await settleUntil(() => probe.cleanStandPasses === 1 && engine.getSnapshot().phase === 'playerTurn')
-    expect(engine.getSnapshot().player.stayed).toBe(false)
-    expect(engine.getSnapshot().boss.stayed).toBe(false)
-
-    expect(engine.stand()).toBe(true)
-    await settleUntil(() => engine.getSnapshot().phase === 'targeting')
-    expect(probe.cleanStandPasses).toBe(2)
-  })
-
-  it('使用王牌后的双方停牌不计数，之后仍需两次干净停牌', async () => {
+  it('使用王牌后本次双方停牌作废，再停一次才结算', async () => {
     const { engine, probe } = newEngine({ thinkDelayMs: 0, itemLockMs: 0 })
     await toPlayerTurn(engine)
     probe.boss.trumps = []
-    probe.player.hand = hand(10, 11)
-    probe.boss.hand = hand(10, 10)
-    probe.player.trumps = ['happiness']
+    probe.player.hand = hand(10, 2)
+    probe.boss.hand = hand(10, 10, 5)
+    probe.player.trumps = ['go24']
     probe.trumpPool = ['remove', 'return']
     expect(engine.useTrump(0)).toBe(true)
     expect(probe.standPassDirty).toBe(true)
 
     expect(engine.stand()).toBe(true)
     await settleUntil(() => engine.getSnapshot().phase === 'playerTurn')
-    expect(engine.getSnapshot().phase).toBe('playerTurn')
-    expect(probe.cleanStandPasses).toBe(0)
     expect(probe.standPassDirty).toBe(false)
+    expect(engine.getSnapshot().player.stayed).toBe(false)
+    expect(engine.getSnapshot().boss.stayed).toBe(false)
 
-    expect(engine.stand()).toBe(true)
-    await settleUntil(() => engine.getSnapshot().phase === 'playerTurn' && probe.cleanStandPasses === 1)
     expect(engine.stand()).toBe(true)
     await settleUntil(() => engine.getSnapshot().phase === 'targeting')
-    expect(probe.cleanStandPasses).toBe(2)
+    expect(engine.getSnapshot().pendingShot).toBe('player')
   })
 
-  it('要牌会清空连续停牌计数', async () => {
+  it('要牌不会清除用过的王牌记录', async () => {
     const { engine, probe } = newEngine({ thinkDelayMs: 0 })
     await toPlayerTurn(engine)
     probe.boss.trumps = []
     probe.player.hand = hand(3, 4)
     probe.boss.hand = hand(10, 10)
-    probe.cleanStandPasses = 1
     probe.standPassDirty = true
     expect(engine.hit()).toBe(true)
-    expect(probe.cleanStandPasses).toBe(0)
-    expect(probe.standPassDirty).toBe(false)
+    expect(probe.standPassDirty).toBe(true)
   })
 
-  it('Boss 使用王牌也会重置连续停牌计数', async () => {
+  it('Boss 使用王牌会标记本次停牌作废', async () => {
     const { probe } = newEngine()
-    probe.cleanStandPasses = 1
     probe.standPassDirty = false
     probe.boss.trumps = ['happiness']
     probe.trumpPool = ['remove', 'return']
     expect(probe.useTrumpInternal(probe.boss, 0)).toBe(true)
-    expect(probe.cleanStandPasses).toBe(0)
     expect(probe.standPassDirty).toBe(true)
   })
 

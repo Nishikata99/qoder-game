@@ -670,7 +670,6 @@ export class GameEngine {
   private tableTrumps: Record<ActorId, TrumpId[]> = { player: [], boss: [] }
   private roundTarget = 21
   private lastPerfectWin = false
-  private cleanStandPasses = 0
   private standPassDirty = false
   private revealedBy: Record<ActorId, Chamber | null> = { player: null, boss: null }
   private pendingShot: ActorId = 'player'
@@ -746,7 +745,6 @@ export class GameEngine {
     this.tableTrumps = { player: [], boss: [] }
     this.roundTarget = 21
     this.lastPerfectWin = false
-    this.cleanStandPasses = 0
     this.standPassDirty = false
     this.clearReveals()
     this.pendingShot = 'player'
@@ -784,8 +782,6 @@ export class GameEngine {
   }
 
   private finishPlayerHit(): void {
-    this.cleanStandPasses = 0
-    this.standPassDirty = false
     this.dealTo(this.player)
     this.maybeDrawTrump(this.player)
     this.player.stayed = false
@@ -1036,7 +1032,6 @@ export class GameEngine {
     this.pendingShot = 'player'
     this.roundTarget = 21
     this.lastPerfectWin = false
-    this.cleanStandPasses = 0
     this.standPassDirty = false
     this.tableTrumps = { player: [], boss: [] }
     this.holeRevealed = false
@@ -1093,27 +1088,16 @@ export class GameEngine {
   private resolveStandPass(token: number): void {
     if (this.standPassDirty) {
       this.standPassDirty = false
-      this.cleanStandPasses = 0
       this.resetStandConfirmation()
-      this.dispatch({ type: 'notice', message: '本轮使用过王牌，连续停牌计数重新开始。' })
+      this.dispatch({ type: 'notice', message: '本轮使用过王牌，本次双方停牌不算，继续。' })
       this.phase = 'playerTurn'
       this.dispatch({ type: 'turn', actor: 'player' })
       this.publish()
       return
     }
 
-    this.cleanStandPasses += 1
-    if (this.cleanStandPasses >= 2) {
-      this.log('双方连续两轮未使用王牌并停牌，开始结算。')
-      void this.settleRound(token)
-      return
-    }
-
-    this.resetStandConfirmation()
-    this.dispatch({ type: 'notice', message: '双方连续停牌 1/2：再连续停牌一轮且不使用王牌才会结算。' })
-    this.phase = 'playerTurn'
-    this.dispatch({ type: 'turn', actor: 'player' })
-    this.publish()
+    this.log('双方停牌，开始结算。')
+    void this.settleRound(token)
   }
 
   private resetStandConfirmation(): void {
@@ -1150,8 +1134,6 @@ export class GameEngine {
       this.dispatch({ type: 'bossBark', action: 'hit', hand: true })
       await this.wait(150)
       if (!this.alive(token) || this.phase !== 'bossTurn') return
-      this.cleanStandPasses = 0
-      this.standPassDirty = false
       this.dealTo(this.boss)
       this.maybeDrawTrump(this.boss)
       this.boss.stayed = false
@@ -1654,7 +1636,6 @@ export class GameEngine {
     }
 
     if (detail === null) return false
-    this.cleanStandPasses = 0
     this.standPassDirty = true
     actor.trumps.splice(index, 1)
     this.log(`${actorLabel(actor.id)}使用了【${TRUMP_CATALOG[trump].name}】。${detail}`)

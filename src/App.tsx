@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { SoundEngine } from './audio/SoundEngine'
-import gameData from './data/game.json'
 import { GameCanvas, GunTooltip, ItemTooltip } from './components/GameCanvas'
 import { RulesModal, type ModalTab } from './components/RulesModal'
 import { TrumpHandOverlay } from './components/TrumpHandOverlay'
@@ -47,7 +46,6 @@ interface ClueLine {
 }
 
 const GUIDE_KEY = 'blood-ante.guideSeen'
-const sfxFiles = gameData.sfxFiles
 
 const GUIDE_LINES = [
   '比 21 点：要牌或停牌；赢下这轮，枪就归你。牌库只有 1–11 共 11 张，没有 J/Q/K。',
@@ -465,7 +463,7 @@ export default function App() {
     (event: GameEvent) => {
       switch (event.type) {
         case 'cardDealt':
-          sound.playCardDealRecorded()
+          sound.playCardSlide()
           break
         case 'shot':
           if (event.chamber === 'live') {
@@ -503,7 +501,7 @@ export default function App() {
               }, 100)
             }
           } else {
-            sound.playEmptyClickRecorded()
+            sound.playClickEmpty()
           }
           break
         case 'itemUsed':
@@ -801,10 +799,7 @@ export default function App() {
     await sound.unlock()
     sound.setMasterVolume(muted ? 0 : volume)
     if (!sound.isAmbientPlaying) sound.startAmbient()
-    void sound.startRoomTone(`${import.meta.env.BASE_URL}${sfxFiles.roomTone}`)
-    void sound.preloadIntroDoor(`${import.meta.env.BASE_URL}${sfxFiles.introDoor}`)
-    void sound.preloadEmptyClick(`${import.meta.env.BASE_URL}${sfxFiles.emptyClick}`)
-    void sound.preloadCardDeal(`${import.meta.env.BASE_URL}${sfxFiles.cardDeal}`)
+    void sound.startRoomTone(`${import.meta.env.BASE_URL}audio/room-tone.ogg`)
     // 走廊里的「开始」：解锁音频后人开始往前走，右门黑场结束才进入入场导演层
     setCorridorState('playing')
   }
@@ -821,13 +816,6 @@ export default function App() {
     sound.setMasterVolume(muted ? 0 : volume)
     if (!sound.isAmbientPlaying) sound.startAmbient()
     void sound.startRoomTone(`${import.meta.env.BASE_URL}audio/room-tone.ogg`)
-    // 门扇转开后接黑场 + 模糊睁眼，和中枪恢复同一套语言
-    if (blurTimer.current !== null) window.clearTimeout(blurTimer.current)
-    if (wakeBlurTimer.current !== null) window.clearTimeout(wakeBlurTimer.current)
-    setVisionBlur((n) => n + 1)
-    setWakeBlur((n) => n + 1)
-    blurTimer.current = window.setTimeout(() => setVisionBlur(0), 1500)
-    wakeBlurTimer.current = window.setTimeout(() => setWakeBlur(0), 2150)
     setCorridorState('done')
     game.startAtLevel(checkpoint.levelIndex, checkpoint.carryOver)
   }

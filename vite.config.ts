@@ -10,11 +10,10 @@ export default defineConfig({
   build: {
     target: 'es2022',
     chunkSizeWarningLimit: 1200,
-    // 双入口：主游戏 index.html + 蔓延子游戏 moyan.html
+    // 单入口：主游戏 index.html
     rollupOptions: {
       input: {
         main: 'index.html',
-        moyan: 'moyan.html',
       },
       output: {
         // three 体量大且几乎不随业务代码变化，单独成块可让浏览器长期复用缓存

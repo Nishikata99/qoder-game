@@ -466,6 +466,11 @@ const ITEM_MODEL: Readonly<Record<ActionVisualId, ModelKey>> = {
 }
 
 const ITEM_MODEL_SIZE = 0.5
+/** 桌面机位下部分道具投影太扁、轮廓读不出来：按件给更大的归一化尺寸，别动 GLB */
+const ITEM_SIZE_OVERRIDE: Readonly<Partial<Record<ActionVisualId, number>>> = {
+  // 镣铐链环细、灰蓝色又沉进台呢，只有拉长链条才能在真实镜头下一眼认出
+  handcuffs: 0.62,
+}
 // 斜放的放大镜对角线约 0.53，格子取 0.54 才能整件收进边框
 const ITEM_GRID = {
   columns: 4,
@@ -6938,7 +6943,7 @@ export class SceneManager {
   ): { content: THREE.Group; materials: THREE.MeshStandardMaterial[] } {
     const upright = item === 'aegis'
     const content = new THREE.Group()
-    const targetSize = item === 'gloves' ? 0.48 : ITEM_MODEL_SIZE
+    const targetSize = item === 'gloves' ? 0.48 : ITEM_SIZE_OVERRIDE[item] ?? ITEM_MODEL_SIZE
     const template = source ?? this.itemModelTemplates.get(item)
     if (template) {
       const clone = template.clone(true)

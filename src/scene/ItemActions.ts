@@ -762,9 +762,13 @@ export class ItemActions {
       dispose(a.root)
     } else {
       if (a.item === 'magnet') for (const card of a.moving) dispose(card.obj)
-      // 手铐留在被铐住的腕上，gunCuffed 失效时由 removeStaleRemnants 一并拆走
-      a.root.name = `Used-${a.actor}-${a.item}`
-      this.remnants.push({ root: a.root, item: a.item, actor: a.actor, round: a.snapshot.round, level: a.snapshot.levelIndex })
+      // 只有手铐要留在被铐住的腕上；其余道具效果即时结束，动作收尾即销毁
+      if (ITEM_ACTION_SPECS[a.item].remnant === 'cuffs') {
+        a.root.name = `Used-${a.actor}-${a.item}`
+        this.remnants.push({ root: a.root, item: a.item, actor: a.actor, round: a.snapshot.round, level: a.snapshot.levelIndex })
+      } else {
+        dispose(a.root)
+      }
       if (a.item === 'sedative') {
         const puncture = a.parts.get('puncture')
         if (puncture) dispose(puncture)

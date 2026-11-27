@@ -1224,15 +1224,6 @@ export default function App() {
         ) : null}
       </div>
 
-      {/* Hand totals live on the felt itself (SceneManager score plates); panels keep vitals/status. */}
-      {snapshot && started ? (
-        <div
-          className={`transition-opacity duration-1000 ${narrativeActive ? 'opacity-0' : 'opacity-100'}`}
-        >
-          <LogPanel snapshot={snapshot} />
-        </div>
-      ) : null}
-
       {/* Bottom control rail. */}
       <div
         className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 px-4"
@@ -1744,25 +1735,6 @@ export default function App() {
       <ItemTooltip payload={hover} />
       <GunTooltip payload={narrativeActive ? null : gunHover} />
     </main>
-  )
-}
-
-function LogPanel({ snapshot }: { snapshot: GameSnapshot }) {
-  const lines = snapshot.log.slice(-3).map((line) => narrativeLog(line, snapshot.levelIndex))
-  if (lines.length === 0) return null
-  return (
-    <div className="pointer-events-none absolute top-36 right-4 w-64 space-y-1 text-right max-[420px]:w-40">
-      {lines.map((line, index) => (
-        <p
-          key={index}
-          className={`line-clamp-2 text-[12px] leading-relaxed [text-shadow:0_1px_3px_rgba(0,0,0,0.9)] ${
-            index === lines.length - 1 ? 'text-bone-200/65' : 'text-bone-200/30'
-          }`}
-        >
-          {line}
-        </p>
-      ))}
-    </div>
   )
 }
 

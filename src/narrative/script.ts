@@ -1,5 +1,6 @@
 import type { CameraShot } from '../scene/SceneManager'
 import type { DialogueChannel } from './dialogue'
+import beatsData from '../data/beats.json'
 
 export interface NarrativeGrade {
   readonly fog?: number
@@ -42,7 +43,7 @@ export interface NarrativeBeat {
 }
 
 /** 入场 ≈40s（含 T1），永久不可跳过；时间轴见 docs/NARRATIVE-REWORK-PLAN.md §2.2 */
-export const INTRO_BEATS: readonly NarrativeBeat[] = [
+const INTRO_BEATS_RAW: readonly NarrativeBeat[] = [
   { at: 0, black: 1, letterbox: true, focus: 16, grade: { fog: 0.06, vignette: 1.2, grain: 0.12, lamp: 0, sway: 1.2 } },
   { at: 1.2, black: 0.65, shot: 'introWake', shotDuration: 2.4 },
   { at: 1.8, black: 0.9 },
@@ -78,7 +79,7 @@ export const INTRO_BEATS: readonly NarrativeBeat[] = [
 ]
 
 /** restart 迷你入场 ≈4.2s：换一位坐下的客人；同样不可跳过 */
-export const RESTART_BEATS: readonly NarrativeBeat[] = [
+const RESTART_BEATS_RAW: readonly NarrativeBeat[] = [
   { at: 0, black: 1, letterbox: true, mood: 0, grade: { lamp: 0.15, flicker: 3 } },
   { at: 0.3, sfx: 'chairCreak', line: '血袋换了。椅子，留给下一位。', lineEnd: 3.2, channel: 'enemy' },
   { at: 1.2, grade: { lamp: 1, flicker: 1 } },
@@ -88,10 +89,10 @@ export const RESTART_BEATS: readonly NarrativeBeat[] = [
 ]
 
 /** T2 ch1→ch2 ≈6.5s：骑 levelClear→supply 窗口，覆盖层压在 supply 面板上方 */
-export const T2_BEATS: readonly NarrativeBeat[] = [
+const T2_BEATS_RAW: readonly NarrativeBeat[] = [
   { at: 0, black: 0, letterbox: true, sfx: 'coin', grade: { lamp: 0.65, flicker: 1.3 } },
   { at: 0.3, line: '小棠付了七袋。本金没减。', lineEnd: 1.9, channel: 'enemy' },
-  { at: 2.1, line: '所以呢？', lineEnd: 3.0, channel: 'player' },
+  { at: 2.1, line: '所以呢？', lineEnd: 3, channel: 'player' },
   { at: 2.6, mood: 1 },
   { at: 3.2, line: '剩下的债，记你名下。', lineEnd: 4.3, channel: 'enemy' },
   { at: 4.2, action: 'headSnap', sfx: 'lowThump' },
@@ -99,8 +100,8 @@ export const T2_BEATS: readonly NarrativeBeat[] = [
   { at: 6.5, action: 'finish', letterbox: false },
 ]
 
-/** T3 ch2→ch3 ≈6.5s：账页滑入「小棠。已付七袋。」，门缝光随 mood 2 熄灭 */
-export const T3_BEATS: readonly NarrativeBeat[] = [
+/** T3 ch2→ch3 ≈7.2s：账页滑入「小棠。已付七袋。」，门缝光随 mood 2 熄灭 */
+const T3_BEATS_RAW: readonly NarrativeBeat[] = [
   { at: 0, black: 0, letterbox: true, sfx: 'paperRustle', grade: { lamp: 0.55, flicker: 1.6 } },
   { at: 0.4, ledger: true },
   { at: 0.6, line: '她的七袋，记在这一页。', lineEnd: 1.9, channel: 'enemy' },
@@ -110,7 +111,7 @@ export const T3_BEATS: readonly NarrativeBeat[] = [
   { at: 4.2, action: 'headSnap', sfx: 'doorLock', line: '补针是什么？', lineEnd: 5.1, channel: 'player' },
   { at: 4.8, ledger: false },
   { at: 5.3, line: '缝起来，就不算逃。', lineEnd: 6.4, channel: 'enemy' },
-  { at: 6.5, action: 'finish', letterbox: false },
+  { at: 7.2, action: 'finish', letterbox: false },
 ]
 
 /** 结局 B「团聚·吞噬即重逢」≈7.2s：缝线透光 → 伸手 → 黑屏缝线声；无旁白，线索闭合 */
@@ -122,3 +123,23 @@ export const ENDING_B_BEATS: readonly NarrativeBeat[] = [
   { at: 5.6, black: 1, sfx: 'stitch', grade: { lamp: 0 } },
   { at: 7.2, action: 'finish', letterbox: false },
 ]
+type BeatSection = Exclude<keyof typeof beatsData, 'clues'>
+
+/** 台词本体以 src/data/beats.json 为准（编辑器可改），TS 里的字面量只作结构/兜底 */
+function applyBeatLines(section: BeatSection, beats: readonly NarrativeBeat[]): readonly NarrativeBeat[] {
+  const entries = beatsData[section]
+  let k = 0
+  return beats.map((beat) => {
+    if (beat.line === undefined) return beat
+    const entry = entries[k]
+    k += 1
+    return entry
+      ? { ...beat, at: entry.at, line: entry.line, lineEnd: entry.lineEnd, channel: entry.channel as DialogueChannel }
+      : beat
+  })
+}
+
+export const INTRO_BEATS: readonly NarrativeBeat[] = applyBeatLines('intro', INTRO_BEATS_RAW)
+export const RESTART_BEATS: readonly NarrativeBeat[] = applyBeatLines('restart', RESTART_BEATS_RAW)
+export const T2_BEATS: readonly NarrativeBeat[] = applyBeatLines('t2', T2_BEATS_RAW)
+export const T3_BEATS: readonly NarrativeBeat[] = applyBeatLines('t3', T3_BEATS_RAW)

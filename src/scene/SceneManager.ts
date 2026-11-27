@@ -753,6 +753,12 @@ export class SceneManager {
       : null
   /** 系统级「减少动态效果」：抑制震屏、枪械抖动与镜头漂移，保留运镜与发牌演出 */
   private reducedMotion = false
+  /** 2D 过场/叙事覆盖层进行中：弹盘特写挂起，覆盖层结束后补播（App 同步开关） */
+  private overlayHold = false
+
+  setOverlayHold(active: boolean): void {
+    this.overlayHold = active
+  }
   private readonly onMotionPreferenceChange = (event: MediaQueryListEvent): void => {
     this.reducedMotion = event.matches
     this.bossPose.setReducedMotion(event.matches)
@@ -2342,13 +2348,13 @@ export class SceneManager {
     this.scheduleBulletTrayCloseup(tray, generation, down)
   }
 
-  /** 弹盘特写与收盘：血袋特写期间挂起，等它结束后补特写；特写中途被血袋抢占时，等血袋结束再回位收盘 */
+  /** 弹盘特写与收盘：血袋特写/覆盖层期间挂起，结束后补播；特写中途被抢占时，等结束再回位收盘 */
   private scheduleBulletTrayCloseup(tray: BulletTrayView, generation: number, down: number): void {
     const holdMs = this.reducedMotion ? 850 : 2050
     const pollMs = this.reducedMotion ? 60 : 120
     const waitFree = (next: () => void): void => {
       if (this.disposed || generation !== tray.generation) return
-      if (!this.isBloodCloseupActive()) {
+      if (!this.isBloodCloseupActive() && !this.overlayHold) {
         next()
         return
       }
@@ -2379,8 +2385,6 @@ export class SceneManager {
       }, holdMs)
     })
   }
-
-  /** 道具演出：从槽位拾起原作道具，交给双手完成起手／接触／收尾 */
   playItemUse(actor: ActorId, item: ActionVisualId): void {
     if (this.disposed) return
     const found = [...this.items.values()].find(
@@ -4610,7 +4614,7 @@ export class SceneManager {
 
   private canUseTableActions(): boolean {
     const snapshot = this.lastSnapshot
-    return this.tableActionsAllowed && this.shot === 'table' && this.cameraBlend >= 1 &&
+    return this.tableActionsAllowed && this.shot === 'table' && !this.bulletTray?.active && this.cameraBlend >= 1 &&
       !this.isBloodCloseupActive() && snapshot?.phase === 'playerTurn' &&
       !snapshot.paused && !snapshot.inputLocked
   }

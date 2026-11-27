@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { SoundEngine } from './audio/SoundEngine'
+import gameData from './data/game.json'
+import beatsData from './data/beats.json'
 import { GameCanvas, GunTooltip, ItemTooltip } from './components/GameCanvas'
 import { RulesModal, type ModalTab } from './components/RulesModal'
 import { TrumpHandOverlay } from './components/TrumpHandOverlay'
@@ -16,10 +18,7 @@ import { ENDINGS, type EndingSpec } from './narrative/endingScript'
 import type { Cutscene2D, Playable2D } from './narrative/Cutscene2D'
 import type { GunHoverPayload, ItemHoverPayload } from './scene/SceneManager'
 import type { QualityPreset, SceneManager } from './scene/SceneManager'
-import type { BossPoseCue } from './scene/SceneManager'
-import type { ItemActionCue } from './scene/ItemActions'
-import { ITEM_ACTION_SPECS } from './scene/itemActionConfig'
-import type { ActionVisualId, ActorId, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
+import type { ActorId, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
 import {
   GameEngine,
   DECK_SIZE,
@@ -46,6 +45,16 @@ interface ClueLine {
 }
 
 const GUIDE_KEY = 'blood-ante.guideSeen'
+const sfxFiles = gameData.sfxFiles
+
+/** 开战线索对白以 src/data/beats.json 的 clues 段为准（编辑器可改） */
+function clueLines(key: 'level1' | 'level3'): readonly ClueLine[] {
+  return (beatsData.clues[key] ?? []).map((l) => ({
+    text: l.text,
+    durationMs: l.durationMs,
+    channel: l.channel as DialogueChannel,
+  }))
+}
 
 const GUIDE_LINES = [
   '比 21 点：要牌或停牌；赢下这轮，枪就归你。牌库只有 1–11 共 11 张，没有 J/Q/K。',
@@ -344,6 +353,8 @@ export default function App() {
     const automated = (window.navigator as { webdriver?: boolean }).webdriver === true
     const forced = params.get('cutscene') === '1'
     cutsceneDisabledRef.current = params.get('skipcutscene') === '1' || (automated && !forced)
+    // 编辑器改完过场台词后，用 ?replaycutscene=1 打开一次即可重播第 2/3 层过场
+    if (params.get('replaycutscene') === '1') clearCutsceneSeen()
   }
 
   const beginCutscene = useCallback((levelIndex: number, force = false) => {
@@ -351,6 +362,8 @@ export default function App() {
     const spec = cutsceneFor(levelIndex)
     if (!spec || cutsceneActiveRef.current) return
     cutsceneActiveRef.current = true
+    // 同步挂起弹盘特写：reload 与 checkpoint 同 tick 发出，state/effect 链路赶不上首检
+    sceneRef.current?.setOverlayHold(true)
     // checkpoint 时引擎已进入 reloading，但 beginLevel 的 2.6s 计时马上就要开始；
     // 暂停把它挂起（delay 尚未 start），过场尾部再恢复，避免过场被黑窗截断。
     game.pause()
@@ -369,6 +382,7 @@ export default function App() {
     if (!cutsceneActiveRef.current) return
     cutsceneActiveRef.current = false
     cutsceneDirectorRef.current = null
+    sceneRef.current?.setOverlayHold(false)
     // 兜底：任何异常路径下都不让引擎留在挂起状态
     if (game.isPaused) game.resume()
     // 结局：播完后若还有下一步（胜利→2D 续篇），交给挂起的回调
@@ -453,17 +467,11 @@ export default function App() {
     }
   }, [showNotice])
 
-  const handleItemCue = useCallback((item: ActionVisualId, cue: ItemActionCue) => {
-    if (cue === 'pickup') sound.playItemUse()
-    else if (cue === 'contact') sound.playItemContact(ITEM_ACTION_SPECS[item].sound)
-    else if (ITEM_ACTION_SPECS[item].sound === 'paper') sound.playPaperRustle()
-  }, [sound])
-
   const handleEventSound = useCallback(
     (event: GameEvent) => {
       switch (event.type) {
         case 'cardDealt':
-          sound.playCardSlide()
+          sound.playCardDealRecorded()
           break
         case 'shot':
           if (event.chamber === 'live') {
@@ -501,7 +509,7 @@ export default function App() {
               }, 100)
             }
           } else {
-            sound.playClickEmpty()
+            sound.playEmptyClickRecorded()
           }
           break
         case 'itemUsed':
@@ -526,22 +534,12 @@ export default function App() {
         case 'chamberDiscarded':
           // 退弹是公开动作：谁用的、退出什么都摆在桌面上给双方看
           showNotice(event.chamber === 'live' ? '退弹：实弹' : '退弹：空膛')
-          sound.playItemContact('metal')
           break
         case 'notice':
           showNotice(event.message)
           break
-        case 'reload':
-          sound.playReload()
-          break
         case 'levelClear':
           bannerId.current += 1
-          break
-        case 'supplyOffer':
-          sound.playItemUse()
-          break
-        case 'bossSupply':
-          sound.playLowThump()
           break
         case 'lootUnlocked':
           bannerId.current += 1
@@ -555,6 +553,14 @@ export default function App() {
     },
     [showNotice, sound],
   )
+
+  const handleSupplyTrayRise = useCallback(() => {
+    sound.playSupplyTrayRise()
+  }, [sound])
+
+  const handleBulletTrayReveal = useCallback(() => {
+    sound.playBulletTrayReveal()
+  }, [sound])
 
   const soundHandlerRef = useRef(handleEventSound)
   useEffect(() => {
@@ -766,30 +772,6 @@ export default function App() {
     return () => { delete host.__itemActionDebug }
   }, [game, devBridge])
 
-  // 姿态段落音效：枪响已由 shot 事件播过，这里只补落地/撑起/直身/落稳
-  const handleBossPoseCue = useCallback(
-    (cue: BossPoseCue) => {
-      switch (cue) {
-        case 'down':
-          sound.playLowThump()
-          sound.playChairCreak()
-          break
-        case 'brace':
-          sound.playStitch()
-          break
-        case 'rise':
-          sound.playBossBreath()
-          break
-        case 'settle':
-          sound.playLowThump()
-          break
-        default:
-          break
-      }
-    },
-    [sound],
-  )
-
   const unlocked = useMemo(
     () => new Set<ItemId>(snapshot?.unlockedItems ?? []),
     [snapshot?.unlockedItems],
@@ -799,7 +781,11 @@ export default function App() {
     await sound.unlock()
     sound.setMasterVolume(muted ? 0 : volume)
     if (!sound.isAmbientPlaying) sound.startAmbient()
-    void sound.startRoomTone(`${import.meta.env.BASE_URL}audio/room-tone.ogg`)
+    void sound.startRoomTone(`${import.meta.env.BASE_URL}${sfxFiles.roomTone}`)
+    void sound.preloadIntroDoor(`${import.meta.env.BASE_URL}${sfxFiles.introDoor}`)
+    void sound.preloadEmptyClick(`${import.meta.env.BASE_URL}${sfxFiles.emptyClick}`)
+    void sound.preloadCardDeal(`${import.meta.env.BASE_URL}${sfxFiles.cardDeal}`)
+    void sound.preloadSupplySlide(`${import.meta.env.BASE_URL}${sfxFiles.supplyTraySlide}`)
     // 走廊里的「开始」：解锁音频后人开始往前走，右门黑场结束才进入入场导演层
     setCorridorState('playing')
   }
@@ -816,6 +802,13 @@ export default function App() {
     sound.setMasterVolume(muted ? 0 : volume)
     if (!sound.isAmbientPlaying) sound.startAmbient()
     void sound.startRoomTone(`${import.meta.env.BASE_URL}audio/room-tone.ogg`)
+    // 门扇转开后接黑场 + 模糊睁眼，和中枪恢复同一套语言
+    if (blurTimer.current !== null) window.clearTimeout(blurTimer.current)
+    if (wakeBlurTimer.current !== null) window.clearTimeout(wakeBlurTimer.current)
+    setVisionBlur((n) => n + 1)
+    setWakeBlur((n) => n + 1)
+    blurTimer.current = window.setTimeout(() => setVisionBlur(0), 1500)
+    wakeBlurTimer.current = window.setTimeout(() => setWakeBlur(0), 2150)
     setCorridorState('done')
     game.startAtLevel(checkpoint.levelIndex, checkpoint.carryOver)
   }
@@ -921,11 +914,7 @@ export default function App() {
     if (event.type !== 'roundStart') return
     // ch1 第一次 roundStart：入场 Boss 半句的后半句；入场没播完就排队
     if (event.level === 1 && event.round === 1) {
-      const lines: readonly ClueLine[] = [
-        { text: '你妹妹血很凉，手却稳。她付了七袋，才走到下一张桌。', durationMs: 3600, channel: 'enemy' },
-        { text: '她还活着？', durationMs: 1200, channel: 'player' },
-        { text: '活着。她的账，还没清。', durationMs: 2200, channel: 'enemy' },
-      ]
+      const lines = clueLines('level1')
       if (narrativeBusy) pendingClueRef.current = lines
       else showDialogueSequence(lines)
     }
@@ -934,15 +923,7 @@ export default function App() {
       const scene = sceneRef.current
       window.setTimeout(() => scene?.setShot('tally', 1.2), 150)
       window.setTimeout(() => scene?.setShot('table', 1.2), 2900)
-      sound.playStitch()
-      window.setTimeout(
-        () => showDialogueSequence([
-          { text: '名单末位是小棠。下面，留给你。', durationMs: 2600, channel: 'enemy' },
-          { text: '她最会算牌。', durationMs: 1300, channel: 'player' },
-          { text: '我现在，用她的记性算牌。', durationMs: 2400, channel: 'enemy' },
-        ]),
-        3000,
-      )
+      window.setTimeout(() => showDialogueSequence(clueLines('level3')), 3000)
     }
   }
 
@@ -1009,6 +990,11 @@ export default function App() {
 
   // 2D 过场（关卡间/结局）与叙事导演层都会占满画面，HUD 与各种提示要一起让位
   const narrativeActive = narrative !== null || cutscene !== null
+
+  // 覆盖层期间挂起弹盘特写，覆盖层结束后补播，避免新层开场特写被 2D 过场盖掉
+  useEffect(() => {
+    sceneRef.current?.setOverlayHold(narrativeActive)
+  }, [narrativeActive])
 
   // DEV 专用验证口：生产构建被 import.meta.env.DEV 摇掉，不随游戏发布
   if (import.meta.env.DEV) {
@@ -1118,11 +1104,11 @@ export default function App() {
             }}
             onItemUse={handleItemUse}
             onTrumpDeckClick={handleTrumpDeckClick}
-            onItemCue={handleItemCue}
+            onSupplyTrayRise={handleSupplyTrayRise}
+            onBulletTrayReveal={handleBulletTrayReveal}
             onTargetPick={(target) => game.chooseTarget(target)}
             onHoverChange={setHover}
             onGunHoverChange={setGunHover}
-            onBossPoseCue={handleBossPoseCue}
             onSceneReady={(scene) => {
               sceneRef.current = scene
               applyQuality(scene, quality)

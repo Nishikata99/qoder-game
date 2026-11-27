@@ -644,6 +644,7 @@ export class GameEngine {
   private carryOverBoss: ItemId[] = []
   private readonly listeners = new Set<GameEventListener>()
   private readonly delays = new Set<PausableDelay>()
+  private readonly resumeWaiters = new Set<() => void>()
   private readonly cylinder: Cylinder
 
   private generation = 0
@@ -763,6 +764,7 @@ export class GameEngine {
   }
 
   hit(): boolean {
+    if (this.paused) return this.reject('游戏已暂停。')
     if (this.phase !== 'playerTurn') {
       return this.reject('现在不是你的回合。')
     }
@@ -807,6 +809,7 @@ export class GameEngine {
   }
 
   stand(): boolean {
+    if (this.paused) return this.reject('游戏已暂停。')
     if (this.phase !== 'playerTurn') {
       return this.reject('现在不是你的回合。')
     }
@@ -843,6 +846,7 @@ export class GameEngine {
   }
 
   useItem(item: ItemId, target?: ItemId): boolean {
+    if (this.paused) return this.reject('游戏已暂停。')
     if (this.phase !== 'targeting' && this.phase !== 'execution') {
       return this.reject('21 点阶段只能使用王牌。')
     }
@@ -861,7 +865,9 @@ export class GameEngine {
       this.inputLocked = true
       const token = this.generation
       this.publish()
-      void this.itemPresentationGate().then(() => {
+      void this.itemPresentationGate().then(async () => {
+        if (!this.alive(token)) return
+        await this.waitUntilResumed()
         if (!this.alive(token)) return
         this.releaseDeferredItemEvents()
         this.itemPresentationFinished = true
@@ -951,6 +957,8 @@ export class GameEngine {
     this.destroyed = true
     this.generation += 1
     this.cancelTimers()
+    for (const resolve of this.resumeWaiters) resolve()
+    this.resumeWaiters.clear()
     this.listeners.clear()
   }
 
@@ -1131,6 +1139,7 @@ export class GameEngine {
       if (this.boss.trumps.length === trumpCount) break
       if (this.resolveDeaths()) return
       if (this.itemPresentationGate) await this.itemPresentationGate()
+      await this.waitUntilResumed()
       this.releaseDeferredItemEvents()
       if (!this.alive(token) || this.phase !== 'bossTurn') return
     }
@@ -1281,6 +1290,7 @@ export class GameEngine {
       if (!this.applyItem(this.boss, item)) break
       if (this.resolveDeaths()) return
       if (this.itemPresentationGate) await this.itemPresentationGate()
+      await this.waitUntilResumed()
       this.releaseDeferredItemEvents()
       if (!this.alive(token) || this.phase !== 'targeting') return
     }
@@ -1294,6 +1304,7 @@ export class GameEngine {
 
   /** 处决阶段：持枪者选择枪口。只有玩家持枪时才能调用。 */
   chooseTarget(target: ActorId): boolean {
+    if (this.paused) return this.reject('游戏已暂停。')
     if (this.phase !== 'targeting') {
       return this.reject('现在不是决定枪口的时候。')
     }
@@ -1396,6 +1407,8 @@ export class GameEngine {
         await this.presentationGate()
         if (!this.alive(token)) return
       }
+      await this.waitUntilResumed()
+      if (!this.alive(token)) return
       if (nextShooter.id === 'boss') void this.runBossTargeting(token)
       return
     }
@@ -1409,6 +1422,8 @@ export class GameEngine {
       await this.presentationGate()
       if (!this.alive(token)) return
     }
+    await this.waitUntilResumed()
+    if (!this.alive(token)) return
     void this.startRound(token)
   }
 
@@ -1525,6 +1540,7 @@ export class GameEngine {
   }
 
   useTrump(index: number): boolean {
+    if (this.paused) return this.reject('游戏已暂停。')
     if (this.phase !== 'playerTurn') return this.reject('现在不是使用王牌的时机。')
     if (this.inputLocked) return this.reject('动作还没结束。')
     if (!this.useTrumpInternal(this.player, index)) return false
@@ -1536,7 +1552,9 @@ export class GameEngine {
       this.inputLocked = true
       const token = this.generation
       this.publish()
-      void this.itemPresentationGate().then(() => {
+      void this.itemPresentationGate().then(async () => {
+        if (!this.alive(token)) return
+        await this.waitUntilResumed()
         if (!this.alive(token)) return
         this.releaseDeferredItemEvents()
         this.itemPresentationFinished = true
@@ -2201,6 +2219,8 @@ export class GameEngine {
     this.paused = false
     this.finishItemPresentation()
     for (const delay of this.delays) delay.resume()
+    for (const resolve of this.resumeWaiters) resolve()
+    this.resumeWaiters.clear()
     this.publish()
   }
 
@@ -2232,6 +2252,11 @@ export class GameEngine {
       )
       if (!this.paused) delay.start()
     })
+  }
+
+  private waitUntilResumed(): Promise<void> {
+    if (!this.paused) return Promise.resolve()
+    return new Promise<void>((resolve) => this.resumeWaiters.add(resolve))
   }
 
   /** 与 wait 相同，但允许玩家用 skipExecution() 提前放行 */

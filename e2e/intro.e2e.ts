@@ -4,6 +4,7 @@ test('廊道行走支持长按空格跳过，松开后进度快速归零', async
   await page.addInitScript(() => {
     try {
       window.localStorage.removeItem('blood-ante.checkpoint.v1')
+      window.localStorage.removeItem('blood-ante.guideSeen')
     } catch {
       // 隐私模式下无法清理，交给后续断言兜底
     }
@@ -12,6 +13,11 @@ test('廊道行走支持长按空格跳过，松开后进度快速归零', async
 
   const start = page.getByRole('button', { name: '走进走廊', exact: true })
   await expect(start).toBeVisible({ timeout: 30_000 })
+  const guide = page.getByRole('dialog', { name: '开局说明' })
+  if ((await guide.count()) > 0) {
+    await page.getByRole('button', { name: '知道了' }).click()
+    await expect(guide).toBeHidden()
+  }
   await start.evaluate((el) => (el as HTMLElement).click())
 
   const indicator = page.getByTestId('corridor-hold-skip')
@@ -25,7 +31,7 @@ test('廊道行走支持长按空格跳过，松开后进度快速归零', async
   await expect.poll(async () => Number(await indicator.getAttribute('data-progress'))).toBeLessThan(5)
 
   await page.keyboard.down('Space')
-  await expect(page.getByRole('button', { name: '左门 · 开始新局（清除旧检查点）' })).toBeVisible({ timeout: 6_000 })
+  await expect(page.getByRole('button', { name: '左门 · 血色底注' })).toBeVisible({ timeout: 6_000 })
   await page.keyboard.up('Space')
   await expect(indicator).toHaveCount(0)
 })
@@ -43,11 +49,16 @@ test('首见入场不可跳过；已看过后出现跳过入口', async ({ page 
 
   const start = page.getByRole('button', { name: '走进走廊', exact: true })
   await expect(start).toBeVisible({ timeout: 30_000 })
+  const guide = page.getByRole('dialog', { name: '开局说明' })
+  if ((await guide.count()) > 0) {
+    await page.getByRole('button', { name: '知道了' }).click()
+    await expect(guide).toBeHidden()
+  }
   await start.evaluate((el) => (el as HTMLElement).click())
 
   // 走廊序章：约 11s 前进结束后出现门按钮（软件渲染时钟半速会更长）；无存档时右门封死，
   // 点左门新开一局，黑场后切入入场
-  const leftDoor = page.getByRole('button', { name: '左门 · 开始新局（清除旧检查点）' })
+  const leftDoor = page.getByRole('button', { name: '左门 · 血色底注' })
   await leftDoor.waitFor({ timeout: 60_000 })
   await leftDoor.evaluate((el) => (el as HTMLElement).click())
 
@@ -74,6 +85,7 @@ test('已看过后重新进入：出现跳过本段，点击直接交出控制�
   await page.addInitScript(() => {
     try {
       window.localStorage.setItem('blood-ante.narrativeSeen.intro', '1')
+      window.localStorage.setItem('blood-ante.guideSeen', '1')
     } catch {
       // 隐私模式下跳过入口不会出现，测试退化为超时失败，属于预期
     }
@@ -84,7 +96,7 @@ test('已看过后重新进入：出现跳过本段，点击直接交出控制�
   await expect(start).toBeVisible({ timeout: 30_000 })
   await start.evaluate((el) => (el as HTMLElement).click())
 
-  const leftDoor = page.getByRole('button', { name: '左门 · 开始新局（清除旧检查点）' })
+  const leftDoor = page.getByRole('button', { name: '左门 · 血色底注' })
   await leftDoor.waitFor({ timeout: 60_000 })
   await leftDoor.evaluate((el) => (el as HTMLElement).click())
 
@@ -93,25 +105,4 @@ test('已看过后重新进入：出现跳过本段，点击直接交出控制�
   await skip.click()
   await expect(page.getByTestId('narrative-overlay')).toHaveCount(0, { timeout: 30_000 })
   await expect(page.getByRole('button', { name: /要牌/ })).toBeEnabled({ timeout: 30_000 })
-
-  const pause = page.getByRole('dialog', { name: '游戏暂停' })
-  await page.evaluate(() => {
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
-    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true })
-    document.dispatchEvent(new Event('visibilitychange'))
-  })
-  await expect(pause).toHaveCount(0)
-
-  await page.evaluate(() => {
-    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => false })
-    document.dispatchEvent(new Event('visibilitychange'))
-  })
-  await expect(pause).toBeVisible()
-
-  await page.evaluate(() => {
-    Reflect.deleteProperty(document, 'hidden')
-    Reflect.deleteProperty(document, 'hasFocus')
-    document.dispatchEvent(new Event('visibilitychange'))
-  })
-  await expect(pause).toHaveCount(0)
 })

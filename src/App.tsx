@@ -24,12 +24,15 @@ import {
   GameEngine,
   DECK_SIZE,
   ITEM_CATALOG,
+  ITEM_IDS,
   LEVELS,
+  MAX_ITEMS,
   createSeededRandom,
   evaluateHand,
 } from './game/GameEngine'
 import { bossName, levelTitle, narrativeLog } from './narrative/copy'
 import { useDialogFocus } from './components/useDialogFocus'
+import { installRuntimeErrorReporter } from './runtimeErrors'
 
 interface LootBanner {
   readonly id: number
@@ -142,11 +145,11 @@ function readCheckpoint(): StoredCheckpoint | null {
     if (typeof parsed !== 'object' || parsed === null) return null
     const value = parsed as Record<string, unknown>
     const levelIndex = value.levelIndex
-    if (typeof levelIndex !== 'number' || !Number.isInteger(levelIndex) || levelIndex < 0) return null
+    if (value.v !== 1 || typeof levelIndex !== 'number' || !Number.isInteger(levelIndex) || levelIndex < 0 || levelIndex >= LEVELS.length) return null
     const carryOver = Array.isArray(value.carryOver)
-      ? (value.carryOver.filter((item): item is ItemId => typeof item === 'string'))
+      ? value.carryOver.filter((item): item is ItemId => typeof item === 'string' && ITEM_IDS.includes(item as ItemId)).slice(0, MAX_ITEMS)
       : []
-    const runRounds = typeof value.runRounds === 'number' ? value.runRounds : 0
+    const runRounds = typeof value.runRounds === 'number' && Number.isInteger(value.runRounds) && value.runRounds >= 0 ? value.runRounds : 0
     return { levelIndex, carryOver, runRounds }
   } catch {
     return null
@@ -440,6 +443,16 @@ export default function App() {
     if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current)
     noticeTimer.current = window.setTimeout(() => setNotice(null), 2400)
   }, [])
+
+  useEffect(() => {
+    const uninstall = installRuntimeErrorReporter()
+    const onRuntimeError = () => showNotice('游戏遇到运行时错误，请刷新后重试。')
+    window.addEventListener('blood-ante:runtime-error', onRuntimeError)
+    return () => {
+      window.removeEventListener('blood-ante:runtime-error', onRuntimeError)
+      uninstall()
+    }
+  }, [showNotice])
 
   const handleItemCue = useCallback((item: ActionVisualId, cue: ItemActionCue) => {
     if (cue === 'pickup') sound.playItemUse()
@@ -1585,7 +1598,7 @@ export default function App() {
 
       {notice ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-32 flex justify-center">
-          <p className="rounded-sm border border-white/8 bg-black/70 px-4 py-1.5 text-[10px] tracking-[0.15em] text-bone-200/65">
+          <p role="status" className="rounded-sm border border-white/8 bg-black/70 px-4 py-1.5 text-[10px] tracking-[0.15em] text-bone-200/65">
             {notice}
           </p>
         </div>

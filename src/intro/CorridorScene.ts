@@ -7,6 +7,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import type { SoundEngine } from '../audio/SoundEngine'
 import { TextureFactory } from '../scene/TextureFactory'
+import { isDocumentBackgrounded } from '../browserVisibility'
 
 // 紧张探索步速：10.4m / 11s ≈ 0.95m/s，sine 缓动峰值 ≈1.5m/s
 const WALK_SECONDS = 11
@@ -62,6 +63,7 @@ type Phase = 'loading' | 'ready' | 'walk' | 'choose' | 'glitch' | 'black' | 'don
 
 interface CorridorCallbacks {
   readonly onReady: () => void
+  readonly onLoadError: (message: string | null) => void
   readonly onDoorPhase: () => void
   readonly onComplete: () => void
   /** 行走途中的独白字幕：text 为 null 表示到点收起 */
@@ -119,6 +121,10 @@ export class CorridorScene {
   private elapsed = 0
   private lastTs: number | null = null
   private rafId: number | null = null
+  private loadToken = 0
+  private loadAttempt = 0
+  private loadTimer: number | null = null
+  private retryTimer: number | null = null
   private disposed = false
   private jitterY = 0
   private gazeX = 0
@@ -175,8 +181,29 @@ export class CorridorScene {
   }
 
   start(): void {
-    new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).load(`${import.meta.env.BASE_URL}models/corridor.glb`, (gltf) => {
-      if (this.disposed) {
+    this.rafId = requestAnimationFrame(this.tick)
+    void this.load()
+  }
+
+  retry(): void {
+    if (this.disposed) return
+    this.loadAttempt = 0
+    void this.load()
+  }
+
+  private async load(): Promise<void> {
+    if (this.disposed) return
+    const token = ++this.loadToken
+    this.phase = 'loading'
+    this.callbacks.onLoadError(null)
+    const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder)
+    const request = loader.loadAsync(`${import.meta.env.BASE_URL}models/corridor.glb`)
+    const timeout = new Promise<never>((_, reject) => {
+      this.loadTimer = window.setTimeout(() => reject(new Error('走廊模型加载超时')), 12_000)
+    })
+    try {
+      const gltf = await Promise.race([request, timeout])
+      if (token !== this.loadToken || this.disposed) {
         this.disposeObject(gltf.scene)
         return
       }
@@ -191,13 +218,26 @@ export class CorridorScene {
       this.buildAtmosphere()
       this.buildDoorPlates()
       this.buildSealedDoor()
-      if (this.phase === 'loading') {
-        this.phase = 'ready'
-        this.readyAt = this.elapsed
-        this.callbacks.onReady()
+      this.phase = 'ready'
+      this.readyAt = this.elapsed
+      this.callbacks.onReady()
+    } catch {
+      if (token !== this.loadToken || this.disposed) return
+      this.loadAttempt += 1
+      if (this.loadAttempt < 3) {
+        this.retryTimer = window.setTimeout(() => {
+          this.retryTimer = null
+          void this.load()
+        }, 1000)
+      } else {
+        this.callbacks.onLoadError('走廊模型加载失败，请检查网络后重试。')
       }
-    })
-    this.rafId = requestAnimationFrame(this.tick)
+    } finally {
+      if (this.loadTimer !== null) {
+        window.clearTimeout(this.loadTimer)
+        this.loadTimer = null
+      }
+    }
   }
 
   /** 「开始」点击后才起走：音频已在 App 解锁，此时才开底噪 */
@@ -496,6 +536,10 @@ export class CorridorScene {
   private readonly tick = (ts: number): void => {
     if (this.disposed) return
     this.rafId = requestAnimationFrame(this.tick)
+    if (isDocumentBackgrounded()) {
+      this.lastTs = null
+      return
+    }
     if (this.lastTs === null) {
       this.lastTs = ts
       return
@@ -716,6 +760,9 @@ export class CorridorScene {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.loadToken += 1
+    if (this.loadTimer !== null) window.clearTimeout(this.loadTimer)
+    if (this.retryTimer !== null) window.clearTimeout(this.retryTimer)
     this.canvas.removeEventListener('pointermove', this.handlePointerMove)
     this.canvas.removeEventListener('pointerup', this.handlePointerUp)
     if (this.rafId !== null) cancelAnimationFrame(this.rafId)

@@ -2,10 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { SoundEngine } from '../audio/SoundEngine'
 import { CorridorScene } from '../intro/CorridorScene'
 import { LongPressSkipIndicator } from './LongPressSkipIndicator'
-
-const CHAR_MS = 65
-const PAUSE_MS = 260
-const PAUSE_CHARS = '，。、！？…—'
+import { TYPE_CHAR_MS, TYPE_PAUSE_CHARS, TYPE_PAUSE_MS } from '../narrative/dialogue'
 
 /** 打字机字幕：与 NarrativeOverlay 同一节奏，走廊独白用 */
 function TypedLine({ text }: { readonly text: string }) {
@@ -22,7 +19,7 @@ function TypedLine({ text }: { readonly text: string }) {
       for (const ch of text) {
         if (elapsed < acc) break
         count += 1
-        acc += CHAR_MS + (PAUSE_CHARS.includes(ch) ? PAUSE_MS : 0)
+        acc += TYPE_CHAR_MS + (TYPE_PAUSE_CHARS.includes(ch) ? TYPE_PAUSE_MS : 0)
       }
       setTyped(count)
     }
@@ -61,6 +58,7 @@ export function CorridorIntro({
   const startedRef = useRef(false)
   const startWalkRef = useRef<() => void>(() => {})
   const [ready, setReady] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [started, setStarted] = useState(false)
   const [walking, setWalking] = useState(false)
   const [doorPhase, setDoorPhase] = useState(false)
@@ -82,6 +80,7 @@ export function CorridorIntro({
       sound,
       {
         onReady: () => setReady(true),
+        onLoadError: setLoadError,
         onDoorPhase: () => setDoorPhase(true),
         onWalkLine: setWalkLine,
         onComplete: () => {
@@ -135,6 +134,13 @@ export function CorridorIntro({
   return (
     <div className="absolute inset-0 z-40 bg-black" data-testid="corridor-intro">
       <canvas ref={canvasRef} className="h-full w-full" />
+      <span className="sr-live" aria-live="polite">{walkLine}</span>
+      {loadError ? (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-black/85 px-6 text-center" role="alert">
+          <p className="font-display text-base tracking-[0.12em] text-bone-200">{loadError}</p>
+          <button type="button" className="metal-btn min-h-11 px-6" onClick={() => sceneRef.current?.retry()}>重试</button>
+        </div>
+      ) : null}
       {subtitle ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-[24vh] flex justify-center px-6">
           <p className="corridor-subtitle max-w-xl text-center font-display text-base tracking-[0.18em] text-bone-200/90">
@@ -164,7 +170,7 @@ export function CorridorIntro({
       {doorPhase ? (
         <>
           <button type="button" className="sr-only" onClick={() => sceneRef.current?.chooseDoor('L')}>
-            左门 · 血色底注
+            左门 · 开始新局（清除旧检查点）
           </button>
           <button type="button" className="sr-only" onClick={() => sceneRef.current?.chooseDoor('R')}>
             {resumeLevel !== null ? `右门 · 继续第 ${resumeLevel} 层` : '右门 · 封死'}

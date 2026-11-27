@@ -73,7 +73,7 @@ const letterbox = drawLetterbox
 const limb = drawLimb
 
 /**
- * 第二层 · 欠收账房（7.0s）
+ * 第二层 · 血账房（7.0s）
  * 债主摊开烧剩的账页 → 抬手点向血袋架 → 把账页推到你面前 → 你伸手按住
  */
 function drawLedgerRoom(ctx: Ctx, t: number): void {
@@ -373,8 +373,8 @@ export const CUTSCENES: Readonly<Record<number, CutsceneSpec>> = {
     duration: 7,
     dialogueAnchor: { x: 238, y: 54 },
     lines: [
-      { text: '烧剩的账页，一页页摊开。欠的血，都记在上面。', at: 1.9, end: 4.3, channel: 'enemy' },
-      { text: '我伸手按住那页——墨迹还在渗，像没干的血。', at: 5.5, end: 6.8, channel: 'player' },
+      { text: '账页烧了一半。她欠的，还在。', at: 1.9, end: 4.3, channel: 'enemy' },
+      { text: '我伸手按住那页，墨迹还没干。', at: 5.5, end: 6.8, channel: 'player' },
     ],
     cues: [
       { at: 0.05, sfx: 'doorCreak' },
@@ -394,7 +394,7 @@ export const CUTSCENES: Readonly<Record<number, CutsceneSpec>> = {
     duration: 7.5,
     dialogueAnchor: { x: 244, y: 50 },
     lines: [
-      { text: '补针刑台没有出口。名单上，又多了一道刻痕。', at: 1.9, end: 4.4, channel: 'enemy' },
+      { text: '名单上，又多了一道刻痕。', at: 1.9, end: 4.4, channel: 'enemy' },
       { text: '最后一行的空槽，是留给你的。', at: 5.5, end: 7.2, channel: 'enemy' },
     ],
     cues: [

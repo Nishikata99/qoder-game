@@ -11,6 +11,7 @@ import {
 interface ActorInternals {
   hp: number
   items: ItemId[]
+  itemsUsedThisTurn: number
   hand: HandState
 }
 
@@ -91,6 +92,12 @@ export class DevBridge {
   /** 仅供动作验收：压低血量以触发治疗类道具 */
   setPlayerHp(hp: number): void {
     this.internals.player.hp = Math.max(0, Math.min(7, Math.round(hp)))
+    this.internals.publish()
+  }
+
+  resetItemBudget(): void {
+    this.internals.player.itemsUsedThisTurn = 0
+    this.internals.boss.itemsUsedThisTurn = 0
     this.internals.publish()
   }
 }

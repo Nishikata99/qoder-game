@@ -6,6 +6,7 @@ dist/
 npm-debug.log*
 test-results/
 playwright-report/
+artifacts/
 
 # 本地试听素材（A/B 对比），不入库
 /sfx-audition/

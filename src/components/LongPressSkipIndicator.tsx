@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { isDocumentBackgrounded } from '../browserVisibility'
 
 const RADIUS = 20
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS
@@ -70,7 +71,7 @@ export function LongPressSkipIndicator({
       event.preventDefault()
       release()
     }
-    const onVisibility = () => { if (document.hidden) release() }
+    const onVisibility = () => { if (isDocumentBackgrounded()) release() }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
     window.addEventListener('blur', release)
@@ -88,14 +89,39 @@ export function LongPressSkipIndicator({
   const percent = Math.round(progress * 100)
   return (
     <div
-      className="pointer-events-none absolute right-4 bottom-[4vh] z-10 flex items-center gap-2 text-bone-200/65"
+      className="pointer-events-auto absolute right-4 bottom-[4vh] z-10 flex cursor-pointer touch-none select-none items-center gap-2 text-bone-200/65"
       data-testid="corridor-hold-skip"
       data-progress={percent}
-      role="progressbar"
-      aria-label="长按空格跳过廊道剧情"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={percent}
+      role="button"
+      tabIndex={0}
+      aria-label="长按空格或触摸跳过廊道剧情"
+      onPointerDown={(event) => {
+        event.preventDefault()
+        event.currentTarget.setPointerCapture(event.pointerId)
+        holdingRef.current = true
+        lastRef.current = performance.now()
+      }}
+      onPointerUp={() => {
+        holdingRef.current = false
+        lastRef.current = performance.now()
+      }}
+      onPointerCancel={() => {
+        holdingRef.current = false
+        lastRef.current = performance.now()
+      }}
+      onContextMenu={(event) => event.preventDefault()}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' || event.repeat) return
+        event.preventDefault()
+        holdingRef.current = true
+        lastRef.current = performance.now()
+      }}
+      onKeyUp={(event) => {
+        if (event.key !== 'Enter') return
+        event.preventDefault()
+        holdingRef.current = false
+        lastRef.current = performance.now()
+      }}
     >
       <svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true">
         <circle cx="24" cy="24" r={RADIUS} fill="none" stroke="currentColor" strokeWidth="2" opacity="0.45" />
@@ -112,7 +138,7 @@ export function LongPressSkipIndicator({
           transform="rotate(-90 24 24)"
         />
       </svg>
-      <span className="font-display text-[10px] tracking-[0.24em] whitespace-nowrap">长按空格跳过</span>
+      <span className="font-display text-[10px] tracking-[0.24em] whitespace-nowrap">长按跳过</span>
     </div>
   )
 }

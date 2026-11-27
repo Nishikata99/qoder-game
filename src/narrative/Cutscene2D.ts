@@ -1,4 +1,5 @@
 import type { SoundEngine } from '../audio/SoundEngine'
+import { isDocumentBackgrounded } from '../browserVisibility'
 import type { DialogueChannel } from './dialogue'
 import { PIXEL_HEIGHT, PIXEL_WIDTH, type Ctx } from './pixelDraw'
 
@@ -160,9 +161,12 @@ export class Cutscene2D {
       this.lastTs = ts
       return
     }
+    if (isDocumentBackgrounded()) {
+      this.lastTs = null
+      return
+    }
     const raw = (ts - this.lastTs) / 1000
     this.lastTs = ts
-    if (document.hidden) return
     this.time += raw
 
     this.syncCues()

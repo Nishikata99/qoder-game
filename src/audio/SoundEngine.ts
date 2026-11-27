@@ -1,3 +1,5 @@
+import { SFX_FILES, type SfxId } from './sfxManifest'
+
 export interface SoundEngineOptions {
   readonly masterVolume?: number
 }
@@ -19,8 +21,8 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /**
- * Fully synthesised soundscape built on the native Web Audio API.
- * No audio files, buffers from disk, or third-party libraries are used.
+ * Hybrid soundscape: licensed audio buffers for high-definition impacts and foley,
+ * with native Web Audio synthesis for dynamic layers and offline fallback.
  */
 export class SoundEngine {
   private ctx: AudioContext | null = null
@@ -30,6 +32,9 @@ export class SoundEngine {
   private ambient: AmbientGraph | null = null
   private roomTone: RoomToneGraph | null = null
   private roomToneBuffer: AudioBuffer | null = null
+  private readonly sfxBuffers = new Map<SfxId, AudioBuffer>()
+  private sfxPreload: Promise<void> | null = null
+  private heartbeatBed: AudioBufferSourceNode | null = null
   private volume: number
 
   constructor(options: SoundEngineOptions = {}) {
@@ -61,6 +66,7 @@ export class SoundEngine {
     if (ctx.state === 'suspended') {
       await ctx.resume()
     }
+    void this.preloadSfx()
   }
 
   /** 后台标签页冻结整条音频图：suspend 期间 currentTime 停滞，回来时不会补播积压的节拍 */
@@ -73,6 +79,54 @@ export class SoundEngine {
     this.ctx.resume().catch((error: unknown) => {
       console.warn('Audio context resume was rejected', error)
     })
+  }
+
+  preloadSfx(): Promise<void> {
+    if (this.sfxPreload) return this.sfxPreload
+    const ctx = this.ensureContext()
+    const entries = Object.entries(SFX_FILES) as Array<[SfxId, string]>
+    this.sfxPreload = Promise.all(entries.map(async ([id, file]) => {
+      try {
+        const response = await fetch(`${import.meta.env.BASE_URL}${file}`)
+        if (!response.ok) return
+        this.sfxBuffers.set(id, await ctx.decodeAudioData(await response.arrayBuffer()))
+      } catch {
+        console.debug(`[SoundEngine] 外置音效 ${file} 不可用，保留合成降级`)
+      }
+    })).then(() => undefined)
+    return this.sfxPreload
+  }
+
+  playSfx(
+    id: SfxId,
+    options: { readonly gain?: number; readonly rate?: number; readonly offset?: number; readonly duration?: number; readonly pan?: number } = {},
+  ): boolean {
+    const buffer = this.sfxBuffers.get(id)
+    if (!buffer) return false
+    const ctx = this.ensureContext()
+    const source = ctx.createBufferSource()
+    source.buffer = buffer
+    source.playbackRate.value = clamp(options.rate ?? 1, 0.25, 4)
+    const gain = ctx.createGain()
+    gain.gain.value = clamp(options.gain ?? 1, 0, 2)
+    let panner: StereoPannerNode | null = null
+    if (options.pan !== undefined && typeof ctx.createStereoPanner === 'function') {
+      panner = ctx.createStereoPanner()
+      panner.pan.value = clamp(options.pan, -1, 1)
+      source.connect(panner).connect(gain).connect(this.inputNode)
+    } else {
+      source.connect(gain).connect(this.inputNode)
+    }
+    const offset = clamp(options.offset ?? 0, 0, Math.max(0, buffer.duration - 0.01))
+    const duration = clamp(options.duration ?? buffer.duration - offset, 0.01, buffer.duration - offset)
+    const when = ctx.currentTime + 0.005
+    source.start(when, offset, duration)
+    source.onended = () => {
+      source.disconnect()
+      gain.disconnect()
+      panner?.disconnect()
+    }
+    return true
   }
 
   /** Low basement mains hum, sub rumble and a slowly breathing noise bed. */
@@ -175,6 +229,7 @@ export class SoundEngine {
 
   /** Friction of a card dragged across a coarse table, with a soft landing tap. */
   playCardSlide(): void {
+    if (this.playSfx('cardsTable', { gain: 0.85, duration: 0.42, offset: 0.12 })) return
     const ctx = this.ensureContext()
     const t = ctx.currentTime + 0.005
     const duration = 0.4
@@ -203,8 +258,14 @@ export class SoundEngine {
     this.noiseHit(t + duration - 0.03, 0.08, 240, 0.8, 0.1, 'lowpass')
   }
 
+  playCardShuffle(): void {
+    if (this.playSfx('cardShuffle', { gain: 0.9, duration: 1.1 })) return
+    this.playCardSlide()
+  }
+
   /** Dry metallic striker hitting an empty chamber. */
   playClickEmpty(): void {
+    if (this.playSfx('chamberClick', { gain: 0.72 })) return
     const ctx = this.ensureContext()
     const t = ctx.currentTime + 0.005
     this.noiseHit(t, 0.035, 3200, 1.2, 0.24, 'highpass')
@@ -222,40 +283,58 @@ export class SoundEngine {
     const ctx = this.ensureContext()
     const t = ctx.currentTime + 0.005
 
-    this.noiseHit(t, 0.07, 1900, 0.7, 1, 'highpass')
+    const externalShot = this.playSfx('shotgunBlast', { gain: selfShot ? 0.95 : 0.78 })
+    if (!externalShot) {
+      this.noiseHit(t, 0.07, 1900, 0.7, 1, 'highpass')
 
-    const bodySource = this.noiseSource()
-    const bodyFilter = this.createFilter('lowpass', 2600, 0.6)
-    bodyFilter.frequency.setValueAtTime(5200, t)
-    bodyFilter.frequency.exponentialRampToValueAtTime(420, t + 0.42)
-    const shaper = ctx.createWaveShaper()
-    const curve = new Float32Array(512)
-    for (let i = 0; i < curve.length; i += 1) {
-      const x = (i * 2) / (curve.length - 1) - 1
-      curve[i] = Math.tanh(x * 4.5)
+      const bodySource = this.noiseSource()
+      const bodyFilter = this.createFilter('lowpass', 2600, 0.6)
+      bodyFilter.frequency.setValueAtTime(5200, t)
+      bodyFilter.frequency.exponentialRampToValueAtTime(420, t + 0.42)
+      const shaper = ctx.createWaveShaper()
+      const curve = new Float32Array(512)
+      for (let i = 0; i < curve.length; i += 1) {
+        const x = (i * 2) / (curve.length - 1) - 1
+        curve[i] = Math.tanh(x * 4.5)
+      }
+      shaper.curve = curve
+      shaper.oversample = '2x'
+      const bodyGain = ctx.createGain()
+      bodyGain.gain.setValueAtTime(0.0001, t)
+      bodyGain.gain.exponentialRampToValueAtTime(1, t + 0.006)
+      bodyGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.55)
+      bodySource.connect(bodyFilter).connect(shaper).connect(bodyGain).connect(this.inputNode)
+      bodySource.start(t, Math.random() * 0.5)
+      bodySource.stop(t + 0.6)
+
+      const delay = ctx.createDelay(0.4)
+      delay.delayTime.value = 0.115
+      const feedback = ctx.createGain()
+      feedback.gain.setValueAtTime(0.36, t)
+      feedback.gain.exponentialRampToValueAtTime(0.0001, t + 1.7)
+      const damp = this.createFilter('lowpass', 1700, 0.5)
+      const wet = ctx.createGain()
+      wet.gain.value = 0.24
+      bodyGain.connect(delay).connect(damp).connect(feedback).connect(delay)
+      damp.connect(wet).connect(this.inputNode)
+      const cleanupClock = ctx.createOscillator()
+      const cleanupGain = ctx.createGain()
+      cleanupGain.gain.value = 0
+      cleanupClock.connect(cleanupGain).connect(ctx.destination)
+      cleanupClock.start(t)
+      cleanupClock.stop(t + 1.85)
+      cleanupClock.onended = () => {
+        bodyGain.disconnect()
+        delay.disconnect()
+        damp.disconnect()
+        feedback.disconnect()
+        wet.disconnect()
+        cleanupClock.disconnect()
+        cleanupGain.disconnect()
+      }
     }
-    shaper.curve = curve
-    shaper.oversample = '2x'
-    const bodyGain = ctx.createGain()
-    bodyGain.gain.setValueAtTime(0.0001, t)
-    bodyGain.gain.exponentialRampToValueAtTime(1, t + 0.006)
-    bodyGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.55)
-    bodySource.connect(bodyFilter).connect(shaper).connect(bodyGain).connect(this.inputNode)
-    bodySource.start(t, Math.random() * 0.5)
-    bodySource.stop(t + 0.6)
 
-    const delay = ctx.createDelay(0.4)
-    delay.delayTime.value = 0.115
-    const feedback = ctx.createGain()
-    feedback.gain.setValueAtTime(0.36, t)
-    feedback.gain.exponentialRampToValueAtTime(0.0001, t + 1.7)
-    const damp = this.createFilter('lowpass', 1700, 0.5)
-    const wet = ctx.createGain()
-    wet.gain.value = 0.24
-    bodyGain.connect(delay).connect(damp).connect(feedback).connect(delay)
-    damp.connect(wet).connect(this.inputNode)
-
-    this.tone(t, 0.5, 92, 34, 1, 'sine')
+    this.tone(t, 0.5, 92, 34, externalShot ? 0.35 : 1, 'sine')
 
     // 耳鸣尾音：打对手时压到 0.8s 并降 6dB
     const ringDuration = selfShot ? 2 : 0.8
@@ -307,6 +386,35 @@ export class SoundEngine {
   playHeartbeat(bpm: number): void {
     const ctx = this.ensureContext()
     const safeBpm = Number.isFinite(bpm) ? clamp(bpm, 40, 200) : 72
+    if (safeBpm >= 90) {
+      const fast = this.sfxBuffers.get('heartbeatFast')
+      if (fast) {
+        if (!this.heartbeatBed) {
+          const source = ctx.createBufferSource()
+          const gain = ctx.createGain()
+          source.buffer = fast
+          source.loop = true
+          source.playbackRate.value = safeBpm / 110
+          gain.gain.value = 0.24
+          source.connect(gain).connect(this.inputNode)
+          source.onended = () => {
+            source.disconnect()
+            gain.disconnect()
+          }
+          source.start()
+          this.heartbeatBed = source
+        } else {
+          this.heartbeatBed.playbackRate.setTargetAtTime(safeBpm / 110, ctx.currentTime, 0.2)
+        }
+        return
+      }
+    } else if (this.heartbeatBed) {
+      const bed = this.heartbeatBed
+      this.heartbeatBed = null
+      try { bed.stop() } catch { /* 已停止 */ }
+      bed.disconnect()
+    }
+    if (this.playSfx('heartbeatSingle', { gain: 0.68, rate: safeBpm / 72, duration: Math.min(0.85, (60 / safeBpm) * 0.9) })) return
     const interval = 60 / safeBpm
     const t = ctx.currentTime + 0.01
     this.thump(t, 0.26)
@@ -315,6 +423,8 @@ export class SoundEngine {
 
   /** Cylinder swings out, rounds drop in, then it snaps shut. */
   playReload(): void {
+    if (this.playSfx('shotgunReload', { gain: 0.72 })) return
+    if (this.playSfx('shotgunPump', { gain: 0.6 })) return
     const ctx = this.ensureContext()
     const t = ctx.currentTime + 0.005
 
@@ -371,6 +481,8 @@ export class SoundEngine {
   }
 
   playItemContact(kind: 'metal' | 'paper' | 'glass' | 'soft'): void {
+    if (kind === 'glass' && this.playSfx('glassClink', { gain: 0.65 })) return
+    if (kind === 'paper' && this.playSfx('paperRustle', { gain: 0.7, duration: 0.28 })) return
     const ctx = this.ensureContext()
     const t = ctx.currentTime + 0.005
     if (kind === 'paper') {
@@ -477,6 +589,7 @@ export class SoundEngine {
 
   /** 身后门锁：链拖 + 两声锁舌 */
   playDoorLock(): void {
+    if (this.playSfx('doorClose', { gain: 0.65, duration: 0.8 })) return
     const ctx = this.ensureContext()
     const t = ctx.currentTime + 0.005
     this.noiseHit(t, 0.3, 700, 1.6, 0.16, 'bandpass')
@@ -488,6 +601,7 @@ export class SoundEngine {
 
   /** 纸片轻响 */
   playPaperRustle(): void {
+    if (this.playSfx('paperRustle', { gain: 0.85, duration: 0.32 })) return
     const ctx = this.ensureContext()
     const t = ctx.currentTime + 0.005
     const source = this.noiseSource()
@@ -530,6 +644,11 @@ export class SoundEngine {
   playLowThump(): void {
     const ctx = this.ensureContext()
     this.thump(ctx.currentTime + 0.01, 0.3)
+  }
+
+  playHammerImpact(): void {
+    if (this.playSfx('hammerHit', { gain: 0.8 })) return
+    this.playLowThump()
   }
 
   /** Boss 方向的低频呼吸 */
@@ -639,6 +758,14 @@ export class SoundEngine {
     this.stopAmbient(0.05)
     this.stopCorridorDrone(0.05)
     this.stopRoomTone(0.05)
+    if (this.heartbeatBed) {
+      const bed = this.heartbeatBed
+      this.heartbeatBed = null
+      try { bed.stop() } catch { /* 已停止 */ }
+      bed.disconnect()
+    }
+    this.sfxBuffers.clear()
+    this.sfxPreload = null
     this.roomToneBuffer = null
     const ctx = this.ctx
     this.ctx = null

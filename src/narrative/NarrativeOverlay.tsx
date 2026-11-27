@@ -2,10 +2,7 @@ import { useEffect, useState } from 'react'
 import type { SoundEngine } from '../audio/SoundEngine'
 import type { NarrativeDirector, NarrativeVisual } from './NarrativeDirector'
 import { EnemyDialogueBox } from './EnemyDialogueBox'
-
-const CHAR_MS = 65
-const PAUSE_MS = 260
-const PAUSE_CHARS = '，。、！？…—'
+import { TYPE_CHAR_MS, TYPE_PAUSE_CHARS, TYPE_PAUSE_MS } from './dialogue'
 
 export function NarrativeOverlay({
   director,
@@ -38,7 +35,7 @@ export function NarrativeOverlay({
       for (const ch of subtitle.text) {
         if (elapsed < acc) break
         count += 1
-        acc += CHAR_MS + (PAUSE_CHARS.includes(ch) ? PAUSE_MS : 0)
+        acc += TYPE_CHAR_MS + (TYPE_PAUSE_CHARS.includes(ch) ? TYPE_PAUSE_MS : 0)
       }
       if (count !== last) {
         if (count > last && last >= 0) sound.playTypeTick()
@@ -54,6 +51,7 @@ export function NarrativeOverlay({
 
   return (
     <div className="absolute inset-0 z-40" data-testid="narrative-overlay">
+      <span className="sr-live" aria-live="polite">{subtitle?.text}</span>
       <div
         className="absolute inset-0 bg-black transition-opacity duration-700"
         style={{ opacity: visual.black }}
@@ -90,7 +88,7 @@ export function NarrativeOverlay({
           <div className="h-px bg-[#5a4632]/25" />
           <dl className="space-y-1.5 pt-2 text-[0.8rem] leading-relaxed tracking-[0.08em]">
             <div className="flex justify-between gap-2">
-              <dt className="opacity-55">契主</dt>
+              <dt className="opacity-55">原担保人</dt>
               <dd>小棠</dd>
             </div>
             <div className="flex justify-between gap-2">

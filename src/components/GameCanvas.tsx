@@ -225,9 +225,9 @@ export function GameCanvas({
       {error ? (
         <div className="absolute inset-0 flex items-center justify-center bg-abyss-950/90 p-6 text-center">
           <div>
-            <p className="text-sm tracking-widest text-rust-400 uppercase">WebGL unavailable</p>
+            <p className="text-sm tracking-widest text-rust-400 uppercase">无法启动 3D 牌桌</p>
             <p className="mt-3 max-w-sm text-xs leading-relaxed text-bone-200/60">
-              {error}
+              请开启浏览器硬件加速后刷新。若仍无法进入，请尝试更新浏览器。
             </p>
           </div>
         </div>

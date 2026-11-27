@@ -82,32 +82,32 @@ async function expectInsideViewport(page: Page, locator: Locator, axes: 'x' | 'x
   }
 }
 
-async function dismissGuide(page: Page) {
-  const guide = page.getByRole('dialog', { name: '开局说明' })
-  if ((await guide.count()) === 0) return
-  await page.getByRole('button', { name: '知道了' }).click()
-  await expect(guide).toBeHidden()
-}
-
 for (const vp of VIEWPORTS) {
   test.describe(`窄屏 ${vp.name}`, () => {
     test.use({ viewport: { width: vp.width, height: vp.height } })
 
-    test('引导卡与规则图鉴不越出横向边界', async ({ page }) => {
+    test('规则图鉴不越出横向边界', async ({ page }) => {
+      await page.addInitScript(() => {
+        window.localStorage.setItem('blood-ante.narrativeSeen.intro', '1')
+      })
       await page.goto('./')
 
-      await expect(page.getByRole('dialog', { name: '开局说明' })).toBeVisible({ timeout: 30_000 })
-      let report = await probeHorizontalOverflow(page)
-      expect(report.docScrollWidth).toBeLessThanOrEqual(report.viewportWidth)
-      expect(report.mainOverflow).toBeLessThanOrEqual(0)
-      expect(report.offenders).toEqual([])
-      await expectInsideViewport(page, page.getByRole('button', { name: '知道了' }))
-      await expectInsideViewport(page, page.getByRole('button', { name: '查看完整血契' }))
+      await expect(page.getByRole('dialog', { name: '开局说明' })).toHaveCount(0)
+      const start = page.getByRole('button', { name: '走进走廊', exact: true })
+      await expect(start).toBeAttached({ timeout: 30_000 })
+      await start.evaluate((el) => (el as HTMLElement).click())
+      const leftDoor = page.getByRole('button', { name: '左门 · 开始新局（清除旧检查点）' })
+      await leftDoor.waitFor({ timeout: 60_000 })
+      await leftDoor.evaluate((el) => (el as HTMLElement).click())
+      const skip = page.getByRole('button', { name: '跳过本段' })
+      if (await skip.count()) await skip.click()
+      await page.getByRole('button', { name: '规则 / 图鉴' }).click({ timeout: 120_000 })
 
-      await page.getByRole('button', { name: '查看完整血契' }).click()
       const rules = page.getByRole('dialog', { name: '规则与图鉴' })
       await expect(rules).toBeVisible()
-      report = await probeHorizontalOverflow(page)
+      const report = await probeHorizontalOverflow(page)
+      expect(report.docScrollWidth).toBeLessThanOrEqual(report.viewportWidth)
+      expect(report.mainOverflow).toBeLessThanOrEqual(0)
       expect(report.offenders).toEqual([])
       await expectInsideViewport(page, page.getByRole('button', { name: '关闭 ESC' }))
 
@@ -121,10 +121,10 @@ for (const vp of VIEWPORTS) {
       const start = page.getByRole('button', { name: '走进走廊', exact: true })
       // 走廊入口已改为点画面进入：DOM 按钮只是读屏兜底（sr-only），不参与布局越界检查
       await expect(start).toBeAttached({ timeout: 30_000 })
-      await dismissGuide(page)
+      await expect(page.getByRole('dialog', { name: '开局说明' })).toHaveCount(0)
       await start.evaluate((el) => (el as HTMLElement).click())
 
-      const leftDoor = page.getByRole('button', { name: '左门 · 血色底注' })
+      const leftDoor = page.getByRole('button', { name: '左门 · 开始新局（清除旧检查点）' })
       await leftDoor.waitFor({ timeout: 60_000 })
       await leftDoor.evaluate((el) => (el as HTMLElement).click())
 
@@ -137,50 +137,15 @@ for (const vp of VIEWPORTS) {
       )
 
       const keyRects = await page.evaluate(() => {
-        interface Vec {
-          clone(): Vec
-          set(x: number, y: number, z: number): Vec
-          applyMatrix4(matrix: unknown): Vec
-          project(camera: unknown): { x: number; y: number }
-        }
-        interface Root {
-          updateWorldMatrix(updateParents: boolean, updateChildren: boolean): void
-          position: Vec
-          matrixWorld: unknown
-        }
-        const scene = (
-          window as unknown as {
-            __scene: {
-              getCamera(): unknown
-              actionButtons: Map<string, { root: Root }>
-            }
-          }
-        ).__scene
-        const cam = scene.getCamera()
-        return [...scene.actionButtons].map(([action, button]) => {
-          const root = button.root
-          root.updateWorldMatrix(true, true)
-          let left = Infinity
-          let right = -Infinity
-          let top = Infinity
-          let bottom = -Infinity
-          for (const sx of [-0.32, 0.32]) {
-            for (const sy of [-0.045, 0.1025]) {
-              for (const sz of [-0.22, 0.22]) {
-                const v = root.position.clone().set(sx, sy, sz)
-                v.applyMatrix4(root.matrixWorld)
-                const p = v.project(cam)
-                const x = ((p.x + 1) * window.innerWidth) / 2
-                const y = ((1 - p.y) * window.innerHeight) / 2
-                left = Math.min(left, x)
-                right = Math.max(right, x)
-                top = Math.min(top, y)
-                bottom = Math.max(bottom, y)
-              }
-            }
-          }
-          return { action, left, right, top, bottom, cx: (left + right) / 2, cy: (top + bottom) / 2 }
-        })
+        const scene = (window as unknown as {
+          __scene: { getTableActionLayout(): Record<string, { left: number; right: number; top: number; bottom: number }> }
+        }).__scene
+        return Object.entries(scene.getTableActionLayout()).map(([action, rect]) => ({
+          action,
+          ...rect,
+          cx: (rect.left + rect.right) / 2,
+          cy: (rect.top + rect.bottom) / 2,
+        }))
       })
       expect(keyRects.map((key) => key.action).sort()).toEqual(['hit', 'stand'])
 

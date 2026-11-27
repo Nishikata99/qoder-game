@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { TRUMP_CATALOG, type CardRank, type CardSuit, type TrumpId } from '../game/GameEngine'
+import { isDocumentBackgrounded } from '../browserVisibility'
 
 const CARD_W = 256
 const CARD_H = 358
@@ -1103,10 +1104,10 @@ export class TextureFactory {
    */
   startWatching(): void {
     if (this.watchTimer !== null || this.disposed) return
-    void this.scan(true)
     if (import.meta.env.DEV) {
+      void this.scan(true)
       this.watchTimer = window.setInterval(() => {
-        if (document.hidden) return
+        if (isDocumentBackgrounded()) return
         void this.scan(false)
       }, 2500)
     }

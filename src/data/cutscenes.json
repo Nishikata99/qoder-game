@@ -1,0 +1,234 @@
+{
+  "cutscenes": {
+    "1": {
+      "duration": 7.05,
+      "dialogueAnchor": {
+        "x": 238,
+        "y": 54
+      },
+      "lines": [
+        {
+          "text": "账页烧了一半。她欠的还未还清。",
+          "at": 1.9,
+          "end": 3.485,
+          "channel": "enemy"
+        },
+        {
+          "text": "我伸手按住那页，墨迹还没干。",
+          "at": 5.5,
+          "end": 7.03,
+          "channel": "player"
+        }
+      ],
+      "cues": [
+        {
+          "at": 0.05,
+          "sfx": "doorCreak"
+        },
+        {
+          "at": 0.9,
+          "sfx": "doorLock"
+        },
+        {
+          "at": 1.5,
+          "sfx": "bossBreath"
+        },
+        {
+          "at": 1.9,
+          "sfx": "paperRustle"
+        },
+        {
+          "at": 3.2,
+          "sfx": "chairCreak"
+        },
+        {
+          "at": 4.4,
+          "sfx": "paperRustle"
+        },
+        {
+          "at": 5.8,
+          "sfx": "lowThump"
+        },
+        {
+          "at": 6.4,
+          "sfx": "bossBreath"
+        }
+      ]
+    },
+    "2": {
+      "duration": 7.5,
+      "dialogueAnchor": {
+        "x": 244,
+        "y": 50
+      },
+      "lines": [
+        {
+          "text": "名单上，又多了一道刻痕。",
+          "at": 1.9,
+          "end": 3.32,
+          "channel": "enemy"
+        },
+        {
+          "text": "最后一行的空槽，是留给你的。",
+          "at": 5.5,
+          "end": 7.03,
+          "channel": "enemy"
+        }
+      ],
+      "cues": [
+        {
+          "at": 0.05,
+          "sfx": "lowThump"
+        },
+        {
+          "at": 0.6,
+          "sfx": "doorCreak"
+        },
+        {
+          "at": 1.8,
+          "sfx": "bossBreath"
+        },
+        {
+          "at": 2.6,
+          "sfx": "spin"
+        },
+        {
+          "at": 3.3,
+          "sfx": "stitch"
+        },
+        {
+          "at": 4.4,
+          "sfx": "paperRustle"
+        },
+        {
+          "at": 5.6,
+          "sfx": "lowThump"
+        }
+      ]
+    }
+  },
+  "endings": {
+    "win": {
+      "duration": 8.5,
+      "skippable": false,
+      "lines": [
+        {
+          "text": "哥？",
+          "at": 1.6,
+          "end": 2.29,
+          "channel": "sister"
+        },
+        {
+          "text": "小棠……我在。",
+          "at": 2.6,
+          "end": 3.925,
+          "channel": "player"
+        },
+        {
+          "text": "找到我的名字...",
+          "at": 3.945,
+          "end": 4.84,
+          "channel": "sister"
+        },
+        {
+          "text": "找到了，我马上救你出来！",
+          "at": 5.6,
+          "end": 7.02,
+          "channel": "player"
+        },
+        {
+          "text": "呜呜呜...我们回家",
+          "at": 7.04,
+          "end": 7.99,
+          "channel": "sister"
+        }
+      ],
+      "cues": [
+        {
+          "at": 0.05,
+          "sfx": "lowThump"
+        },
+        {
+          "at": 0.9,
+          "sfx": "stitch"
+        },
+        {
+          "at": 2.6,
+          "sfx": "bossBreath"
+        },
+        {
+          "at": 4.2,
+          "sfx": "doorCreak"
+        },
+        {
+          "at": 5.6,
+          "sfx": "lowThump"
+        },
+        {
+          "at": 7,
+          "sfx": "stitch"
+        }
+      ]
+    },
+    "lose": {
+      "duration": 7,
+      "skippable": true,
+      "dialogueAnchor": {
+        "x": 205,
+        "y": 36
+      },
+      "lines": [
+        {
+          "text": "轮到你了。",
+          "at": 1.4,
+          "end": 2.255,
+          "channel": "enemy"
+        },
+        {
+          "text": "小棠……",
+          "at": 2.8,
+          "end": 3.78,
+          "channel": "player"
+        },
+        {
+          "text": "不要挣扎。马上就不疼了。",
+          "at": 3.8,
+          "end": 5.22,
+          "channel": "enemy"
+        },
+        {
+          "text": "名单还很长呢，下一位似乎也来了。",
+          "at": 5.3,
+          "end": 6.94,
+          "channel": "enemy"
+        }
+      ],
+      "cues": [
+        {
+          "at": 0.05,
+          "sfx": "lowThump"
+        },
+        {
+          "at": 1.6,
+          "sfx": "stitch"
+        },
+        {
+          "at": 2.5,
+          "sfx": "stitch"
+        },
+        {
+          "at": 3.8,
+          "sfx": "bossBreath"
+        },
+        {
+          "at": 4.9,
+          "sfx": "stitch"
+        },
+        {
+          "at": 6,
+          "sfx": "spin"
+        }
+      ]
+    }
+  }
+}

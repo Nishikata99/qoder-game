@@ -50,7 +50,6 @@ export class Cutscene2D {
   private rafId: number | null = null
   private lastTs: number | null = null
   private time = 0
-  private cueIndex = 0
   private running = false
   private active = false
   private skipAt: number | null = null
@@ -95,7 +94,6 @@ export class Cutscene2D {
   debugSeek(seconds: number): void {
     if (!this.active || this.skipAt !== null) return
     this.time = Math.max(0, Math.min(this.spec.duration - 0.001, seconds))
-    this.syncCues()
     this.maybeResumeEngine()
     this.render(this.time)
   }
@@ -105,7 +103,6 @@ export class Cutscene2D {
     this.active = true
     this.running = true
     this.time = 0
-    this.cueIndex = 0
     this.lastTs = null
     this.skipAt = null
     this.finished = false
@@ -169,7 +166,6 @@ export class Cutscene2D {
     this.lastTs = ts
     this.time += raw
 
-    this.syncCues()
     this.maybeResumeEngine()
 
     const endAt =
@@ -190,16 +186,6 @@ export class Cutscene2D {
     if (this.skipAt === null && this.time < threshold) return
     this.resumed = true
     this.deps.onResumeEngine()
-  }
-
-  private syncCues(): void {
-    while (
-      this.cueIndex < this.spec.cues.length &&
-      this.spec.cues[this.cueIndex]!.at <= this.time
-    ) {
-      this.playSfx(this.spec.cues[this.cueIndex]!.sfx)
-      this.cueIndex += 1
-    }
   }
 
   private finish(): void {
@@ -244,41 +230,6 @@ export class Cutscene2D {
       if (t >= line.at && t < line.end) return line
     }
     return null
-  }
-
-  private playSfx(sfx: string): void {
-    const sound = this.deps.sound
-    switch (sfx) {
-      case 'doorLock':
-        sound.playDoorLock()
-        break
-      case 'doorCreak':
-        sound.playDoorCreak()
-        break
-      case 'lowThump':
-        sound.playLowThump()
-        break
-      case 'chairCreak':
-        sound.playChairCreak()
-        break
-      case 'paperRustle':
-        sound.playPaperRustle()
-        break
-      case 'bossBreath':
-        sound.playBossBreath()
-        break
-      case 'stitch':
-        sound.playStitch()
-        break
-      case 'coin':
-        sound.playCoin()
-        break
-      case 'spin':
-        sound.playSpin()
-        break
-      default:
-        break
-    }
   }
 }
 

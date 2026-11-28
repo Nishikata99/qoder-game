@@ -20,6 +20,8 @@ export interface GameCanvasProps {
   readonly onHoverChange?: (payload: ItemHoverPayload | null) => void
   readonly onGunHoverChange?: (payload: GunHoverPayload | null) => void
   readonly onBossPoseCue?: (cue: BossPoseCue) => void
+  readonly onSupplyTrayRise?: () => void
+  readonly onBulletTrayReveal?: () => void
   readonly onSceneReady?: (scene: SceneManager) => void
   readonly onLoadProgress?: (progress: SceneLoadProgress) => void
   readonly onLoadError?: (key: string, error: unknown) => void
@@ -42,6 +44,8 @@ export function GameCanvas({
   onHoverChange,
   onGunHoverChange,
   onBossPoseCue,
+  onSupplyTrayRise,
+  onBulletTrayReveal,
   onSceneReady,
   onLoadProgress,
   onLoadError,
@@ -53,16 +57,16 @@ export function GameCanvas({
   const hostRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sceneRef = useRef<SceneManager | null>(null)
-  const callbacksRef = useRef({ onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot })
+  const callbacksRef = useRef({ onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onSupplyTrayRise, onBulletTrayReveal, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot })
   const readyRef = useRef(onSceneReady)
   const [error, setError] = useState<string | null>(null)
   const setErrorRef = useRef(setError)
 
   useEffect(() => {
-    callbacksRef.current = { onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot }
+    callbacksRef.current = { onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onSupplyTrayRise, onBulletTrayReveal, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot }
     readyRef.current = onSceneReady
     setErrorRef.current = setError
-  }, [onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onSceneReady, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot, setError])
+  }, [onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onSupplyTrayRise, onBulletTrayReveal, onSceneReady, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot, setError])
 
   useEffect(() => {
     const host = hostRef.current
@@ -79,6 +83,8 @@ export function GameCanvas({
         onTrumpDeckClick: () => callbacksRef.current.onTrumpDeckClick?.(),
         onTargetPick: (target) => callbacksRef.current.onTargetPick?.(target),
         onBossPoseCue: (cue) => callbacksRef.current.onBossPoseCue?.(cue),
+        onSupplyTrayRise: () => callbacksRef.current.onSupplyTrayRise?.(),
+        onBulletTrayReveal: () => callbacksRef.current.onBulletTrayReveal?.(),
         onLoadProgress: (progress) => callbacksRef.current.onLoadProgress?.(progress),
         onLoadError: (key, err) => callbacksRef.current.onLoadError?.(key, err),
         onItemActionCue: (item, cue) => callbacksRef.current.onItemCue?.(item, cue),
@@ -129,7 +135,9 @@ export function GameCanvas({
         scene.applySnapshot(event.snapshot)
         break
       case 'reload':
-        scene.playReload(event.live, event.blank)
+        // 延一拍：让 App 在同一 tick 的 checkpoint 分支先挂上覆盖层闸门，
+        // 否则首次进层时弹盘特写会抢在 2D 过场前面开镜
+        window.setTimeout(() => scene.playReload(event.live, event.blank), 0)
         break
       case 'roundStart':
         // 新一局 / 首层第一回合：枪先平躺回桌面

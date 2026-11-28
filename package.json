@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "editor": "node serve-editor.mjs"
   },
   "dependencies": {
     "gsap": "^3.15.1",

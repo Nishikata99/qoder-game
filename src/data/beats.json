@@ -1,0 +1,166 @@
+{
+  "intro": [
+    {
+      "at": 2.8,
+      "lineEnd": 3.64,
+      "channel": "player",
+      "line": "我这是在哪..."
+    },
+    {
+      "at": 5.5,
+      "lineEnd": 6.795,
+      "channel": "player",
+      "line": "门开之后，就什么都不记得了"
+    },
+    {
+      "at": 9,
+      "lineEnd": 10.875,
+      "channel": "player",
+      "line": "我的契纸……怎么只剩一个「棠」字。"
+    },
+    {
+      "at": 12.5,
+      "lineEnd": 13.725,
+      "channel": "player",
+      "line": "门被锁上了...我得想办法出去"
+    },
+    {
+      "at": 20,
+      "lineEnd": 20.785,
+      "channel": "enemy",
+      "line": "你终于还是来了"
+    },
+    {
+      "at": 24,
+      "lineEnd": 25.765,
+      "channel": "player",
+      "line": "你是谁？什么意思？我妹妹在哪！"
+    },
+    {
+      "at": 26.2,
+      "lineEnd": 27.62,
+      "channel": "enemy",
+      "line": "血和名字，都归这张桌子。"
+    },
+    {
+      "at": 29,
+      "lineEnd": 31.095,
+      "channel": "player",
+      "line": "你到底在说什么...这把椅子……小棠坐过？"
+    },
+    {
+      "at": 31.6,
+      "lineEnd": 32.965,
+      "channel": "enemy",
+      "line": "坐过。她的账可还没清。"
+    },
+    {
+      "at": 36.6,
+      "lineEnd": 37.675,
+      "channel": "enemy",
+      "line": "现在，由你接手债务"
+    }
+  ],
+  "restart": [
+    {
+      "at": 0.3,
+      "lineEnd": 2.01,
+      "channel": "enemy",
+      "line": "血袋换了。椅子，留给下一位。"
+    }
+  ],
+  "t2": [
+    {
+      "at": 0.3,
+      "lineEnd": 2.105,
+      "channel": "enemy",
+      "line": "小棠可是付了整整七袋血，但还远远不够。"
+    },
+    {
+      "at": 2.125,
+      "lineEnd": 2.925,
+      "channel": "player",
+      "line": "所以呢？"
+    },
+    {
+      "at": 3.2,
+      "lineEnd": 4.785,
+      "channel": "enemy",
+      "line": "剩下未还的债，自然是记你名下。"
+    },
+    {
+      "at": 4.805,
+      "lineEnd": 5.715,
+      "channel": "enemy",
+      "line": "你别无选择。"
+    }
+  ],
+  "t3": [
+    {
+      "at": 0.6,
+      "lineEnd": 1.965,
+      "channel": "enemy",
+      "line": "她的七袋，记在这一页。"
+    },
+    {
+      "at": 2.1,
+      "lineEnd": 3.065,
+      "channel": "player",
+      "line": "小棠到底在哪！"
+    },
+    {
+      "at": 3.085,
+      "lineEnd": 4.105,
+      "channel": "enemy",
+      "line": "她被带去补针了。"
+    },
+    {
+      "at": 4.2,
+      "lineEnd": 5.895,
+      "channel": "player",
+      "line": "补针是什么意思？你们对她做了什么！"
+    },
+    {
+      "at": 5.915,
+      "lineEnd": 7.17,
+      "channel": "enemy",
+      "line": "缝起来，就不算逃。"
+    }
+  ],
+  "clues": {
+    "level1": [
+      {
+        "text": "想知道你妹妹的下落，就得坐下来玩完这场游戏",
+        "durationMs": 1735,
+        "channel": "enemy"
+      },
+      {
+        "text": "她还活着？",
+        "durationMs": 855,
+        "channel": "player"
+      },
+      {
+        "text": "当然，她的账可还没还清。",
+        "durationMs": 1420,
+        "channel": "enemy"
+      }
+    ],
+    "level3": [
+      {
+        "text": "看到最下面的名字了吗？你再熟悉不过",
+        "durationMs": 1515,
+        "channel": "enemy"
+      },
+      {
+        "text": "接下来的招数，你会很熟悉的",
+        "durationMs": 1295,
+        "channel": "player"
+      },
+      {
+        "text": "现在，我就是她",
+        "durationMs": 965,
+        "channel": "enemy"
+      }
+    ]
+  }
+}

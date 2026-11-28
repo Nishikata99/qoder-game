@@ -145,37 +145,9 @@ export class NarrativeDirector {
   }
 
   private apply(beat: NarrativeBeat): void {
-    const { scene, sound } = this.deps
+    const { scene } = this.deps
     if (beat.shot) scene.setShot(beat.shot, beat.shotDuration ?? 1.2)
     if (beat.grade) scene.setNarrativeGrade(beat.grade)
-    if (beat.sfx) {
-      switch (beat.sfx) {
-        case 'chairCreak':
-          sound.playChairCreak()
-          break
-        case 'doorLock':
-          sound.playDoorLock()
-          break
-        case 'paperRustle':
-          sound.playPaperRustle()
-          break
-        case 'spin':
-          sound.playSpin()
-          break
-        case 'lowThump':
-          sound.playLowThump()
-          break
-        case 'bossBreath':
-          sound.playBossBreath()
-          break
-        case 'coin':
-          sound.playCoin()
-          break
-        case 'stitch':
-          sound.playStitch()
-          break
-      }
-    }
     if (beat.mood !== undefined) scene.setChapterMood(beat.mood)
     let next = this.visual
     if (beat.black !== undefined) next = { ...next, black: beat.black }

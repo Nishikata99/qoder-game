@@ -1,3 +1,5 @@
+import gameData from '../data/game.json'
+
 export type ActorId = 'player' | 'boss'
 
 export type Phase =
@@ -72,22 +74,7 @@ export const TRUMP_IDS = [
 
 export type TrumpId = (typeof TRUMP_IDS)[number]
 
-export const TRUMP_WEIGHTS: Readonly<Record<TrumpId, number>> = {
-  go24: 7,
-  go27: 7,
-  destroy: 4,
-  remove: 8,
-  return: 7,
-  exchange: 9,
-  card2: 7.5,
-  card3: 7.5,
-  card4: 7.5,
-  card5: 7.5,
-  card6: 7.5,
-  card7: 7.5,
-  happiness: 10,
-  love: 3,
-}
+export const TRUMP_WEIGHTS: Readonly<Record<TrumpId, number>> = gameData.trumpWeights
 
 export interface TrumpDefinition {
   readonly id: TrumpId
@@ -97,22 +84,12 @@ export interface TrumpDefinition {
   readonly glyph: string
 }
 
-export const TRUMP_CATALOG: Readonly<Record<TrumpId, TrumpDefinition>> = {
-  go24: { id: 'go24', name: '血注·廿四', enName: 'Go for 24', summary: '本局目标改为 24，最接近 24 者胜。', glyph: '24' },
-  go27: { id: 'go27', name: '血注·廿七', enName: 'Go for 27', summary: '本局目标改为 27，最接近 27 者胜。', glyph: '27' },
-  remove: { id: 'remove', name: '封牌', enName: 'Remove', summary: '把对手最后一张明牌弹回牌堆。', glyph: '−' },
-  return: { id: 'return', name: '割牌', enName: 'Return', summary: '把自己最后一张明牌弹回牌堆。', glyph: '↩' },
-  exchange: { id: 'exchange', name: '易牌', enName: 'Exchange', summary: '交换双方最后一张明牌，暗牌不能交换。', glyph: '⇄' },
-  card2: { id: 'card2', name: '索牌·二', enName: '2 Card', summary: '直接抽出数字 2；若已不在牌堆则无事发生。', glyph: '2' },
-  card3: { id: 'card3', name: '索牌·三', enName: '3 Card', summary: '直接抽出数字 3；若已不在牌堆则无事发生。', glyph: '3' },
-  card4: { id: 'card4', name: '索牌·四', enName: '4 Card', summary: '直接抽出数字 4；若已不在牌堆则无事发生。', glyph: '4' },
-  card5: { id: 'card5', name: '索牌·五', enName: '5 Card', summary: '直接抽出数字 5；若已不在牌堆则无事发生。', glyph: '5' },
-  card6: { id: 'card6', name: '索牌·六', enName: '6 Card', summary: '直接抽出数字 6；若已不在牌堆则无事发生。', glyph: '6' },
-  card7: { id: 'card7', name: '索牌·七', enName: '7 Card', summary: '直接抽出数字 7；若已不在牌堆则无事发生。', glyph: '7' },
-  happiness: { id: 'happiness', name: '双喜', enName: 'Happiness', summary: '双方各抽一张王牌。', glyph: '＋' },
-  destroy: { id: 'destroy', name: '销注', enName: 'Destroy', summary: '移除对手台面上的血注王牌，目标恢复 21。', glyph: '×' },
-  love: { id: 'love', name: '以爱资敌', enName: 'Love Your Enemy', summary: '强迫对手抽一张：优先给最贴近目标且不爆的牌；没有这样的牌就给最小的一张，哪怕爆牌。', glyph: '♥' },
-}
+export const TRUMP_CATALOG: Readonly<Record<TrumpId, TrumpDefinition>> = Object.fromEntries(
+  (Object.keys(gameData.trumpCatalog) as TrumpId[]).map((id) => [
+    id,
+    { ...gameData.trumpCatalog[id], id },
+  ]),
+) as Readonly<Record<TrumpId, TrumpDefinition>>
 
 export function trumpAnimationItem(trump: TrumpId): LegacyAnimationId | null {
   if (trump === 'go24' || trump === 'go27') return 'hourglass'
@@ -129,56 +106,12 @@ export interface ItemDefinition {
   readonly glyph: string
 }
 
-export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = {
-  magnifier: {
-    id: 'magnifier',
-    name: '放大镜',
-    summary: '窥视当前枪膛内下一发是实弹还是空弹。知道空膛时可以对自己开枪跳过本轮，但不再获得道具。',
-    glyph: '◎',
-  },
-  sedative: {
-    id: 'sedative',
-    name: '镇定剂',
-    summary: '立即恢复 1 点生命，不能超过本层上限。',
-    glyph: '✚',
-  },
-  saw: {
-    id: 'saw',
-    name: '锯子',
-    summary: '锯短枪管：下一发实弹伤害 +1。打出实弹后失效。',
-    glyph: '⌁',
-  },
-  handcuffs: {
-    id: 'handcuffs',
-    name: '手铐',
-    summary: '铐住对手：你下一次对他开空枪时，枪权不会转移，你继续持枪。',
-    glyph: '∞',
-  },
-  aegis: {
-    id: 'aegis',
-    name: '护心镜',
-    summary: '举镜照膛：退出当前这一发，退出的实弹或空膛双方都看得见，该发从本局弹仓移除。',
-    glyph: '⬟',
-  },
-  hammer: {
-    id: 'hammer',
-    name: '重锤',
-    summary: '逆转膛内当前这一发：实弹变空膛，空膛变实弹。',
-    glyph: '⚒',
-  },
-  iou: {
-    id: 'iou',
-    name: '借据',
-    summary: '开枪阶段赌命：50% 自损 2 血，50% 恢复 1 血。',
-    glyph: '▤',
-  },
-  gloves: {
-    id: 'gloves',
-    name: '窃贼手套',
-    summary: '点选对手一件道具，偷走并立即使用；不能偷窃贼手套，偷到的道具无法使用时放回，手套不消耗。',
-    glyph: '✧',
-  },
-}
+export const ITEM_CATALOG: Readonly<Record<ItemId, ItemDefinition>> = Object.fromEntries(
+  (Object.keys(gameData.itemCatalog) as ItemId[]).map((id) => [
+    id,
+    { ...gameData.itemCatalog[id], id },
+  ]),
+) as Readonly<Record<ItemId, ItemDefinition>>
 
 /** Items unlocked at the start of each level, in level order. */
 export const LEVEL_UNLOCKS: readonly (readonly ItemId[])[] = [
@@ -204,38 +137,7 @@ export interface LevelConfig {
   readonly personality: BossPersonality
 }
 
-export const LEVELS: readonly LevelConfig[] = [
-  {
-    id: 1,
-    name: '锈蚀看门人',
-    title: '门厅 · 滴水的地下室',
-    hp: 4,
-    playerHp: 4,
-    supply: 0,
-    reloadSupply: 1,
-    personality: 'cautious',
-  },
-  {
-    id: 2,
-    name: '赌命收账人',
-    title: '账房 · 发霉的赌桌',
-    hp: 5,
-    playerHp: 4,
-    supply: 1,
-    reloadSupply: 2,
-    personality: 'gambler',
-  },
-  {
-    id: 3,
-    name: '深渊执刑者',
-    title: '刑台 · 没有出口',
-    hp: 6,
-    playerHp: 4,
-    supply: 1,
-    reloadSupply: 4,
-    personality: 'executioner',
-  },
-]
+export const LEVELS: readonly LevelConfig[] = gameData.levels as readonly LevelConfig[]
 
 export interface ActorView {
   readonly id: ActorId
@@ -670,7 +572,6 @@ export class GameEngine {
   private tableTrumps: Record<ActorId, TrumpId[]> = { player: [], boss: [] }
   private roundTarget = 21
   private lastPerfectWin = false
-  private cleanStandPasses = 0
   private standPassDirty = false
   private revealedBy: Record<ActorId, Chamber | null> = { player: null, boss: null }
   private pendingShot: ActorId = 'player'
@@ -748,7 +649,6 @@ export class GameEngine {
     this.tableTrumps = { player: [], boss: [] }
     this.roundTarget = 21
     this.lastPerfectWin = false
-    this.cleanStandPasses = 0
     this.standPassDirty = false
     this.clearReveals()
     this.pendingShot = 'player'
@@ -786,8 +686,6 @@ export class GameEngine {
   }
 
   private finishPlayerHit(): void {
-    this.cleanStandPasses = 0
-    this.standPassDirty = false
     this.dealTo(this.player)
     this.maybeDrawTrump(this.player)
     this.player.stayed = false
@@ -1038,7 +936,6 @@ export class GameEngine {
     this.pendingShot = 'player'
     this.roundTarget = 21
     this.lastPerfectWin = false
-    this.cleanStandPasses = 0
     this.standPassDirty = false
     this.tableTrumps = { player: [], boss: [] }
     this.holeRevealed = false
@@ -1095,27 +992,16 @@ export class GameEngine {
   private resolveStandPass(token: number): void {
     if (this.standPassDirty) {
       this.standPassDirty = false
-      this.cleanStandPasses = 0
       this.resetStandConfirmation()
-      this.dispatch({ type: 'notice', message: '本轮使用过王牌，连续停牌计数重新开始。' })
+      this.dispatch({ type: 'notice', message: '本轮使用过王牌，本次双方停牌不算，继续。' })
       this.phase = 'playerTurn'
       this.dispatch({ type: 'turn', actor: 'player' })
       this.publish()
       return
     }
 
-    this.cleanStandPasses += 1
-    if (this.cleanStandPasses >= 2) {
-      this.log('双方连续两轮未使用王牌并停牌，开始结算。')
-      void this.settleRound(token)
-      return
-    }
-
-    this.resetStandConfirmation()
-    this.dispatch({ type: 'notice', message: '双方连续停牌 1/2：再连续停牌一轮且不使用王牌才会结算。' })
-    this.phase = 'playerTurn'
-    this.dispatch({ type: 'turn', actor: 'player' })
-    this.publish()
+    this.log('双方停牌，开始结算。')
+    void this.settleRound(token)
   }
 
   private resetStandConfirmation(): void {
@@ -1152,8 +1038,6 @@ export class GameEngine {
       this.dispatch({ type: 'bossBark', action: 'hit', hand: true })
       await this.wait(150)
       if (!this.alive(token) || this.phase !== 'bossTurn') return
-      this.cleanStandPasses = 0
-      this.standPassDirty = false
       this.dealTo(this.boss)
       this.maybeDrawTrump(this.boss)
       this.boss.stayed = false
@@ -1672,7 +1556,6 @@ export class GameEngine {
     }
 
     if (detail === null) return false
-    this.cleanStandPasses = 0
     this.standPassDirty = true
     actor.trumps.splice(index, 1)
     this.log(`${actorLabel(actor.id)}使用了【${TRUMP_CATALOG[trump].name}】。${detail}`)

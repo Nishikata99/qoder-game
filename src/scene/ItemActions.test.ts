@@ -88,14 +88,28 @@ describe('ItemActions 状态机', () => {
     expect(run(true)).toBeLessThan(run(false))
   })
 
-  it('回合变化后清理 Used 残留', () => {
+  it('即时道具动作结束后不留残影', () => {
     const { actions, scene } = harness()
     actions.start('player', 'hammer', snapshot(), new THREE.Vector3())
     actions.seek(2.6)
     actions.skip()
-    expect(scene.getObjectByName('Used-player-hammer')).toBeTruthy()
-    actions.sync(snapshot({ round: 2 }))
     expect(scene.getObjectByName('Used-player-hammer')).toBeFalsy()
+    expect(scene.getObjectByName('ItemAction-player-hammer')).toBeFalsy()
+    actions.dispose()
+  })
+
+  it('手铐保留到铐制效果结束', () => {
+    const { actions, scene } = harness()
+    const base = snapshot()
+    const cuffed = { ...base, boss: { ...base.boss, gunCuffed: true } } as unknown as GameSnapshot
+    actions.start('player', 'handcuffs', base, new THREE.Vector3())
+    actions.seek(2.6)
+    actions.skip()
+    expect(scene.getObjectByName('Used-player-handcuffs')).toBeTruthy()
+    actions.sync(cuffed)
+    expect(scene.getObjectByName('Used-player-handcuffs')).toBeTruthy()
+    actions.sync({ ...cuffed, boss: { ...cuffed.boss, gunCuffed: false } } as unknown as GameSnapshot)
+    expect(scene.getObjectByName('Used-player-handcuffs')).toBeFalsy()
     actions.dispose()
   })
 

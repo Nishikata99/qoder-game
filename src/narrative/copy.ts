@@ -1,16 +1,13 @@
 /**
  * 叙事文案层：引擎（GameEngine.ts）保持零修改，所有面向玩家的叙事措辞在这里映射。
- * 依据 docs/NARRATIVE-REWORK-PLAN.md（小棠血契版）。
+ * 文案本体在 src/data/narrative.json，编辑器直接改 JSON 后刷新生效。
  */
+import narrativeData from '../data/narrative.json'
 
 /** 三层是同一讨债人的收债流程：名字固定，只有地点逐层变化 */
-export const BOSS_NAME = '讨债人'
+export const BOSS_NAME: string = narrativeData.bossName
 
-export const LEVEL_NARRATIVE: ReadonlyArray<{ name: string; title: string }> = [
-  { name: BOSS_NAME, title: '一层 · 验血厅' },
-  { name: BOSS_NAME, title: '二层 · 欠收账房' },
-  { name: BOSS_NAME, title: '三层 · 补针刑台' },
-]
+export const LEVEL_NARRATIVE: ReadonlyArray<{ name: string; title: string }> = narrativeData.levelNarrative
 
 export function bossName(levelIndex: number): string {
   return LEVEL_NARRATIVE[levelIndex]?.name ?? BOSS_NAME
@@ -21,22 +18,7 @@ export function levelTitle(levelIndex: number): string {
 }
 
 /** 道具机制说明沿用引擎 ITEM_CATALOG，叙事批注只追加在图鉴/悬浮提示里 */
-export const ITEM_FLAVOR: Readonly<Record<string, string>> = {
-  magnifier: '讨债人核血账用的旧镜片，能照穿铁锈里的死活。',
-  sedative: '门厅发的廉价药剂，管身上还留着一道指甲掐痕。',
-  saw: '锯短枪管，让下一枪的血债翻倍偿还。',
-  magnet: '账房老千藏在袖口里的旧磁石，早被血浸锈了。',
-  handcuffs: '二楼锁过赖账人的铁铐，钥匙早就扔进了下水道。',
-  aegis: '一块裂了缝的铜镜，背面刻着前人没写完的半个姓。',
-  hourglass: '沙漏底座用针尖划着一个极小的「棠」字——她曾靠它翻过盘。',
-  dagger: '刀柄缠着染血的棉线，割开手腕就能逼牌桌重洗。',
-  cutter: '账房裁账页的薄刃，裁下来的名字再没人认领。',
-  iou: '一张按着血指印的欠据，签下的从来不是钱。',
-  seal: '刑台封牌用的朱砂纸条，贴上就当作这张牌从未发过。',
-  monocle: '讨债人核账用的单片眼镜，看得清牌靴，看不清人心。',
-  hammer: '刑台边钉刻痕名单的铁锤，能把侥幸生生砸成死局。',
-  gloves: '刑台杂役留下的薄皮手套，指尖缝着倒刺——伸手的地方从来不用还。',
-}
+export const ITEM_FLAVOR: Readonly<Record<string, string>> = narrativeData.itemFlavor
 
 export function itemFlavor(itemId: string): string | undefined {
   return ITEM_FLAVOR[itemId]

@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>Blood Ante · 编辑器</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#0b0a08;color:#eee4d7;font:14px/1.55 system-ui,"Microsoft YaHei",sans-serif}
+header{position:sticky;top:0;z-index:9;display:flex;gap:12px;align-items:center;padding:12px 20px;background:rgba(11,10,8,.97);border-bottom:1px solid #3a2d24}
+h1{margin:0;font-size:17px;color:#f7ecdf}
+.tabs{display:flex;gap:8px;margin-left:16px}
+.tabs button{background:#241c15;color:#eee4d7;border:1px solid #4a3a2c;border-radius:4px;padding:7px 14px;font:inherit;cursor:pointer}
+.tabs button.on{background:#3d2c1e;border-color:#e0b27c;color:#f5d9b0}
+#status{margin-left:auto;font-size:12px;color:#96887a}
+#status.ok{color:#7ec97e}#status.err{color:#e07070}
+main{padding:18px 22px 80px;max-width:1100px}
+section{display:none}section.on{display:block}
+.card{background:#17130f;border:1px solid #332820;border-radius:6px;padding:14px;margin:0 0 14px}
+.card h3{margin:0 0 10px;font-size:14px;color:#e0b27c}
+label{display:block;font-size:12px;color:#a4917e;margin:8px 0 3px}
+input[type=text],textarea{width:100%;background:#100d0b;color:#eee4d7;border:1px solid #3a2d24;border-radius:4px;padding:7px 9px;font:inherit}
+textarea{min-height:52px;resize:vertical}
+input[type=number]{width:90px;background:#100d0b;color:#eee4d7;border:1px solid #3a2d24;border-radius:4px;padding:6px 8px;font:inherit}
+input[type=range]{accent-color:#e0b27c;width:240px}
+.row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+.row>div{min-width:110px}
+button.act{background:#241c15;color:#eee4d7;border:1px solid #4a3a2c;border-radius:4px;padding:7px 12px;font:inherit;cursor:pointer}
+button.act:hover{border-color:#e0b27c}
+#savebar{position:fixed;bottom:0;left:0;right:0;display:flex;gap:10px;align-items:center;padding:10px 22px;background:rgba(11,10,8,.97);border-top:1px solid #3a2d24}
+#savebar .dirty{color:#e0b27c;font-size:12px}
+.pct{color:#96887a;font-size:12px;min-width:110px}
+.wt{display:flex;align-items:center;gap:10px;margin:4px 0}
+.wt span:first-child{min-width:120px;font-size:13px}
+select{background:#100d0b;color:#eee4d7;border:1px solid #3a2d24;border-radius:4px;padding:6px 8px;font:inherit}
+audio{width:100%;height:34px;margin-top:6px}
+.muted{color:#96887a;font-size:12px}
+.flex2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+</style></head>
+<body>
+<header>
+  <h1>Blood Ante 编辑器</h1>
+  <nav class="tabs">
+    <button data-tab="text" class="on">文案</button>
+    <button data-tab="num">数值</button>
+    <button data-tab="sfx">音效</button>
+    <button data-tab="asset">素材</button>
+  </nav>
+  <span id="status"></span>
+  <a class="act" href="http://127.0.0.1:4180/" target="_blank" style="text-decoration:none;margin-left:8px">打开游戏 4180</a>
+  <a class="act" href="http://127.0.0.1:4180/?replaycutscene=1" target="_blank" style="text-decoration:none" title="清掉「已看过」记录，下次进入第 2/3 层时会重播关卡间过场">重播过场模式</a>
+</header>
+<main>
+<section id="tab-text" class="on"></section>
+<section id="tab-num"></section>
+<section id="tab-sfx"></section>
+<section id="tab-asset"></section>
+</main>
+<div id="savebar">
+  <button class="act" id="save">保存（自动重建 dist）</button>
+  <span class="dirty" id="dirty">无改动</span>
+  <span class="muted">保存前备份到 backups/editor/；重建约 10–20 秒，完成后刷新 http://127.0.0.1:4180/ 。</span>
+</div>
+<script>
+'use strict'
+const DATA_FILES = ['narrative.json','game.json','beats.json','cutscenes.json']
+const data = {}, orig = {}
+const dirty = new Set()
+const $ = (s, el=document) => el.querySelector(s)
+
+function setStatus(msg, cls='') { const el=$('#status'); el.textContent=msg; el.className=cls; if(msg)setTimeout(()=>{el.textContent='';el.className=''},2500) }
+function markDirty(file) { dirty.add(file); $('#dirty').textContent = '未保存改动：' + [...dirty].join('、') }
+
+async function loadData() {
+  const r = await fetch('/api/data'); const all = await r.json()
+  for (const f of DATA_FILES) { data[f] = all[f]; orig[f] = JSON.parse(JSON.stringify(all[f])) }
+}
+
+// ---------- 文案页 ----------
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function renderText() {
+  const n = data['narrative.json'], b = data['beats.json'], c = data['cutscenes.json']
+  let h = '<div class="card"><h3>基础</h3><label>讨债人名字</label><input type=text data-path="narrative.json/bossName" value="'+esc(n.bossName)+'"></div>'
+  h += '<div class="card"><h3>三层标题</h3>'
+  n.levelNarrative.forEach((l,i)=>{
+    h += '<div class="row"><div style="flex:1"><label>第'+(i+1)+'层 名字</label><input type=text data-path="narrative.json/levelNarrative/'+i+'/name" value="'+esc(l.name)+'"></div>'
+       + '<div style="flex:2"><label>标题</label><input type=text data-path="narrative.json/levelNarrative/'+i+'/title" value="'+esc(l.title)+'"></div></div>'
+  })
+  h += '</div><div class="card"><h3>道具风味批注</h3>'
+  for (const [k,v] of Object.entries(n.itemFlavor)) {
+    h += '<label>'+esc(k)+'</label><textarea data-path="narrative.json/itemFlavor/'+esc(k)+'">'+esc(v)+'</textarea>'
+  }
+  h += '</div>'
+  const beatNames = { intro:'入场（INTRO_BEATS）', restart:'重开（RESTART_BEATS）', t2:'过场 T2', t3:'过场 T3' }
+  h += '<div class="card"><h3>过场/入场台词</h3>'
+  for (const sec of ['intro','restart','t2','t3']) {
+    h += '<h3 class="muted" style="margin-top:14px">'+beatNames[sec]+'</h3>'
+    b[sec].forEach((e,i)=>{
+      h += '<div class="row"><div style="flex:3"><label>['+e.at+'s → '+e.lineEnd+'s · '+e.channel+'] 台词</label><textarea data-path="beats.json/'+sec+'/'+i+'/line">'+esc(e.line)+'</textarea></div>'
+         + '<div><label>开始(s)</label><input type=number step=0.1 data-path="beats.json/'+sec+'/'+i+'/at" value="'+e.at+'"></div>'
+         + '<div><label>结束(s)</label><input type=number step=0.1 data-path="beats.json/'+sec+'/'+i+'/lineEnd" value="'+e.lineEnd+'"></div></div>'
+    })
+  }
+  h += '</div><div class="card"><h3>开战线索对白（第 1 层 / 第 3 层首回合）</h3>'
+  for (const key of ['level1', 'level3']) {
+    h += '<div class="muted">'+(key === 'level1' ? '第 1 层 · 首回合' : '第 3 层 · 首回合（刻痕名单）')+'</div>'
+    b.clues[key].forEach((e,i)=>{
+      h += '<div class="row"><div style="flex:3"><label>['+e.channel+' · 显示 '+e.durationMs+'ms] 台词</label><textarea data-path="beats.json/clues/'+key+'/'+i+'/text">'+esc(e.text)+'</textarea></div>'
+         + '<div><label>显示(ms)</label><input type=number step=100 min=300 data-path="beats.json/clues/'+key+'/'+i+'/durationMs" value="'+e.durationMs+'"></div>'
+         + '<div><label>说话方</label><select data-path="beats.json/clues/'+key+'/'+i+'/channel">'
+         + ['player','enemy','sister'].map(c=>'<option value="'+c+'"'+(e.channel===c?' selected':'')+'>' + (c==='player'?'你':c==='enemy'?'它':'小棠') + '</option>').join('')
+         + '</select></div></div>'
+    })
+  }
+  h += '</div><div class="card"><h3>结局台词（win / lose）</h3>'
+  for (const id of ['win','lose']) {
+    h += '<div class="muted">'+(id==='win'?'胜利 · 赎契':'失败 · 缝入名单')+'，时长 '+c.endings[id].duration+'s</div>'
+    c.endings[id].lines.forEach((l,i)=>{
+      h += '<div class="row"><div style="flex:3"><label>['+l.at+'s → '+l.end+'s · '+l.channel+']</label><textarea data-path="cutscenes.json/endings/'+id+'/lines/'+i+'/text">'+esc(l.text)+'</textarea></div>'
+         + '<div><label>开始(s)</label><input type=number step=0.1 data-path="cutscenes.json/endings/'+id+'/lines/'+i+'/at" value="'+l.at+'"></div>'
+         + '<div><label>结束(s)</label><input type=number step=0.1 data-path="cutscenes.json/endings/'+id+'/lines/'+i+'/end" value="'+l.end+'"></div></div>'
+    })
+  }
+  h += '</div><div class="card"><h3>关卡间过场台词（1→2 层 / 2→3 层）</h3>'
+  for (const id of ['1','2']) {
+    h += '<div class="muted">第 '+(Number(id)+1)+' 层前 · 时长 '+c.cutscenes[id].duration+'s</div>'
+    c.cutscenes[id].lines.forEach((l,i)=>{
+      h += '<div class="row"><div style="flex:3"><label>['+l.at+'s → '+l.end+'s · '+l.channel+']</label><textarea data-path="cutscenes.json/cutscenes/'+id+'/lines/'+i+'/text">'+esc(l.text)+'</textarea></div>'
+         + '<div><label>开始(s)</label><input type=number step=0.1 data-path="cutscenes.json/cutscenes/'+id+'/lines/'+i+'/at" value="'+l.at+'"></div>'
+         + '<div><label>结束(s)</label><input type=number step=0.1 data-path="cutscenes.json/cutscenes/'+id+'/lines/'+i+'/end" value="'+l.end+'"></div></div>'
+    })
+  }
+  h += '</div>'
+  $('#tab-text').innerHTML = h
+}
+
+// ---------- 数值页 ----------
+function renderNum() {
+  const g = data['game.json']
+  const pers = { cautious:'谨慎', gambler:'赌徒', executioner:'处刑人' }
+  let h = '<div class="card"><h3>关卡数值</h3>'
+  g.levels.forEach((l,i)=>{
+    h += '<div class="row"><div><label>层 '+l.id+' 对手 hp</label><input type=number min=1 data-path="game.json/levels/'+i+'/hp" value="'+l.hp+'"></div>'
+       + '<div><label>玩家 hp</label><input type=number min=1 data-path="game.json/levels/'+i+'/playerHp" value="'+l.playerHp+'"></div>'
+       + '<div><label>开局补给</label><input type=number min=0 max=8 data-path="game.json/levels/'+i+'/supply" value="'+l.supply+'"></div>'
+       + '<div><label>重装补给</label><input type=number min=0 max=8 data-path="game.json/levels/'+i+'/reloadSupply" value="'+l.reloadSupply+'"></div>'
+       + '<div><label>性格</label><select data-path="game.json/levels/'+i+'/personality">'
+       + Object.entries(pers).map(([k,v])=>'<option value="'+k+'"'+(l.personality===k?' selected':'')+'>'+v+'</option>').join('')
+       + '</select></div></div>'
+  })
+  h += '</div><div class="card"><h3>王牌权重</h3>'
+  const total = Object.values(g.trumpWeights).reduce((a,b)=>a+b,0)
+  for (const [k,w] of Object.entries(g.trumpWeights)) {
+    const nm = g.trumpCatalog[k]?.name ?? k
+    h += '<div class="wt"><span title="'+esc(k)+'">'+esc(nm)+'</span>'
+       + '<input type=range min=0 max=30 step=0.5 data-wpath="game.json/trumpWeights/'+esc(k)+'" value="'+w+'">'
+       + '<input type=number min=0 max=100 step=0.5 class="wnum" data-wpath="game.json/trumpWeights/'+esc(k)+'" value="'+w+'" style="width:70px">'
+       + '<span class="pct" data-wpct="'+esc(k)+'">'+(total?(w/total*100).toFixed(1):'0')+'%</span></div>'
+  }
+  h += '</div><div class="card"><h3>道具目录（名字 / 说明）</h3>'
+  for (const [k,d] of Object.entries(g.itemCatalog)) {
+    h += '<label>'+esc(d.glyph)+' '+esc(k)+'</label><input type=text data-path="game.json/itemCatalog/'+esc(k)+'/name" value="'+esc(d.name)+'">'
+       + '<textarea data-path="game.json/itemCatalog/'+esc(k)+'/summary">'+esc(d.summary)+'</textarea>'
+  }
+  h += '</div><div class="card"><h3>王牌目录（名字 / 说明）</h3>'
+  for (const [k,d] of Object.entries(g.trumpCatalog)) {
+    h += '<label>'+esc(d.glyph)+' '+esc(k)+'</label><input type=text data-path="game.json/trumpCatalog/'+esc(k)+'/name" value="'+esc(d.name)+'">'
+       + '<textarea data-path="game.json/trumpCatalog/'+esc(k)+'/summary">'+esc(d.summary)+'</textarea>'
+  }
+  h += '</div>'
+  $('#tab-num').innerHTML = h
+}
+
+// ---------- 音效页 ----------
+let audioFiles = []
+async function renderSfx() {
+  const g = data['game.json']
+  if (!audioFiles.length) {
+    const r = await fetch('/api/audio-list'); audioFiles = (await r.json()).files
+  }
+  const labels = { roomTone:'房间底噪（循环）', introDoor:'开门（入场）', emptyClick:'空膛咔哒', cardDeal:'发牌' }
+  let h = '<div class="card"><h3>文件音效绑定</h3>'
+  for (const [k,v] of Object.entries(g.sfxFiles)) {
+    const cur = v.replace(/^audio\//, '')
+    const opts = audioFiles.slice()
+    if (!opts.includes(cur)) opts.unshift(cur + '（文件缺失）')
+    h += '<label>'+labels[k]+'　当前：'+esc(v)+'</label><div class="row">'
+       + '<div style="flex:1"><select data-path="game.json/sfxFiles/'+k+'">'
+       + opts.map(f=>{
+           const val = f.endsWith('（文件缺失）') ? 'audio/' + cur : 'audio/' + f
+           return '<option value="'+val+'"'+(val===v?' selected':'')+'>'+esc(val)+'</option>'
+         }).join('')
+       + '</select></div><div><audio controls src="/'+esc(v)+'?t='+Date.now()+'"></audio></div></div>'
+  }
+  h += '</div><div class="card"><h3 class="muted">说明</h3><p class="muted">其余音效（枪声、心跳、装填、道具、过场 CUE 等）由 SoundEngine 实时合成，无文件可替换；调整它们需改 src/audio/SoundEngine.ts。这里可替换的是四个由文件驱动的音效。</p></div>'
+  $('#tab-sfx').innerHTML = h
+}
+
+// ---------- 素材页 ----------
+let modelFiles = []
+async function renderAsset() {
+  if (!modelFiles.length) {
+    const r = await fetch('/api/models'); modelFiles = (await r.json()).files
+  }
+  let h = '<div class="card"><h3>3D 模型（glb 替换）</h3><p class="muted">替换前自动备份原文件。游戏刷新后生效。</p><div class="flex2">'
+  for (const f of modelFiles) {
+    h += '<div><label>public/models/'+esc(f)+'</label><input type=file accept=".glb" data-upload="models/'+esc(f)+'"></div>'
+  }
+  h += '</div></div><div class="card"><h3>音效文件上传（替换 public/audio/ 下同名文件）</h3>'
+  h += '<div class="row"><div style="flex:1"><label>选择音频文件</label><input type=file id="aud-up" accept=".ogg,.wav,.mp3"></div>'
+     + '<div><label>目标文件名</label><select id="aud-name">'+audioFiles.map(f=>'<option>'+f+'</option>').join('')+'</select></div>'
+     + '<div><button class="act" id="aud-go">上传替换</button></div></div></div>'
+  $('#tab-asset').innerHTML = h
+}
+
+// ---------- data-path 绑定 ----------
+function setByPath(root, path, value) {
+  const parts = path.split('/')
+  let o = root
+  for (let i = 0; i < parts.length - 1; i++) o = o[parts[i]]
+  const key = parts[parts.length - 1]
+  const old = o[key]
+  o[key] = value
+  return old !== value
+}
+document.addEventListener('input', (e) => {
+  const t = e.target
+  const p = t.dataset.path || t.dataset.wpath
+  if (!p) return
+  const [file, ...rest] = p.split('/')
+  let v = t.type === 'number' ? parseFloat(t.value) : t.value
+  if (t.type === 'number' && isNaN(v)) v = 0
+  if (setByPath(data[file], rest.join('/'), v)) { markDirty(file); refreshPcts() }
+})
+document.addEventListener('change', (e) => {
+  const t = e.target
+  if (t.dataset.path || t.dataset.wpath || t.tagName === 'SELECT') { /* input 事件已覆盖大部分；select 走这里 */ }
+  if (t.tagName === 'SELECT' && (t.dataset.path)) {
+    const [file, ...rest] = t.dataset.path.split('/')
+    if (setByPath(data[file], rest.join('/'), t.value)) markDirty(file)
+  }
+  if (t.dataset.upload) uploadFile(t.files[0], t.dataset.upload)
+})
+function refreshPcts() {
+  const w = data['game.json'].trumpWeights
+  const total = Object.values(w).reduce((a,b)=>a+b,0)
+  document.querySelectorAll('[data-wpct]').forEach(el=>{
+    el.textContent = total ? (w[el.dataset.wpct]/total*100).toFixed(1)+'%' : '0%'
+  })
+}
+
+async function uploadFile(file, target) {
+  if (!file) return
+  setStatus('上传中，随后自动重建…', '')
+  const r = await fetch('/api/upload?target=' + encodeURIComponent(target), { method:'POST', body:file })
+  const j = await r.json().catch(()=>({}))
+  if (!j.ok) { setStatus('上传失败：' + (j.error || r.status), 'err'); return }
+  if (target.startsWith('models/')) renderAsset()
+  if (j.built === false) setStatus('已上传，但重建失败：' + String(j.buildError || '').split('\n').slice(-2).join(' '), 'err')
+  else setStatus('已上传并重建，刷新 http://127.0.0.1:4180/ 生效', 'ok')
+}
+
+// ---------- 保存 ----------
+async function saveAll() {
+  if (!dirty.size) { setStatus('没有改动', ''); return false }
+  let fail = null, buildError = null
+  for (const f of dirty) {
+    const r = await fetch('/api/data', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ file:f, data:data[f] }) })
+    const j = await r.json().catch(()=>({}))
+    if (!j.ok) { fail = f + '：' + (j.error || r.status); break }
+    if (j.built === false) buildError = j.buildError || '未知错误'
+  }
+  if (fail) { setStatus('保存失败：' + fail, 'err'); return false }
+  dirty.clear(); $('#dirty').textContent = '无改动'
+  if (buildError) { setStatus('已保存，但重建失败：' + String(buildError).split('\n').slice(-2).join(' '), 'err'); return false }
+  setStatus('已保存并重建完成，刷新 http://127.0.0.1:4180/ 生效', 'ok')
+  return true
+}
+async function publish() {
+  setStatus('正在重建 dist（约 10–20 秒）…', '')
+  const r = await fetch('/api/publish', { method:'POST' })
+  const j = await r.json().catch(()=>({}))
+  if (j.ok) { setStatus('已重建，刷新 http://127.0.0.1:4180/ 生效', 'ok'); return true }
+  setStatus('重建失败：' + (j.error || r.status), 'err')
+  return false
+}
+$('#save').addEventListener('click', async () => {
+  setStatus('保存中，重建约 10–20 秒…', '')
+  await saveAll()
+})
+
+// ---------- 页签 ----------
+document.querySelectorAll('.tabs button').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x===b))
+  document.querySelectorAll('main section').forEach(s=>s.classList.toggle('on', s.id === 'tab-'+b.dataset.tab))
+  if (b.dataset.tab === 'sfx') renderSfx()
+  if (b.dataset.tab === 'asset') renderAsset()
+}))
+
+$('#tab-asset').addEventListener('click', async (e) => {
+  if (e.target.id !== 'aud-go') return
+  const f = $('#aud-up').files[0], name = $('#aud-name').value
+  if (!f) { setStatus('先选择音频文件', 'err'); return }
+  await uploadFile(f, 'audio/' + name)
+  audioFiles = []
+  renderSfx()
+})
+
+loadData().then(()=>{ renderText(); renderNum(); refreshPcts() }).catch(e=>setStatus('加载失败：'+e,'err'))
+</script>
+</body></html>

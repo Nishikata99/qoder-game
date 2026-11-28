@@ -77,6 +77,10 @@ export interface SceneCallbacks {
   readonly onItemSnapshot?: (snapshot: GameSnapshot) => void
   /** Boss 姿态段落提示，用于音效对齐；只报语义节点，不报每帧采样 */
   readonly onBossPoseCue?: (cue: BossPoseCue) => void
+  /** 玩家补给托盘载着道具升起的瞬间，用于滑轨声 */
+  readonly onSupplyTrayRise?: () => void
+  /** 装弹时整盘子弹开始升起，用于弹仓滑轨声 */
+  readonly onBulletTrayReveal?: () => void
   onLoadProgress?: (progress: SceneLoadProgress) => void
   onLoadError?: (key: string, error: unknown) => void
 }
@@ -185,6 +189,8 @@ interface SupplyTrayView {
   /** Boss 镜头切过来时它可能还在升起：等升完再挑 */
   pendingPick: ItemId | null
   generation: number
+  /** 本轮开合周期只报一次「载着道具升起」 */
+  riseCued: boolean
 }
 
 interface BulletTrayEntry {
@@ -202,6 +208,8 @@ interface BulletTrayView {
   readonly blankMaterial: THREE.MeshStandardMaterial
   generation: number
   active: boolean
+  /** 每次开仓只报一次子弹升起 */
+  revealCued: boolean
 }
 
 /** 程序化弹壳：柱身 + 圆头 + 黄铜底圈，配色由子弹托盘材质决定 */
@@ -754,6 +762,12 @@ export class SceneManager {
       : null
   /** 系统级「减少动态效果」：抑制震屏、枪械抖动与镜头漂移，保留运镜与发牌演出 */
   private reducedMotion = false
+  /** 2D 过场/叙事覆盖层进行中：弹盘特写挂起，覆盖层结束后补播（App 同步开关） */
+  private overlayHold = false
+
+  setOverlayHold(active: boolean): void {
+    this.overlayHold = active
+  }
   private readonly onMotionPreferenceChange = (event: MediaQueryListEvent): void => {
     this.reducedMotion = event.matches
     this.bossPose.setReducedMotion(event.matches)
@@ -2287,6 +2301,7 @@ export class SceneManager {
     const from = tray.lift.position.y
     tray.active = true
     tray.light.intensity = 0
+    tray.revealCued = false
     for (const bullet of tray.bullets) {
       bullet.group.visible = false
       bullet.group.position.y = -0.24
@@ -2312,6 +2327,7 @@ export class SceneManager {
             delay: (this.reducedMotion ? 0 : 0.28) + index * (this.reducedMotion ? 0 : 0.06),
             onUpdate: (t) => {
               if (generation !== tray.generation) return
+              if (index === 0) this.cueBulletTrayReveal(tray)
               const eased = this.reducedMotion ? easeOutCubic(t) : easeOutCubic(t) + Math.sin(t * Math.PI) * 0.12
               bullet.group.position.y = -0.24 + (0.03 + 0.24) * eased
             },
@@ -2341,34 +2357,49 @@ export class SceneManager {
             tray.light.intensity = 1.15 * (1 - easeOutCubic(t))
           },
         })
-        this.tween({
-          duration: this.reducedMotion ? 0.18 : 0.32,
-          delay: this.reducedMotion ? 0.7 : 2.05,
-          onUpdate: (t) => {
-            if (generation !== tray.generation) return
-            tray.lift.position.y = down * easeInOutCubic(t)
-          },
-          onComplete: () => {
-            if (generation !== tray.generation) return
-            for (const bullet of tray.bullets) bullet.group.visible = false
-            tray.lift.position.y = 0
-            tray.light.intensity = 0
-            tray.active = false
-          },
-        })
       },
     })
 
-    if (!this.isBloodCloseupActive()) {
-      this.setShot('bulletTray', 0.45)
-      window.setTimeout(() => {
-        if (generation !== tray.generation || this.isBloodCloseupActive()) return
-        if (this.shot === 'bulletTray') this.resetShot(0.55)
-      }, this.reducedMotion ? 850 : 2050)
-    }
+    this.scheduleBulletTrayCloseup(tray, generation, down)
   }
 
-  /** 道具演出：从槽位拾起原作道具，交给双手完成起手／接触／收尾 */
+  /** 弹盘特写与收盘：血袋特写/覆盖层期间挂起，结束后补播；特写中途被抢占时，等结束再回位收盘 */
+  private scheduleBulletTrayCloseup(tray: BulletTrayView, generation: number, down: number): void {
+    const holdMs = this.reducedMotion ? 850 : 2050
+    const pollMs = this.reducedMotion ? 60 : 120
+    const waitFree = (next: () => void): void => {
+      if (this.disposed || generation !== tray.generation) return
+      if (!this.isBloodCloseupActive() && !this.overlayHold) {
+        next()
+        return
+      }
+      window.setTimeout(() => waitFree(next), pollMs)
+    }
+    waitFree(() => {
+      if (this.disposed || generation !== tray.generation) return
+      this.setShot('bulletTray', 0.45)
+      window.setTimeout(() => {
+        waitFree(() => {
+          if (this.disposed || generation !== tray.generation) return
+          if (this.shot === 'bulletTray') this.resetShot(0.55)
+          this.tween({
+            duration: this.reducedMotion ? 0.18 : 0.32,
+            onUpdate: (t) => {
+              if (generation !== tray.generation) return
+              tray.lift.position.y = down * easeInOutCubic(t)
+            },
+            onComplete: () => {
+              if (generation !== tray.generation) return
+              for (const bullet of tray.bullets) bullet.group.visible = false
+              tray.lift.position.y = 0
+              tray.light.intensity = 0
+              tray.active = false
+            },
+          })
+        })
+      }, holdMs)
+    })
+  }
   playItemUse(actor: ActorId, item: ActionVisualId): void {
     if (this.disposed) return
     const found = [...this.items.values()].find(
@@ -4695,7 +4726,7 @@ export class SceneManager {
 
   private canUseTableActions(): boolean {
     const snapshot = this.lastSnapshot
-    return this.tableActionsAllowed && this.shot === 'table' && this.cameraBlend >= 1 &&
+    return this.tableActionsAllowed && this.shot === 'table' && !this.bulletTray?.active && this.cameraBlend >= 1 &&
       !this.isBloodCloseupActive() && snapshot?.phase === 'playerTurn' &&
       !snapshot.paused && !snapshot.inputLocked
   }
@@ -6557,7 +6588,7 @@ export class SceneManager {
     light.position.set(0, 0.38, 0.08)
     root.add(light)
     this.scene.add(root)
-    this.bulletTray = { root, lift, bullets, light, liveMaterial: liveMat, blankMaterial: blankMat, generation: 0, active: false }
+    this.bulletTray = { root, lift, bullets, light, liveMaterial: liveMat, blankMaterial: blankMat, generation: 0, active: false, revealCued: false }
   }
 
   /** 左侧两块补给托盘：玩家左前、Boss 左后，镜像摆放 */
@@ -6747,6 +6778,7 @@ export class SceneManager {
       picked: null,
       pendingPick: null,
       generation: 0,
+      riseCued: false,
     }
   }
 
@@ -6804,6 +6836,20 @@ export class SceneManager {
     this.openSupplyTray(tray, options)
   }
 
+  /** 每个开合周期只报一次「载着道具升起」；Boss 托盘在镜头外，不发声 */
+  private cueSupplyTrayRise(tray: SupplyTrayView): void {
+    if (tray.riseCued) return
+    tray.riseCued = true
+    if (tray.actor === 'player') this.callbacks.onSupplyTrayRise?.()
+  }
+
+  /** 每次开仓只报一次「子弹开始升起」；空仓不报 */
+  private cueBulletTrayReveal(tray: BulletTrayView): void {
+    if (tray.revealCued) return
+    tray.revealCued = true
+    this.callbacks.onBulletTrayReveal?.()
+  }
+
   /** 开：空盘先沉下去露出井口，道具放进井底，再整组载着道具升回桌面 */
   private openSupplyTray(tray: SupplyTrayView, options: readonly ItemId[]): void {
     tray.generation += 1
@@ -6812,6 +6858,7 @@ export class SceneManager {
     tray.order = [...options]
     tray.picked = null
     tray.pendingPick = null
+    tray.riseCued = false
     this.clearTrayItems(tray)
     tray.slots.visible = true
     this.layoutSupplySlots(tray, options.length)
@@ -6838,6 +6885,7 @@ export class SceneManager {
           delay: 0.1,
           onUpdate: (t) => {
             if (generation !== tray.generation) return
+            this.cueSupplyTrayRise(tray)
             tray.lift.position.y = down + (0 - down) * easeOutCubic(t)
           },
           onComplete: () => {
@@ -6884,6 +6932,7 @@ export class SceneManager {
           delay: 0.12,
           onUpdate: (t) => {
             if (generation !== tray.generation) return
+            this.cueSupplyTrayRise(tray)
             tray.lift.position.y = down + (0 - down) * easeOutCubic(t)
           },
           onComplete: () => {

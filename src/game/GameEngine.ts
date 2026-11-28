@@ -631,7 +631,8 @@ export class GameEngine {
     return true
   }
 
-  restart(): void {
+  /** 全部回到未开始状态：走廊重开、存档续层都从这里起步 */
+  reset(): void {
     if (this.destroyed) return
     this.generation += 1
     this.cancelTimers()
@@ -662,6 +663,10 @@ export class GameEngine {
     this.carryOver = []
     this.carryOverBoss = []
     this.publish()
+  }
+
+  restart(): void {
+    this.reset()
     this.start()
   }
 

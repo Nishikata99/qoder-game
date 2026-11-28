@@ -832,6 +832,21 @@ export default function App() {
     setCheckpoint(null)
   }
 
+  /** 暂停界面退回走廊：保留存档（右门仍可续层），引擎回到未开始状态 */
+  function backToCorridor() {
+    togglePause(false)
+    directorRef.current?.stop()
+    directorRef.current = null
+    narrativeModeRef.current = null
+    setNarrative(null)
+    cutsceneDirectorRef.current?.skip()
+    cutsceneDirectorRef.current = null
+    cutsceneActiveRef.current = false
+    clearCutsceneSeen()
+    game.reset()
+    setCorridorState('idle')
+  }
+
   const pendingClueRef = useRef<readonly ClueLine[] | null>(null)
   const clueTimer = useRef<number | null>(null)
   const clueTimersRef = useRef<number[]>([])
@@ -1461,6 +1476,18 @@ export default function App() {
             </label>
             <MetalButton tone="ghost" onClick={() => setModal('rules')}>
               查看血契
+            </MetalButton>
+            <MetalButton
+              tone="ghost"
+              onClick={() => {
+                togglePause(false)
+                beginNarrative('restart')
+              }}
+            >
+              重新开始
+            </MetalButton>
+            <MetalButton tone="ghost" onClick={backToCorridor}>
+              回到主界面
             </MetalButton>
           </div>
         </div>

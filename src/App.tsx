@@ -1678,9 +1678,9 @@ export default function App() {
         <TrumpHandOverlay
           cards={snapshot.player.trumps}
           onClose={() => setTrumpHandOpen(false)}
-          onUse={(index) => {
+          onUse={(index, trump) => {
             setTrumpHandOpen(false)
-            game.useTrump(index)
+            game.useTrump(index, trump)
           }}
         />
       ) : null}

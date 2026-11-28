@@ -24,7 +24,7 @@ export function TrumpHandOverlay({
   onClose,
 }: {
   readonly cards: readonly TrumpId[]
-  readonly onUse: (index: number) => void
+  readonly onUse: (index: number, trump: TrumpId) => void
   readonly onClose: () => void
 }) {
   const [closing, setClosing] = useState(false)
@@ -38,7 +38,7 @@ export function TrumpHandOverlay({
     if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
     closeTimer.current = window.setTimeout(() => {
       if (useIndex === undefined) onClose()
-      else onUse(useIndex)
+      else onUse(useIndex, cards[useIndex])
     }, 320)
   }
 

@@ -1446,11 +1446,11 @@ export class GameEngine {
     return shuffle([...this.unlockedItems()], this.rng).slice(0, count)
   }
 
-  useTrump(index: number): boolean {
+  useTrump(index: number, trumpId?: TrumpId): boolean {
     if (this.paused) return this.reject('游戏已暂停。')
     if (this.phase !== 'playerTurn') return this.reject('现在不是使用王牌的时机。')
     if (this.inputLocked) return this.reject('动作还没结束。')
-    if (!this.useTrumpInternal(this.player, index)) return false
+    if (!this.useTrumpInternal(this.player, index, trumpId)) return false
     if (this.resolveDeaths()) return true
     if (this.itemPresentationGate) {
       this.clearInputDelay()
@@ -1474,8 +1474,10 @@ export class GameEngine {
     return true
   }
 
-  private useTrumpInternal(actor: ActorRuntime, index: number): boolean {
-    const trump = actor.trumps[index]
+  private useTrumpInternal(actor: ActorRuntime, index: number, trumpId?: TrumpId): boolean {
+    // UI 延迟后下标可能因回合结算/裁牌而漂移，优先按 id 匹配
+    const trumpIndex = trumpId ? actor.trumps.indexOf(trumpId) : index
+    const trump = actor.trumps[trumpIndex]
     if (!trump) return this.reject('没有这张王牌。')
     const foe = actor.id === 'player' ? this.boss : this.player
     let detail: string | null = null
@@ -1562,7 +1564,7 @@ export class GameEngine {
 
     if (detail === null) return false
     this.standPassDirty = true
-    actor.trumps.splice(index, 1)
+    actor.trumps.splice(trumpIndex, 1)
     this.log(`${actorLabel(actor.id)}使用了【${TRUMP_CATALOG[trump].name}】。${detail}`)
     this.dispatch({ type: 'trumpPlayed', actor: actor.id, trump, detail })
     this.publish()

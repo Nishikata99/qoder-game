@@ -506,6 +506,31 @@ export class SoundEngine {
     return true
   }
 
+  /** 转轮拨动：噪带通 + 棘轮下滑（上游王牌亮牌音，合成版移植） */
+  playSpin(): void {
+    const ctx = this.ensureContext()
+    const spin = ctx.currentTime + 0.01
+    const spinSource = this.noiseSource()
+    const spinFilter = this.createFilter('bandpass', 1100, 1.6)
+    const spinGain = ctx.createGain()
+    spinGain.gain.setValueAtTime(0.0001, spin)
+    spinGain.gain.exponentialRampToValueAtTime(0.1, spin + 0.06)
+    spinGain.gain.exponentialRampToValueAtTime(0.0001, spin + 0.76)
+    spinSource.connect(spinFilter).connect(spinGain).connect(this.inputNode)
+    spinSource.start(spin, 0.3)
+    spinSource.stop(spin + 0.8)
+    const ratchet = ctx.createOscillator()
+    ratchet.type = 'square'
+    ratchet.frequency.setValueAtTime(26, spin)
+    ratchet.frequency.linearRampToValueAtTime(9, spin + 0.74)
+    const ratchetGain = ctx.createGain()
+    ratchetGain.gain.setValueAtTime(0.02, spin)
+    ratchetGain.gain.exponentialRampToValueAtTime(0.0001, spin + 0.76)
+    ratchet.connect(ratchetGain).connect(this.inputNode)
+    ratchet.start(spin)
+    ratchet.stop(spin + 0.8)
+  }
+
   /**
    * 道具格升起：托盘 0.64s、easeOutCubic 走完 0.42m。
    * 滑轨 #1524 从 0.19s 起播、×1.45，播到 0.64s（源 1.12s 已衰减到 -55dB，尾部再淡 25ms）。

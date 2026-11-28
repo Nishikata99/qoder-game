@@ -5,6 +5,7 @@ import beatsData from './data/beats.json'
 import { GameCanvas, GunTooltip, ItemTooltip } from './components/GameCanvas'
 import { RulesModal, type ModalTab } from './components/RulesModal'
 import { TrumpHandOverlay } from './components/TrumpHandOverlay'
+import { EnemyTrumpOverlay } from './components/EnemyTrumpOverlay'
 import { NarrativeDirector, type NarrativeMode, type NarrativeVisual } from './narrative/NarrativeDirector'
 import { DevBridge } from './game/DevBridge'
 import { DevPanel } from './components/DevPanel'
@@ -18,7 +19,7 @@ import { ENDINGS, type EndingSpec } from './narrative/endingScript'
 import type { Cutscene2D, Playable2D } from './narrative/Cutscene2D'
 import type { GunHoverPayload, ItemHoverPayload } from './scene/SceneManager'
 import type { QualityPreset, SceneManager } from './scene/SceneManager'
-import type { ActorId, Card, GameEvent, GameSnapshot, ItemId } from './game/GameEngine'
+import type { ActorId, Card, GameEvent, GameSnapshot, ItemId, TrumpId } from './game/GameEngine'
 import {
   GameEngine,
   DECK_SIZE,
@@ -37,7 +38,6 @@ interface LootBanner {
   readonly level: number
   readonly items: readonly ItemId[]
 }
-
 interface ClueLine {
   readonly text: string
   readonly channel: DialogueChannel
@@ -276,6 +276,8 @@ export default function App() {
   const [modal, setModal] = useState<ModalTab | null>(null)
   const [guideOpen, setGuideOpen] = useState(() => !hasSeenGuide())
   const [loot, setLoot] = useState<LootBanner | null>(null)
+  /** 敌方亮王牌：卡面侧滑入场，位置比我方王牌扇更靠上 */
+  const [enemyTrump, setEnemyTrump] = useState<{ readonly id: number; readonly trump: TrumpId } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [bloodFlash, setBloodFlash] = useState(0)
   const [muzzleFlash, setMuzzleFlash] = useState(0)
@@ -514,9 +516,15 @@ export default function App() {
           break
         case 'itemUsed':
           break
-        case 'trumpPlayed':
-          if (event.actor === 'player') showNotice(`${event.detail}`)
+        case 'trumpPlayed': {
+          bannerId.current += 1
+          // 自己用的王牌不弹提示：出牌面板/桌面动作已经表达了；只有敌方亮牌才需要演出
+          if (event.actor === 'boss') {
+            setEnemyTrump({ id: bannerId.current, trump: event.trump })
+          }
+          sound.playSpin()
           break
+        }
         case 'perfectWin':
           showNotice(
             event.actor === 'player'
@@ -551,7 +559,7 @@ export default function App() {
           break
       }
     },
-    [showNotice, sound],
+    [sound],
   )
 
   const handleSupplyTrayRise = useCallback(() => {
@@ -768,6 +776,11 @@ export default function App() {
       memory: () => sceneRef.current?.previewRenderMemory() ?? null,
       phase: () => game.getSnapshot().phase,
       items: () => [...game.getSnapshot().player.items],
+      gun: () => sceneRef.current?.gunDebugState() ?? null,
+      enemyTrump: (trump: TrumpId) => {
+        bannerId.current += 1
+        setEnemyTrump({ id: bannerId.current, trump })
+      },
     }
     return () => { delete host.__itemActionDebug }
   }, [game, devBridge])
@@ -1629,6 +1642,10 @@ export default function App() {
       ) : null}
 
       {modal ? <RulesModal initialTab={modal} onClose={() => setModal(null)} /> : null}
+
+      {enemyTrump ? (
+        <EnemyTrumpOverlay key={enemyTrump.id} trump={enemyTrump.trump} onDismiss={() => setEnemyTrump(null)} />
+      ) : null}
 
       {trumpHandOpen && snapshot ? (
         <TrumpHandOverlay

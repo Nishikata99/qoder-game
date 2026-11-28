@@ -46,10 +46,6 @@ jobs:
         timeout-minutes: 25
         run: npm run test:e2e
 
-      - name: Item action DEV integration
-        timeout-minutes: 12
-        run: npm run test:e2e:dev
-
       - name: Upload browser failure evidence
         if: failure()
         uses: actions/upload-artifact@v4

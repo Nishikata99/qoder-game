@@ -474,6 +474,11 @@ const ITEM_MODEL: Readonly<Record<ActionVisualId, ModelKey>> = {
 }
 
 const ITEM_MODEL_SIZE = 0.5
+/** 桌面机位下部分道具投影太扁、轮廓读不出来：按件给更大的归一化尺寸，别动 GLB */
+const ITEM_SIZE_OVERRIDE: Readonly<Partial<Record<ActionVisualId, number>>> = {
+  // 镣铐链环细、灰蓝色又沉进台呢，只有拉长链条才能在真实镜头下一眼认出
+  handcuffs: 0.62,
+}
 // 斜放的放大镜对角线约 0.53，格子取 0.54 才能整件收进边框
 const ITEM_GRID = {
   columns: 4,
@@ -606,6 +611,10 @@ const GUN_LIFT_CLEARANCE = 0.18
 const GUN_RAISE_DURATION = 0.62
 /** 开枪后枪落回桌面的过渡时长 */
 const GUN_LOWER_DURATION = 0.6
+/** 21点进行中枪藏在桌面之下：枪身最高点距台面的间隙，太浅会被低机位看穿 */
+const GUN_HIDDEN_CLEARANCE = 0.15
+/** 执枪回合开始，枪从桌底弹出到展示位的过渡时长 */
+const GUN_DEAL_IN_DURATION = 0.5
 const GUN_SHAKE = {
   delay: 0.045,
   offsetMin: -0.006,
@@ -984,10 +993,16 @@ export class SceneManager {
   private gunRestYaw = 1.3
   /** 开局枪平躺在桌面上；第一次处决时抬起，之后沿用原有持枪动画 */
   private gunHolstered = true
+  /** 枪已端起（处决瞄准位）；dealInGun 只负责展示位，端起单独记状态 */
+  private gunRaised = false
   private gunRaiseGeneration = 0
   private gunHolsterY = GUN_PIVOT.y
+  /** 枪从展示位沉入桌底的垂直距离；按枪身包围盒 + 间隙计算 */
+  private gunHiddenDrop = 0.5
   /** 抬枪/落枪过渡进行中：引擎要等它结束才允许重新发牌 */
   private gunMotionActive = false
+  /** 端枪翻正期间把枪身压在桌面之上；桌底弹出/沉回不需要这条约束 */
+  private gunClampToTable = false
   private gunShakeAfterAim = false
   private gunShakeActive = false
   private readonly gunShakeBase = new THREE.Vector3()
@@ -1128,6 +1143,7 @@ export class SceneManager {
     this.gunShake.add(gun.root)
     this.gunGroup.add(this.gunAim)
     this.holsterGun()
+    this.computeGunHiddenDrop()
     this.drum = gun.drum
     this.muzzleLight = gun.muzzleLight
     this.flash = gun.flash
@@ -1318,14 +1334,13 @@ export class SceneManager {
       this.bossPose.spawn(BOSS_VISUAL_LEVEL)
     }
     this.lastSnapshot = snapshot
-    const wasTargetPickActive = this.targetPickActive
-    this.targetPickActive =
-      snapshot.phase === 'targeting' && snapshot.pendingShot === 'player' && !snapshot.paused
-    if (!this.targetPickActive) this.disarmTargetPick()
-    else if (!wasTargetPickActive) {
-      this.disarmTargetPick()
-      this.refreshShotTargetBoxes()
-    }
+    // 执枪回合开始（玩家或 Boss 持枪）：枪从桌底弹出；回合结束收回桌底。
+    // 处决阶段不收枪：端起/瞄准由 playExecution 接管，落枪交给开枪后的镜头收尾
+    const gunWanted = snapshot.phase === 'targeting' && snapshot.pendingShot !== null
+    if (gunWanted && this.gunHolstered) this.dealInGun()
+    else if (!gunWanted && !this.gunHolstered && snapshot.phase !== 'execution') this.stowGunIfShown()
+    // 枪口选择等枪完全弹出、停在展示位后才点亮
+    this.refreshTargetPick()
     this.applyLevel(snapshot.levelIndex)
     this.syncCards(snapshot)
     this.syncTrumps(snapshot)
@@ -2487,6 +2502,27 @@ export class SceneManager {
     return this.itemActions.getStatus()
   }
 
+  /** DEV 验收：枪状态机读数（弹出/端起/动画中/可见/高度） */
+  gunDebugState(): {
+    holstered: boolean
+    raised: boolean
+    motionActive: boolean
+    visible: boolean
+    y: number
+    restY: number
+    shot: CameraShot
+  } {
+    return {
+      holstered: this.gunHolstered,
+      raised: this.gunRaised,
+      motionActive: this.gunMotionActive,
+      visible: this.gunShake.visible,
+      y: this.gunAim.position.y,
+      restY: this.gunHolsterY,
+      shot: this.shot,
+    }
+  }
+
   seekItemAction(seconds: number): ItemActionStatus | null {
     return this.itemActions.seek(seconds)
   }
@@ -3029,7 +3065,24 @@ export class SceneManager {
     }
 
     // 换模型会改变包围盒，平躺姿态要按新枪重新贴一次桌面
-    if (this.gunHolstered) this.settleGunOnTable()
+    if (this.gunHolstered) {
+      this.settleGunOnTable()
+      this.hideGunBelowTable()
+    }
+  }
+
+  /** 按枪身包围盒高度算出「沉入桌底」的下沉量：最高点留一段间隙再藏 */
+  private computeGunHiddenDrop(): void {
+    const holder =
+      this.gunShake.getObjectByName('ShotgunGLB') ?? this.gunShake.getObjectByName('GunPlaceholder')
+    if (!holder) return
+    this.gunAim.updateWorldMatrix(true, true)
+    const box = new THREE.Box3().setFromObject(holder)
+    if (!Number.isFinite(box.min.y) || !Number.isFinite(box.max.y)) return
+    const height = box.max.y - box.min.y
+    if (height <= 0) return
+    this.gunHiddenDrop = height + GUN_HIDDEN_CLEARANCE
+    if (this.gunHolstered) this.hideGunBelowTable()
   }
 
   /**
@@ -3272,7 +3325,7 @@ export class SceneManager {
     this.updateNarrativeGrade(dt)
     this.updateChains(dt)
     this.updateGunAim(dt)
-    if (this.gunMotionActive) this.keepGunAboveTable()
+    if (this.gunMotionActive && this.gunClampToTable) this.keepGunAboveTable()
     this.updateGunShake(dt)
     this.updateArmedRacks()
     this.updateItems(dt)
@@ -3418,7 +3471,6 @@ export class SceneManager {
           return
         }
         const settled =
-          this.gunHolstered &&
           !this.gunMotionActive &&
           this.shot === 'table' &&
           this.cameraBlend >= 1 &&
@@ -3437,11 +3489,14 @@ export class SceneManager {
 
   private holsterGun(): void {
     this.gunHolstered = true
+    this.gunRaised = false
     this.gunMotionActive = false
     this.gunRaiseGeneration += 1
     this.gunAim.position.copy(GUN_PIVOT)
     this.gunAim.rotation.set(0, this.gunRestYaw, GUN_REST_ROLL)
     this.settleGunOnTable()
+    // 常态（21点进行中）枪沉在桌底；进 targeting 才由 dealInGun 弹出展示
+    this.hideGunBelowTable()
   }
 
   /** 侧翻后按包围盒最低点贴住桌面，换模型/换姿态都能复用 */
@@ -3456,11 +3511,62 @@ export class SceneManager {
     this.gunHolsterY = this.gunAim.position.y
   }
 
-  /** 处决开始：抬升、翻正、瞄准同步完成，整段是一条连贯的「端起」弧线 */
-  private raiseGun(): void {
+  /** 从展示姿态整体下沉到桌面以下并隐藏；姿态不变，只动高度 */
+  private hideGunBelowTable(): void {
+    this.gunAim.position.y -= this.gunHiddenDrop
+    this.gunShake.visible = false
+  }
+
+  /**
+   * 执枪回合开始：像道具一样从桌底弹出，升到桌面平躺展示位。
+   * 结束姿态与 raiseGun 的起点完全一致，后续瞄准/落枪逻辑零改动。
+   */
+  private dealInGun(): void {
     if (!this.gunHolstered) return
     this.gunHolstered = false
+    this.gunRaised = false
     this.gunMotionActive = true
+    const generation = ++this.gunRaiseGeneration
+    // 从隐藏位起步，先落好桌面平躺姿态再显形
+    this.gunAim.position.copy(GUN_PIVOT)
+    this.gunAim.rotation.set(0, this.gunRestYaw, GUN_REST_ROLL)
+    this.gunAim.position.y = this.gunHolsterY - this.gunHiddenDrop
+    this.gunShake.visible = true
+    const fromY = this.gunAim.position.y
+    const overshoot = this.reducedMotion ? 0 : 0.045
+    this.tween({
+      duration: this.reducedMotion ? 0.24 : GUN_DEAL_IN_DURATION,
+      onUpdate: (t) => {
+        if (generation !== this.gunRaiseGeneration) return
+        // 轻微过冲再回落，读起来是「弹」出而不是匀速升起
+        const pulse = Math.sin(Math.PI * t) * overshoot
+        this.gunAim.position.y = fromY + (this.gunHolsterY - fromY) * easeOutCubic(t) + pulse
+      },
+      onComplete: () => {
+        if (generation !== this.gunRaiseGeneration) return
+        this.gunAim.position.y = this.gunHolsterY
+        this.gunMotionActive = false
+        // 枪完全落位后才点亮枪口选择
+        this.refreshTargetPick()
+      },
+    })
+  }
+
+  /** 离开 targeting 的兜底：枪还展示着就按落枪路径收回桌底 */
+  private stowGunIfShown(): void {
+    if (!this.gunHolstered) this.lowerGun(0.1)
+  }
+
+  /** 处决开始：抬升、翻正、瞄准同步完成，整段是一条连贯的「端起」弧线 */
+  private raiseGun(): void {
+    // 枪此时可能已停在展示位（targeting 已弹出），也可能还藏在桌底：都从当前位置端起
+    if (this.gunRaised) return
+    this.gunRaised = true
+    this.gunHolstered = false
+    this.gunShake.visible = true
+    this.gunMotionActive = true
+    // dealInGun 已经把枪露出桌面，端起翻正才会扫到台面
+    this.gunClampToTable = true
     const generation = ++this.gunRaiseGeneration
     const fromY = this.gunAim.position.y
     const fromRoll = this.gunAim.rotation.z
@@ -3477,6 +3583,7 @@ export class SceneManager {
         this.gunAim.position.copy(GUN_PIVOT)
         this.gunAim.rotation.z = 0
         this.gunMotionActive = false
+        this.gunClampToTable = false
       },
     })
   }
@@ -3504,6 +3611,7 @@ export class SceneManager {
   private lowerGun(delay: number): void {
     if (this.gunHolstered) return
     this.gunHolstered = true
+    this.gunRaised = false
     this.gunMotionActive = true
     const generation = ++this.gunRaiseGeneration
     const fromY = this.gunAim.position.y
@@ -3511,7 +3619,8 @@ export class SceneManager {
     const fromYaw = this.gunAim.rotation.y
     const fromPitch = this.gunAim.rotation.x
     const yawDelta = Math.atan2(Math.sin(this.gunRestYaw - fromYaw), Math.cos(this.gunRestYaw - fromYaw))
-    const targetY = this.gunHolsterY
+    // 落枪目标从桌面平躺位延伸到桌底：21点继续时枪不该一直摆在台上
+    const targetY = this.gunHolsterY - this.gunHiddenDrop
     this.tween({
       delay,
       duration: this.reducedMotion ? 0.24 : GUN_LOWER_DURATION,
@@ -3528,6 +3637,9 @@ export class SceneManager {
         this.gunAim.position.y = targetY
         this.gunAim.rotation.set(0, this.gunRestYaw, GUN_REST_ROLL)
         this.gunMotionActive = false
+        this.gunClampToTable = false
+        // 完全沉入桌底后再隐身，下落过程保持可见
+        if (this.gunHolstered) this.gunShake.visible = false
       },
     })
   }
@@ -6987,7 +7099,7 @@ export class SceneManager {
   ): { content: THREE.Group; materials: THREE.MeshStandardMaterial[] } {
     const upright = item === 'aegis'
     const content = new THREE.Group()
-    const targetSize = item === 'gloves' ? 0.48 : ITEM_MODEL_SIZE
+    const targetSize = item === 'gloves' ? 0.48 : ITEM_SIZE_OVERRIDE[item] ?? ITEM_MODEL_SIZE
     const template = source ?? this.itemModelTemplates.get(item)
     if (template) {
       const clone = template.clone(true)
@@ -7468,6 +7580,24 @@ export class SceneManager {
     this.targetArmedHover = null
     this.restoreArmedRacks()
     this.setGunHover(false)
+  }
+
+  /** 选靶点亮的统一入口：枪必须已弹出并停在展示位，玩家输入也没被其它演出锁住 */
+  private refreshTargetPick(): void {
+    const snapshot = this.lastSnapshot
+    const wasActive = this.targetPickActive
+    this.targetPickActive =
+      !!snapshot &&
+      snapshot.phase === 'targeting' &&
+      snapshot.pendingShot === 'player' &&
+      !snapshot.paused &&
+      !snapshot.inputLocked &&
+      !this.gunMotionActive
+    if (!this.targetPickActive) this.disarmTargetPick()
+    else if (!wasActive) {
+      this.disarmTargetPick()
+      this.refreshShotTargetBoxes()
+    }
   }
 
   /** 记录双方架子的原发光并统一换成目标色，亮度每帧由 updateArmedRacks 写入 */

@@ -20,6 +20,7 @@ import {
   span as spanFn,
 } from './pixelDraw'
 import type { DialogueChannel } from './dialogue'
+import cutsceneData from '../data/cutscenes.json'
 
 export type CutsceneSfx =
   | 'doorLock'
@@ -366,7 +367,7 @@ function drawTallyRoom(ctx: Ctx, t: number): void {
   letterbox(ctx)
 }
 
-export const CUTSCENES: Readonly<Record<number, CutsceneSpec>> = {
+const CUTSCENES_RAW: Readonly<Record<number, CutsceneSpec>> = {
   1: {
     levelIndex: 1,
     layer: 2,
@@ -413,3 +414,18 @@ export const CUTSCENES: Readonly<Record<number, CutsceneSpec>> = {
 export function cutsceneFor(levelIndex: number): CutsceneSpec | null {
   return CUTSCENES[levelIndex] ?? null
 }
+
+/** 时长/台词/CUE 以 src/data/cutscenes.json 为准（编辑器可改），draw 仍在此文件实现 */
+export const CUTSCENES: Readonly<Record<number, CutsceneSpec>> = Object.fromEntries(
+  Object.entries(CUTSCENES_RAW).map(([key, spec]) => {
+    const d = cutsceneData.cutscenes[key as '1' | '2']
+    if (!d) return [key, spec]
+    return [key, {
+      ...spec,
+      duration: d.duration,
+      dialogueAnchor: d.dialogueAnchor ?? spec.dialogueAnchor,
+      lines: d.lines as CutsceneLine[],
+      cues: d.cues as CutsceneCue[],
+    }]
+  }),
+) as Record<number, CutsceneSpec>

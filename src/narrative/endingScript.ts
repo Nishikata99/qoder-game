@@ -21,6 +21,7 @@ import {
   type Ctx,
 } from './pixelDraw'
 import type { DialogueChannel } from './dialogue'
+import cutsceneData from '../data/cutscenes.json'
 
 export type EndingSfx =
   | 'lowThump'
@@ -461,7 +462,7 @@ function drawStitchedIn(ctx: Ctx, t: number): void {
   letterbox(ctx)
 }
 
-export const ENDINGS: Readonly<Record<'win' | 'lose', EndingSpec>> = {
+const ENDINGS_RAW: Readonly<Record<'win' | 'lose', EndingSpec>> = {
   win: {
     id: 'win',
     duration: 8.5,
@@ -505,3 +506,20 @@ export const ENDINGS: Readonly<Record<'win' | 'lose', EndingSpec>> = {
     draw: drawStitchedIn,
   },
 }
+
+/** 时长/台词/CUE/可跳过 以 src/data/cutscenes.json 为准（编辑器可改），draw 仍在此文件实现 */
+export const ENDINGS: Readonly<Record<'win' | 'lose', EndingSpec>> = Object.fromEntries(
+  (['win', 'lose'] as const).map((id) => {
+    const spec = ENDINGS_RAW[id]
+    const d = cutsceneData.endings[id]
+    if (!d) return [id, spec]
+    return [id, {
+      ...spec,
+      duration: d.duration,
+      skippable: d.skippable,
+      dialogueAnchor: ('dialogueAnchor' in d ? d.dialogueAnchor : undefined) ?? spec.dialogueAnchor,
+      lines: d.lines as EndingLine[],
+      cues: d.cues as EndingCue[],
+    }]
+  }),
+) as Record<'win' | 'lose', EndingSpec>

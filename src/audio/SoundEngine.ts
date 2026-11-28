@@ -30,6 +30,14 @@ export class SoundEngine {
   private ambient: AmbientGraph | null = null
   private roomTone: RoomToneGraph | null = null
   private roomToneBuffer: AudioBuffer | null = null
+  private introDoorBuffer: AudioBuffer | null = null
+  private introDoorUrl: string | null = null
+  private emptyClickBuffer: AudioBuffer | null = null
+  private emptyClickUrl: string | null = null
+  private cardDealBuffer: AudioBuffer | null = null
+  private cardDealUrl: string | null = null
+  private supplySlideBuffer: AudioBuffer | null = null
+  private supplySlideUrl: string | null = null
   private volume: number
 
   constructor(options: SoundEngineOptions = {}) {
@@ -313,101 +321,6 @@ export class SoundEngine {
     this.thump(t + Math.min(interval * 0.32, 0.3), 0.17)
   }
 
-  /** Cylinder swings out, rounds drop in, then it snaps shut. */
-  playReload(): void {
-    const ctx = this.ensureContext()
-    const t = ctx.currentTime + 0.005
-
-    this.noiseHit(t, 0.16, 620, 2.2, 0.16, 'bandpass')
-    this.tone(t, 0.2, 240, 96, 0.12, 'sine')
-
-    for (let i = 0; i < 5; i += 1) {
-      const when = t + 0.24 + i * 0.125
-      this.noiseHit(when, 0.05, 1500 + i * 240, 5, 0.22, 'bandpass')
-      this.tone(when, 0.05, 780 - i * 40, 520 - i * 30, 0.09, 'triangle')
-      this.noiseHit(when + 0.02, 0.05, 260, 1.4, 0.12, 'lowpass')
-    }
-
-    const snap = t + 0.92
-    this.noiseHit(snap, 0.035, 3400, 1.4, 0.3, 'highpass')
-    this.tone(snap, 0.09, 2100, 1500, 0.14, 'triangle')
-    this.tone(snap, 0.12, 150, 92, 0.16, 'sine')
-
-    const spin = t + 1.02
-    const spinSource = this.noiseSource()
-    const spinFilter = this.createFilter('bandpass', 1100, 1.6)
-    const spinGain = ctx.createGain()
-    spinGain.gain.setValueAtTime(0.0001, spin)
-    spinGain.gain.exponentialRampToValueAtTime(0.1, spin + 0.06)
-    spinGain.gain.exponentialRampToValueAtTime(0.0001, spin + 0.76)
-    spinSource.connect(spinFilter).connect(spinGain).connect(this.inputNode)
-    spinSource.start(spin, 0.3)
-    spinSource.stop(spin + 0.8)
-    const ratchet = ctx.createOscillator()
-    ratchet.type = 'square'
-    ratchet.frequency.setValueAtTime(26, spin)
-    ratchet.frequency.linearRampToValueAtTime(9, spin + 0.74)
-    const ratchetGain = ctx.createGain()
-    ratchetGain.gain.setValueAtTime(0.02, spin)
-    ratchetGain.gain.exponentialRampToValueAtTime(0.0001, spin + 0.76)
-    ratchet.connect(ratchetGain).connect(this.inputNode)
-    ratchet.start(spin)
-    ratchet.stop(spin + 0.8)
-  }
-
-  /** Ratcheting gears followed by the glint of a picked-up item. */
-  playItemUse(): void {
-    const ctx = this.ensureContext()
-    const t = ctx.currentTime + 0.005
-    for (let i = 0; i < 7; i += 1) {
-      const when = t + i * 0.036
-      this.noiseHit(when, 0.03, 1250 + i * 190, 4.5, 0.26, 'bandpass')
-      this.tone(when, 0.028, 420 + i * 55, 300 + i * 40, 0.05, 'square')
-    }
-    this.tone(t + 0.02, 0.16, 96, 58, 0.16, 'sine')
-    this.tone(t + 0.28, 0.3, 640, 1180, 0.11, 'sine')
-    this.tone(t + 0.3, 0.22, 2380, 2200, 0.06, 'triangle')
-    this.noiseHit(t + 0.29, 0.14, 3400, 2, 0.12, 'bandpass')
-  }
-
-  playItemContact(kind: 'metal' | 'paper' | 'glass' | 'soft'): void {
-    const ctx = this.ensureContext()
-    const t = ctx.currentTime + 0.005
-    if (kind === 'paper') {
-      this.noiseHit(t, 0.08, 2200, 1.4, 0.12, 'bandpass')
-      this.tone(t + 0.02, 0.06, 180, 120, 0.04, 'sine')
-      return
-    }
-    if (kind === 'glass') {
-      this.tone(t, 0.16, 1850, 1180, 0.07, 'sine')
-      this.tone(t + 0.01, 0.12, 2780, 1960, 0.035, 'triangle')
-      this.noiseHit(t, 0.04, 4200, 2.2, 0.06, 'highpass')
-      return
-    }
-    if (kind === 'soft') {
-      this.tone(t, 0.12, 210, 135, 0.06, 'sine')
-      this.noiseHit(t, 0.05, 620, 1.1, 0.05, 'lowpass')
-      return
-    }
-    this.noiseHit(t, 0.035, 3200, 1.2, 0.16, 'highpass')
-    this.tone(t, 0.07, 2400, 1600, 0.07, 'triangle')
-    this.tone(t + 0.01, 0.09, 170, 110, 0.05, 'sine')
-  }
-
-  /** 沙漏逆转：机械秒针连走四拍，随后一声低沉的玻璃共鸣 */
-  playHourglass(): void {
-    const ctx = this.ensureContext()
-    const t = ctx.currentTime + 0.005
-    for (let i = 0; i < 4; i += 1) {
-      const when = t + i * 0.16
-      this.noiseHit(when, 0.018, 4200, 2.4, 0.16, 'highpass')
-      this.tone(when, 0.03, 1860, 1500, 0.05, 'square')
-    }
-    this.tone(t + 0.66, 0.5, 1180, 720, 0.1, 'sine')
-    this.tone(t + 0.66, 0.34, 2360, 1500, 0.045, 'triangle')
-    this.noiseHit(t + 0.64, 0.3, 2400, 1.4, 0.08, 'bandpass')
-  }
-
   /** 外部底噪（环境录音主体）：fetch→decode→loop→compressor 前；失败回落纯合成床 */
   async startRoomTone(url: string): Promise<boolean> {
     const ctx = this.ensureContext()
@@ -466,99 +379,6 @@ export class SoundEngine {
     this.tone(t, 0.02, 1250, 900, 0.02, 'square')
   }
 
-  /** 椅子吱呀：木头受压的低频摩擦 */
-  playChairCreak(): void {
-    const ctx = this.ensureContext()
-    const t = ctx.currentTime + 0.005
-    this.noiseHit(t, 0.42, 320, 3, 0.11, 'bandpass')
-    this.tone(t, 0.45, 92, 58, 0.08, 'sine')
-    this.noiseHit(t + 0.18, 0.2, 480, 4, 0.06, 'bandpass')
-  }
-
-  /** 身后门锁：链拖 + 两声锁舌 */
-  playDoorLock(): void {
-    const ctx = this.ensureContext()
-    const t = ctx.currentTime + 0.005
-    this.noiseHit(t, 0.3, 700, 1.6, 0.16, 'bandpass')
-    this.noiseHit(t + 0.32, 0.05, 1900, 2.5, 0.3, 'highpass')
-    this.tone(t + 0.32, 0.1, 240, 150, 0.2, 'triangle')
-    this.noiseHit(t + 0.46, 0.04, 2600, 2, 0.22, 'highpass')
-    this.tone(t + 0.46, 0.12, 160, 92, 0.16, 'sine')
-  }
-
-  /** 纸片轻响 */
-  playPaperRustle(): void {
-    const ctx = this.ensureContext()
-    const t = ctx.currentTime + 0.005
-    const source = this.noiseSource()
-    const filter = this.createFilter('bandpass', 2400, 0.8)
-    const gain = ctx.createGain()
-    gain.gain.setValueAtTime(0.0001, t)
-    gain.gain.exponentialRampToValueAtTime(0.11, t + 0.03)
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.26)
-    source.connect(filter).connect(gain).connect(this.inputNode)
-    source.start(t, Math.random() * 0.8)
-    source.stop(t + 0.3)
-  }
-
-  /** 转轮空转：入场与局内共用的 ratchet 质感 */
-  playSpin(): void {
-    const ctx = this.ensureContext()
-    const spin = ctx.currentTime + 0.01
-    const spinSource = this.noiseSource()
-    const spinFilter = this.createFilter('bandpass', 1100, 1.6)
-    const spinGain = ctx.createGain()
-    spinGain.gain.setValueAtTime(0.0001, spin)
-    spinGain.gain.exponentialRampToValueAtTime(0.1, spin + 0.06)
-    spinGain.gain.exponentialRampToValueAtTime(0.0001, spin + 0.76)
-    spinSource.connect(spinFilter).connect(spinGain).connect(this.inputNode)
-    spinSource.start(spin, 0.3)
-    spinSource.stop(spin + 0.8)
-    const ratchet = ctx.createOscillator()
-    ratchet.type = 'square'
-    ratchet.frequency.setValueAtTime(26, spin)
-    ratchet.frequency.linearRampToValueAtTime(9, spin + 0.74)
-    const ratchetGain = ctx.createGain()
-    ratchetGain.gain.setValueAtTime(0.02, spin)
-    ratchetGain.gain.exponentialRampToValueAtTime(0.0001, spin + 0.76)
-    ratchet.connect(ratchetGain).connect(this.inputNode)
-    ratchet.start(spin)
-    ratchet.stop(spin + 0.8)
-  }
-
-  /** 低频 thump：T1 抬头 / 过渡重音 */
-  playLowThump(): void {
-    const ctx = this.ensureContext()
-    this.thump(ctx.currentTime + 0.01, 0.3)
-  }
-
-  /** Boss 方向的低频呼吸 */
-  playBossBreath(): void {
-    const ctx = this.ensureContext()
-    const t = ctx.currentTime + 0.01
-    this.tone(t, 1.2, 55, 38, 0.12, 'sine')
-    this.noiseHit(t + 0.1, 1.0, 240, 0.9, 0.06, 'lowpass')
-  }
-
-  /** 收账人的硬币单响：金属高频叮 + 算盘木珠 */
-  playCoin(): void {
-    const ctx = this.ensureContext()
-    const t = ctx.currentTime + 0.005
-    this.tone(t, 0.35, 2900, 2600, 0.08, 'sine')
-    this.tone(t, 0.22, 4300, 4100, 0.04, 'sine')
-    this.noiseHit(t, 0.03, 5200, 3, 0.06, 'highpass')
-    this.noiseHit(t + 0.12, 0.025, 1600, 4, 0.05, 'bandpass')
-  }
-
-  /** 缝线穿过皮革：湿摩擦 + 线被抽紧的一声 */
-  playStitch(): void {
-    const ctx = this.ensureContext()
-    const t = ctx.currentTime + 0.005
-    this.noiseHit(t, 0.32, 1400, 2, 0.1, 'bandpass')
-    this.noiseHit(t + 0.2, 0.22, 700, 2.5, 0.09, 'bandpass')
-    this.tone(t + 0.06, 0.3, 220, 70, 0.05, 'sine')
-  }
-
   /** 走廊底噪：38Hz 低鸣 + 低通噪声，随 CRT 故障加深 */
   private corridorDrone: { output: GainNode; sources: AudioScheduledSourceNode[] } | null = null
 
@@ -610,13 +430,183 @@ export class SoundEngine {
     }
   }
 
-  /** 门轴长吱呀：比椅吱更慢更粗 */
-  playDoorCreak(): void {
+  /** 预解码实录门轴声（fetch→decode），点门时零延迟触发；失败时门无声 */
+  async preloadIntroDoor(url: string): Promise<boolean> {
+    if (this.introDoorBuffer && this.introDoorUrl === url) return true
     const ctx = this.ensureContext()
+    try {
+      const response = await fetch(url)
+      if (!response.ok) return false
+      this.introDoorBuffer = await ctx.decodeAudioData(await response.arrayBuffer())
+      this.introDoorUrl = url
+      return true
+    } catch {
+      this.introDoorBuffer = null
+      this.introDoorUrl = null
+      return false
+    }
+  }
+
+  /** 预解码发牌的拍桌实录，失败时回落合成滑牌声 */
+  async preloadCardDeal(url: string): Promise<boolean> {
+    if (this.cardDealBuffer && this.cardDealUrl === url) return true
+    const ctx = this.ensureContext()
+    try {
+      const response = await fetch(url)
+      if (!response.ok) return false
+      this.cardDealBuffer = await ctx.decodeAudioData(await response.arrayBuffer())
+      this.cardDealUrl = url
+      return true
+    } catch {
+      this.cardDealBuffer = null
+      this.cardDealUrl = null
+      return false
+    }
+  }
+
+  /** 预解码补给托盘滑轨（Mixkit #1524），点开补给时零延迟触发 */
+  async preloadSupplySlide(url: string): Promise<boolean> {
+    if (this.supplySlideBuffer && this.supplySlideUrl === url) return true
+    const ctx = this.ensureContext()
+    try {
+      const response = await fetch(url)
+      if (!response.ok) return false
+      this.supplySlideBuffer = await ctx.decodeAudioData(await response.arrayBuffer())
+      this.supplySlideUrl = url
+      return true
+    } catch {
+      this.supplySlideBuffer = null
+      this.supplySlideUrl = null
+      return false
+    }
+  }
+
+  /**
+   * 发牌：录音是「牌拍在桌上」的一声，不是滑牌，所以让拍击点落在卡片快就位时。
+   * 动画用 easeOutCubic、总长 0.52s：0.20s 时卡片已走完 76%，0.26s 走完 88%。
+   * 录音 0.097s 前是静音、峰值在 0.159s，因此起点延后 0.20s、从 0.097s 起播，
+   * 峰值落在 0.262s，尾部静音截断到 0.18s 长度。
+   * 素材是 22.05kHz 单声道 WAV（OGG 在 iOS Safari 上不支持）。
+   */
+  playCardDealRecorded(): boolean {
+    const ctx = this.ensureContext()
+    if (!this.cardDealBuffer) {
+      this.playCardSlide()
+      return false
+    }
+    const t = ctx.currentTime + 0.2
+    const source = ctx.createBufferSource()
+    source.buffer = this.cardDealBuffer
+    const gain = ctx.createGain()
+    gain.gain.setValueAtTime(1, t)
+    gain.gain.setValueAtTime(1, t + 0.165)
+    gain.gain.linearRampToValueAtTime(0.0001, t + 0.18)
+    source.connect(gain).connect(this.inputNode)
+    source.start(t, 0.097, 0.18)
+    return true
+  }
+
+  /**
+   * 道具格升起：托盘 0.64s、easeOutCubic 走完 0.42m。
+   * 滑轨 #1524 从 0.19s 起播、×1.45，播到 0.64s（源 1.12s 已衰减到 -55dB，尾部再淡 25ms）。
+   * 只这一层，不叠落座咔哒；录音峰值 -14.3dBFS，给 2.4 倍补到约 -6.7。
+   */
+  playSupplyTrayRise(): boolean {
+    const ctx = this.ensureContext()
+    if (!this.supplySlideBuffer) return false
+    const t = ctx.currentTime + 0.01
+    const slide = ctx.createBufferSource()
+    slide.buffer = this.supplySlideBuffer
+    slide.playbackRate.value = 1.45
+    const gain = ctx.createGain()
+    gain.gain.setValueAtTime(2.4, t)
+    gain.gain.setValueAtTime(2.4, t + 0.615)
+    gain.gain.linearRampToValueAtTime(0.0001, t + 0.64)
+    slide.connect(gain).connect(this.inputNode)
+    slide.start(t, 0.19)
+    slide.stop(t + 0.645)
+    return true
+  }
+
+  /**
+   * 装弹时弹仓总览：8 颗子弹从 0.46s 起逐个升起，最后一颗约 1.30s 到位。
+   * 同一条 #1524 滑轨，从 0.19s 起、×1.0 播 0.90s（源 1.09s 已到 -55dB），尾部 30ms 淡出。
+   */
+  playBulletTrayReveal(): boolean {
+    const ctx = this.ensureContext()
+    if (!this.supplySlideBuffer) return false
+    const t = ctx.currentTime + 0.01
+    const slide = ctx.createBufferSource()
+    slide.buffer = this.supplySlideBuffer
+    const gain = ctx.createGain()
+    gain.gain.setValueAtTime(2.4, t)
+    gain.gain.setValueAtTime(2.4, t + 0.87)
+    gain.gain.linearRampToValueAtTime(0.0001, t + 0.9)
+    slide.connect(gain).connect(this.inputNode)
+    slide.start(t, 0.19)
+    slide.stop(t + 0.905)
+    return true
+  }
+
+  /** 预解码空膛击发的实录咔哒声，失败时回落合成声 */
+  async preloadEmptyClick(url: string): Promise<boolean> {
+    if (this.emptyClickBuffer && this.emptyClickUrl === url) return true
+    const ctx = this.ensureContext()
+    try {
+      const response = await fetch(url)
+      if (!response.ok) return false
+      this.emptyClickBuffer = await ctx.decodeAudioData(await response.arrayBuffer())
+      this.emptyClickUrl = url
+      return true
+    } catch {
+      this.emptyClickBuffer = null
+      this.emptyClickUrl = null
+      return false
+    }
+  }
+
+  /**
+   * 空膛击发：只取录音里第一下咔哒（0.19–0.30s），与 0.1s 枪口闪光同帧起、在后坐收尾前结束。
+   * 录音本身峰值 +2.3dBFS（两处削波），所以增益压到 0.7。
+   */
+  playEmptyClickRecorded(): boolean {
+    const ctx = this.ensureContext()
+    if (!this.emptyClickBuffer) {
+      this.playClickEmpty()
+      return false
+    }
     const t = ctx.currentTime + 0.005
-    this.noiseHit(t, 0.7, 420, 2.5, 0.12, 'bandpass')
-    this.tone(t, 0.75, 160, 55, 0.07, 'sawtooth')
-    this.noiseHit(t + 0.25, 0.4, 300, 3, 0.08, 'bandpass')
+    const source = ctx.createBufferSource()
+    source.buffer = this.emptyClickBuffer
+    const gain = ctx.createGain()
+    gain.gain.setValueAtTime(0.7, t)
+    gain.gain.setValueAtTime(0.7, t + 0.09)
+    gain.gain.linearRampToValueAtTime(0.0001, t + 0.115)
+    source.connect(gain).connect(this.inputNode)
+    source.start(t, 0.19)
+    source.stop(t + 0.12)
+    return true
+  }
+
+
+  /**
+   * 开头推门：与左门 1.1 秒开门动画对齐。
+   * 录音 0.131s 前是静音、0.802s 后是静音，所以从 0.131s 起播；
+   * rate 0.7909 使 0.671s 的有效声音拉长到约 0.85s，收在门将转完时。
+   */
+  playIntroDoor(): boolean {
+    const ctx = this.ensureContext()
+    if (!this.introDoorBuffer) return false
+    const t = ctx.currentTime + 0.01
+    const source = ctx.createBufferSource()
+    source.buffer = this.introDoorBuffer
+    source.playbackRate.value = 0.7909
+    const gain = ctx.createGain()
+    gain.gain.setValueAtTime(0.88, t)
+    source.connect(gain).connect(this.inputNode)
+    source.start(t, 0.131)
+    source.stop(t + 1.1)
+    return true
   }
 
   /** 推门瞬间的耳鸣：3.2kHz 细高频，慢起快收 */
@@ -640,6 +630,14 @@ export class SoundEngine {
     this.stopCorridorDrone(0.05)
     this.stopRoomTone(0.05)
     this.roomToneBuffer = null
+    this.introDoorBuffer = null
+    this.introDoorUrl = null
+    this.emptyClickBuffer = null
+    this.emptyClickUrl = null
+    this.cardDealBuffer = null
+    this.cardDealUrl = null
+    this.supplySlideBuffer = null
+    this.supplySlideUrl = null
     const ctx = this.ctx
     this.ctx = null
     this.input = null

@@ -68,9 +68,9 @@ beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
 
 describe('数字牌与目标值', () => {
-  it('血量配置为玩家 4/4/4，Boss 4/5/6', () => {
+  it('血量配置为玩家 4/4/4，Boss 4/4/5', () => {
     expect(LEVELS.map((level) => level.playerHp)).toEqual([4, 4, 4])
-    expect(LEVELS.map((level) => level.hp)).toEqual([4, 5, 6])
+    expect(LEVELS.map((level) => level.hp)).toEqual([4, 4, 5])
   })
 
   it('1 固定按 1 点计，目标改变时爆牌阈值同步改变', () => {
@@ -898,8 +898,8 @@ describe('层间补给', () => {
     expect(options.every((item: ItemId) => ITEM_IDS.includes(item))).toBe(true)
   })
 
-  it('开局补给 0/1/1，弹仓打空重装发 1/2/4', () => {
-    expect(LEVELS.map((level) => level.supply)).toEqual([0, 1, 1])
+  it('开局补给 0/1/2，弹仓打空重装发 1/2/4', () => {
+    expect(LEVELS.map((level) => level.supply)).toEqual([0, 1, 2])
     expect(LEVELS.map((level) => level.reloadSupply)).toEqual([1, 2, 4])
   })
 

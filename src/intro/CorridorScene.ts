@@ -116,6 +116,7 @@ export class CorridorScene {
   private readonly resizeObserver: ResizeObserver
   private doorPivotL: THREE.Object3D | null = null
   private doorPivotR: THREE.Object3D | null = null
+  private resumeAfterOpen = false
   private phase: Phase = 'loading'
   private phaseTime = 0
   private elapsed = 0
@@ -269,23 +270,26 @@ export class CorridorScene {
   /** 左门 = 新开一局（沿用 CRT 故障开场），右门 = 有存档才可续玩，否则封死 */
   chooseDoor(side: 'L' | 'R'): void {
     if (this.phase !== 'choose') return
-    // 封死的门只回一声闷响：保留悬停提示，让玩家看清它进不去
-    if (side === 'R' && this.resumeLevel === null) {
-      this.sound.playLowThump()
-      return
-    }
+    // 封死的门不响应：保留悬停提示，让玩家看清它进不去
+    if (side === 'R' && this.resumeLevel === null) return
     this.setHover(null)
+    this.callbacks.onDoorChosen()
     if (side === 'R') {
-      this.callbacks.onDoorChosen()
-      this.callbacks.onResume()
+      // 右门复用左门的开门演出：门扇转开 1.1s + CRT 故障，黑场交给 App 层的模糊睁眼
+      this.resumeAfterOpen = true
+      this.sound.playIntroDoor()
+      this.sound.playTinnitus()
+      this.sound.setCorridorDroneLevel(3.2, 0.6)
+      this.phase = 'glitch'
+      this.phaseTime = 0
+      this.openFrom = this.doorPivotR?.rotation.y ?? 0
       return
     }
-    this.callbacks.onDoorChosen()
     this.callbacks.onNewRun()
     this.phase = 'glitch'
     this.phaseTime = 0
     this.openFrom = this.doorPivotL?.rotation.y ?? 0
-    this.sound.playDoorCreak()
+    this.sound.playIntroDoor()
     this.sound.playTinnitus()
     this.sound.setCorridorDroneLevel(3.2, 0.6)
   }
@@ -591,11 +595,19 @@ export class CorridorScene {
       this.camera.position.y = 1.6 + breathe + (Math.random() - 0.5) * 0.05 * t
       this.camera.lookAt(this.gazeX, this.gazeY, -14)
       this.camera.rotateZ((Math.random() - 0.5) * 0.06 * t)
-      if (this.doorPivotL) {
+      if (this.resumeAfterOpen ? this.doorPivotR : this.doorPivotL) {
+        const door = this.resumeAfterOpen ? this.doorPivotR! : this.doorPivotL!
         const open = Math.min(1, this.phaseTime / OPEN_SECONDS)
-        this.doorPivotL.rotation.y = this.openFrom + easeInOutCubic(open) * 1.85
+        const sign = this.resumeAfterOpen ? -1 : 1
+        door.rotation.y = this.openFrom + easeInOutCubic(open) * 1.85 * sign
       }
       if (t >= 1) {
+        if (this.resumeAfterOpen) {
+          // 黑场由 App 的 vr-blackout + wake-blur 接管，这里直接交棒，避免叠两次黑屏
+          this.phase = 'done'
+          this.callbacks.onResume()
+          return
+        }
         this.phase = 'black'
         this.phaseTime = 0
       }
@@ -727,8 +739,6 @@ export class CorridorScene {
     if (!this.walkLineOpen && this.phaseTime >= line.at) {
       this.walkLineOpen = true
       this.callbacks.onWalkLine(line.text)
-      if (line.sfx === 'paperRustle') this.sound.playPaperRustle()
-      else if (line.sfx === 'lowThump') this.sound.playLowThump()
       return
     }
     if (this.walkLineOpen && this.phaseTime >= line.end) {

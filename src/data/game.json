@@ -4,8 +4,8 @@
       "id": 1,
       "name": "锈蚀看门人",
       "title": "门厅 · 滴水的地下室",
-      "hp": 4,
-      "playerHp": 4,
+      "hp": 2,
+      "playerHp": 2,
       "supply": 0,
       "reloadSupply": 1,
       "personality": "cautious"
@@ -15,7 +15,7 @@
       "name": "赌命收账人",
       "title": "账房 · 发霉的赌桌",
       "hp": 4,
-      "playerHp": 4,
+      "playerHp": 3,
       "supply": 1,
       "reloadSupply": 2,
       "personality": "gambler"

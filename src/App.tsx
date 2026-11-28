@@ -6,6 +6,7 @@ import { GameCanvas, GunTooltip, ItemTooltip } from './components/GameCanvas'
 import { RulesModal, type ModalTab } from './components/RulesModal'
 import { TrumpHandOverlay } from './components/TrumpHandOverlay'
 import { EnemyTrumpOverlay } from './components/EnemyTrumpOverlay'
+import { MobileControls, RotateGate, useMobileLayout } from './components/MobileControls'
 import { NarrativeDirector, type NarrativeMode, type NarrativeVisual } from './narrative/NarrativeDirector'
 import { DevBridge } from './game/DevBridge'
 import { DevPanel } from './components/DevPanel'
@@ -17,7 +18,7 @@ import type { DialogueChannel } from './narrative/dialogue'
 import { cutsceneFor } from './narrative/cutsceneScript'
 import { ENDINGS, type EndingSpec } from './narrative/endingScript'
 import type { Cutscene2D, Playable2D } from './narrative/Cutscene2D'
-import type { GunHoverPayload, ItemHoverPayload } from './scene/SceneManager'
+import type { GunHoverPayload, ItemHoverPayload, TableAction } from './scene/SceneManager'
 import type { QualityPreset, SceneManager } from './scene/SceneManager'
 import type { ActorId, Card, GameEvent, GameSnapshot, ItemId, TrumpId } from './game/GameEngine'
 import {
@@ -265,6 +266,9 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null)
   const snapshotRef = useRef<GameSnapshot | null>(null)
   snapshotRef.current = snapshot
+  const [targetPickReady, setTargetPickReady] = useState(false)
+  // 粗指针设备才挂触控层/横屏门禁；桌面鼠标下两个值都是 false
+  const { coarse, portrait } = useMobileLayout()
   const [hover, setHover] = useState<ItemHoverPayload | null>(null)
   const [gunHover, setGunHover] = useState<GunHoverPayload | null>(null)
   const [muted, setMuted] = useState(() => readSettings().muted ?? false)
@@ -1094,18 +1098,31 @@ export default function App() {
   const playerTurn = phase === 'playerTurn'
   const inputLocked = snapshot?.inputLocked ?? false
   const canAct = playerTurn && !inputLocked && !trumpHandOpen
+  const tableActionsAllowed = canAct && !snapshot?.paused && !narrativeActive && modal === null
+  const mobileControlsVisible =
+    coarse && started && !narrativeActive && !paused && !glovePicking && modal === null
   const finished = phase === 'gameOver' || phase === 'victory'
   const level = snapshot?.level ?? (LEVELS[0] as (typeof LEVELS)[number])
   const activeClueLine = bossBark ?? clueLine
 
+  // 触屏按钮和桌面快捷键走同一套引擎校验；这里不改变桌面行为
+  function handleMobileAction(action: TableAction): void {
+    const current = game.getSnapshot()
+    if (current.phase !== 'playerTurn' || current.paused || current.inputLocked ||
+      narrativeRef.current || directorRef.current || modal !== null || trumpHandOpen) return
+    finishFirstTurnHint()
+    if (action === 'hit') game.hit()
+    else game.stand()
+  }
+
   return (
-    <main className="relative h-full w-full overflow-hidden bg-abyss-950">
+    <main className={`relative h-full w-full overflow-hidden bg-abyss-950${coarse ? ' is-touch' : ''}`}>
       <div className="absolute inset-0">
         {corridorState === 'done' ? (
           <GameCanvas
             engine={game}
             snapshot={snapshot}
-            tableActionsAllowed={canAct && !snapshot?.paused && !narrativeActive && modal === null}
+            tableActionsAllowed={tableActionsAllowed}
             supplyRevealAllowed={!narrativeActive}
             stealTargeting={glovePicking}
             onTableAction={(action) => {
@@ -1120,6 +1137,7 @@ export default function App() {
             onSupplyTrayRise={handleSupplyTrayRise}
             onBulletTrayReveal={handleBulletTrayReveal}
             onTargetPick={(target) => game.chooseTarget(target)}
+            onTargetPickReadyChange={setTargetPickReady}
             onHoverChange={setHover}
             onGunHoverChange={setGunHover}
             onSceneReady={(scene) => {
@@ -1194,6 +1212,11 @@ export default function App() {
       {/* Minimal corner chrome. */}
       <div
         className={`pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-4 transition-opacity duration-700 ${narrativeActive ? 'opacity-0' : 'opacity-100'}`}
+        style={{
+          paddingTop: 'max(1rem, var(--safe-top))',
+          paddingLeft: 'max(1rem, var(--safe-left))',
+          paddingRight: 'max(1rem, var(--safe-right))',
+        }}
       >
         <div className="flex items-center gap-3">
           <span className="h-[1px] w-8 bg-rust-500/50 max-[420px]:hidden" />
@@ -1253,6 +1276,7 @@ export default function App() {
         } ${showFirstTurnHint ? 'corner-tools--defer' : ''} ${
           narrativeActive ? 'pointer-events-none opacity-0' : 'opacity-100'
         }`}
+        style={{ right: 'max(1rem, var(--safe-right))' }}
       >
         <button
           type="button"
@@ -1561,7 +1585,7 @@ export default function App() {
       {showFirstTurnHint && snapshot && !narrativeActive ? (
         <div
           aria-live="polite"
-          className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-3"
+          className={`pointer-events-none absolute inset-x-0 z-20 flex justify-center px-3 ${coarse ? 'bottom-[5.4rem]' : 'bottom-3'}`}
         >
           <p className="rounded-sm border border-rust-500/35 bg-black/90 px-3 py-1.5 text-center text-[10px] leading-relaxed tracking-[0.08em] text-bone-200/80 shadow-lg shadow-black/60">
             你 {snapshot.player.visibleHand.total} 点 · 明牌{' '}
@@ -1569,7 +1593,7 @@ export default function App() {
               (sum, card) => sum + card.rank,
               0,
             )}{' '}
-            点 · 点桌沿键或按 H / S
+            点 · {coarse ? '点下方「要牌 / 停牌」' : '点桌沿键或按 H / S'}
           </p>
         </div>
       ) : null}
@@ -1577,7 +1601,7 @@ export default function App() {
       {showTargetHint && !showFirstTurnHint && snapshot && !narrativeActive ? (
         <div className="pointer-events-none absolute inset-0 z-20 -translate-y-10 flex items-center justify-center px-6">
           <p className="clue-line narrative-subtitle max-w-2xl text-center font-display text-[15px] leading-relaxed tracking-[0.18em] text-bone-100/90">
-            点枪拿起裁决权，再点任一方的血袋扣下扳机
+            {coarse ? '枪已就位：点下方「射向它 / 射向自己」' : '点枪拿起裁决权，再点任一方的血袋扣下扳机'}
           </p>
         </div>
       ) : null}
@@ -1725,6 +1749,17 @@ export default function App() {
 
       <ItemTooltip payload={hover} />
       <GunTooltip payload={narrativeActive ? null : gunHover} />
+
+      <MobileControls
+        snapshot={snapshot}
+        visible={mobileControlsVisible}
+        actionsAllowed={tableActionsAllowed}
+        onAction={handleMobileAction}
+        onTrump={handleTrumpDeckClick}
+        targetReady={targetPickReady}
+        onTarget={(target) => game.chooseTarget(target)}
+      />
+      <RotateGate active={coarse && portrait} />
     </main>
   )
 }

@@ -17,6 +17,7 @@ export interface GameCanvasProps {
   readonly onItemUse?: (actor: ActorId, item: ItemId) => void
   readonly onTrumpDeckClick?: () => void
   readonly onTargetPick?: (target: ActorId) => void
+  readonly onTargetPickReadyChange?: (ready: boolean) => void
   readonly onHoverChange?: (payload: ItemHoverPayload | null) => void
   readonly onGunHoverChange?: (payload: GunHoverPayload | null) => void
   readonly onBossPoseCue?: (cue: BossPoseCue) => void
@@ -41,6 +42,7 @@ export function GameCanvas({
   onItemUse,
   onTrumpDeckClick,
   onTargetPick,
+  onTargetPickReadyChange,
   onHoverChange,
   onGunHoverChange,
   onBossPoseCue,
@@ -57,16 +59,16 @@ export function GameCanvas({
   const hostRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sceneRef = useRef<SceneManager | null>(null)
-  const callbacksRef = useRef({ onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onSupplyTrayRise, onBulletTrayReveal, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot })
+  const callbacksRef = useRef({ onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onTargetPickReadyChange, onHoverChange, onGunHoverChange, onBossPoseCue, onSupplyTrayRise, onBulletTrayReveal, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot })
   const readyRef = useRef(onSceneReady)
   const [error, setError] = useState<string | null>(null)
   const setErrorRef = useRef(setError)
 
   useEffect(() => {
-    callbacksRef.current = { onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onSupplyTrayRise, onBulletTrayReveal, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot }
+    callbacksRef.current = { onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onTargetPickReadyChange, onHoverChange, onGunHoverChange, onBossPoseCue, onSupplyTrayRise, onBulletTrayReveal, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot }
     readyRef.current = onSceneReady
     setErrorRef.current = setError
-  }, [onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onHoverChange, onGunHoverChange, onBossPoseCue, onSupplyTrayRise, onBulletTrayReveal, onSceneReady, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot, setError])
+  }, [onTableAction, onItemUse, onTrumpDeckClick, onTargetPick, onTargetPickReadyChange, onHoverChange, onGunHoverChange, onBossPoseCue, onSupplyTrayRise, onBulletTrayReveal, onSceneReady, onLoadProgress, onLoadError, onItemCue, onItemActionStatus, onItemPresented, onItemSnapshot, setError])
 
   useEffect(() => {
     const host = hostRef.current
@@ -82,6 +84,7 @@ export function GameCanvas({
         onItemClick: (actor, item) => callbacksRef.current.onItemUse?.(actor, item),
         onTrumpDeckClick: () => callbacksRef.current.onTrumpDeckClick?.(),
         onTargetPick: (target) => callbacksRef.current.onTargetPick?.(target),
+        onTargetPickReadyChange: (ready) => callbacksRef.current.onTargetPickReadyChange?.(ready),
         onBossPoseCue: (cue) => callbacksRef.current.onBossPoseCue?.(cue),
         onSupplyTrayRise: () => callbacksRef.current.onSupplyTrayRise?.(),
         onBulletTrayReveal: () => callbacksRef.current.onBulletTrayReveal?.(),

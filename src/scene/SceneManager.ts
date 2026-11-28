@@ -69,6 +69,8 @@ export interface SceneCallbacks {
   readonly onTrumpDeckClick?: () => void
   /** 选枪口阶段：点枪进入选择，再点双方血袋架决定枪口朝向 */
   readonly onTargetPick?: (target: ActorId) => void
+  /** 枪口拾取是否已放开：移动端触控按钮据此启用/禁用 */
+  readonly onTargetPickReadyChange?: (ready: boolean) => void
   /** 选枪口前悬停枪身：浮窗跟随光标，点枪后才开始选目标 */
   readonly onGunHover?: (payload: GunHoverPayload | null) => void
   readonly onItemActionCue?: (item: ActionVisualId, cue: ItemActionCue) => void
@@ -2643,6 +2645,7 @@ export class SceneManager {
     this.canvas.removeEventListener('pointerup', this.onPointerUp)
     this.callbacks.onItemHover?.(null)
     this.callbacks.onGunHover?.(null)
+    this.callbacks.onTargetPickReadyChange?.(false)
     for (const entry of this.items.values()) this.disposeObject(entry.group)
     this.items.clear()
     for (const entry of this.supplyItems.values()) this.disposeObject(entry.group)
@@ -7597,6 +7600,9 @@ export class SceneManager {
     else if (!wasActive) {
       this.disarmTargetPick()
       this.refreshShotTargetBoxes()
+    }
+    if (this.targetPickActive !== wasActive) {
+      this.callbacks.onTargetPickReadyChange?.(this.targetPickActive)
     }
   }
 

@@ -509,3 +509,45 @@ body {
     animation-duration: 1ms;
   }
 }
+
+/* ---------- 手机横屏触控层（粗指针设备才生效） ---------- */
+
+@keyframes phone-turn {
+  0%, 18% { transform: rotate(0deg); }
+  58%, 100% { transform: rotate(90deg); }
+}
+
+.rotate-phone {
+  animation: phone-turn 2.6s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* 触控条由 MobileControls 挂载，只压缩按钮最小宽度，不碰桌面 */
+.touch-bar .metal-btn {
+  min-width: 0;
+}
+
+.touch-danger {
+  border-color: rgb(196 84 66 / 0.72);
+}
+
+/* 粗指针设备把角落工具和音量条抬到 44px 触控高度 */
+.is-touch .corner-chip {
+  min-height: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+  padding-left: 1rem;
+  padding-right: 1rem;
+  font-size: 0.68rem;
+}
+
+.is-touch .volume-slider {
+  height: 2.75rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rotate-phone {
+    animation: none;
+    transform: rotate(90deg);
+  }
+}
